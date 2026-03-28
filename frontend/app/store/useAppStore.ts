@@ -18,6 +18,27 @@ export interface SuggestedTask extends CalendarEvent {
   status: "pending" | "accepted" | "rejected";
 }
 
+function ensureDate(value: Date | string | undefined): Date {
+  if (value instanceof Date) {
+    return value;
+  }
+
+  const parsed = new Date(value ?? new Date().toISOString());
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+}
+
+function normalizeCalendarEvent<T extends CalendarEvent>(event: T): T {
+  return {
+    ...event,
+    start: ensureDate(event.start),
+    end: ensureDate(event.end),
+  };
+}
+
+function normalizeSuggestedTask(task: SuggestedTask): SuggestedTask {
+  return normalizeCalendarEvent(task);
+}
+
 export interface UserProfile {
   name: string;
   level: number;
@@ -37,10 +58,9 @@ export interface AppState {
   lastCalendarSync: Date | null;
   apiLoaded: boolean;
 
-  // Actions
   loadAppData: () => Promise<void>;
   setUserProfile: (profile: Partial<UserProfile>) => Promise<void>;
-  addEvent: (event: Omit<CalendarEvent, 'id'>) => Promise<void>;
+  addEvent: (event: Omit<CalendarEvent, "id">) => Promise<void>;
   removeEvent: (id: string) => Promise<void>;
   updateEvent: (id: string, updates: Partial<CalendarEvent>) => Promise<void>;
   completeSetup: () => void;
@@ -115,7 +135,7 @@ export const useAppStore = create<AppState>()(
         try {
           const user = await api.fetchUser();
           const tasks = await api.fetchTasks();
-          set({ userProfile: user, events: tasks, apiLoaded: true });
+          set({ userProfile: user, events: tasks.map(normalizeCalendarEvent), apiLoaded: true });
         } catch (e) {
           console.error("Failed to load app data", e);
         }
@@ -147,11 +167,9 @@ export const useAppStore = create<AppState>()(
 
       addEvent: async (event) => {
         try {
-          // addTask throws on HTTP/errors; do not require res.success — some proxies
-          // or clients can return 2xx with a minimal body where success is omitted.
           await api.addTask(event);
           const tasks = await api.fetchTasks();
-          set({ events: tasks });
+          set({ events: tasks.map(normalizeCalendarEvent) });
         } catch (err) {
           console.error("Add event error:", err);
           throw err;
@@ -161,14 +179,14 @@ export const useAppStore = create<AppState>()(
       removeEvent: async (id) => {
         await api.deleteTask(id);
         const tasks = await api.fetchTasks();
-        set({ events: tasks });
+        set({ events: tasks.map(normalizeCalendarEvent) });
       },
 
       updateEvent: async (id, updates) => {
         const res = await api.updateTask(id, updates);
         if (res.success) {
-           const [user, tasks] = await Promise.all([api.fetchUser(), api.fetchTasks()]);
-           set({ userProfile: user, events: tasks });
+          const [user, tasks] = await Promise.all([api.fetchUser(), api.fetchTasks()]);
+          set({ userProfile: user, events: tasks.map(normalizeCalendarEvent) });
         }
       },
 
@@ -180,9 +198,9 @@ export const useAppStore = create<AppState>()(
         try {
           await api.upsertTasks(newEvents, sourceUrl);
           const tasks = await api.fetchTasks();
-          set({ 
-            events: tasks,
-            lastCalendarSync: new Date()
+          set({
+            events: tasks.map(normalizeCalendarEvent),
+            lastCalendarSync: new Date(),
           });
         } catch (err) {
           console.error("Sync calendar error:", err);
@@ -196,20 +214,21 @@ export const useAppStore = create<AppState>()(
         if (sourceUrl) {
           await api.deleteTasksBySource(sourceUrl);
         } else {
-          const externalEvents = state.events.filter((e) => e.type === 'external');
+          const externalEvents = state.events.filter((e) => e.type === "external");
           await Promise.all(externalEvents.map((e) => api.deleteTask(e.id)));
         }
 
         const tasks = await api.fetchTasks();
-        set({ events: tasks });
+        set({ events: tasks.map(normalizeCalendarEvent) });
       },
 
-      setPendingSuggestions: (suggestions) => set({ pendingSuggestions: suggestions }),
+      setPendingSuggestions: (suggestions) =>
+        set({ pendingSuggestions: suggestions.map(normalizeSuggestedTask) }),
 
       updatePendingSuggestionStatus: (id, status) =>
         set((state) => ({
           pendingSuggestions: state.pendingSuggestions.map((suggestion) =>
-            suggestion.id === id ? { ...suggestion, status } : suggestion
+            suggestion.id === id ? { ...suggestion, status } : suggestion,
           ),
         })),
 
@@ -222,10 +241,19 @@ export const useAppStore = create<AppState>()(
 
       runWeeklySync: async (payload) => {
         return await api.runWeeklySync(payload);
-      }
+      },
     }),
     {
       name: "handall-storage",
-    }
-  )
+      onRehydrateStorage: () => (state) => {
+        if (!state) return;
+
+        state.events = (state.events || []).map(normalizeCalendarEvent);
+        state.pendingSuggestions = (state.pendingSuggestions || []).map(normalizeSuggestedTask);
+        state.lastCalendarSync = state.lastCalendarSync
+          ? ensureDate(state.lastCalendarSync as unknown as string | Date)
+          : null;
+      },
+    },
+  ),
 );

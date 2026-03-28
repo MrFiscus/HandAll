@@ -106,8 +106,8 @@ export const api = {
       body: JSON.stringify({
         title: event.title,
         description: event.description,
-        start: event.start.toISOString(),
-        end: event.end.toISOString(),
+        start: toIsoString(event.start) ?? new Date().toISOString(),
+        end: toIsoString(event.end) ?? new Date().toISOString(),
         type: event.type
       })
     });
@@ -134,8 +134,8 @@ export const api = {
         id: e.id,
         title: e.title,
         description: e.description,
-        start: e.start.toISOString(),
-        end: e.end.toISOString(),
+        start: toIsoString(e.start) ?? new Date().toISOString(),
+        end: toIsoString(e.end) ?? new Date().toISOString(),
         type: e.type,
         source_url: e.sourceUrl ?? sourceUrl,
         completed: e.completed

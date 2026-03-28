@@ -51,8 +51,8 @@ export default function CalendarSync() {
         return;
       }
 
-      // Add to store
-      syncCalendarEvents(events);
+      // Add to store and persist to Supabase
+      syncCalendarEvents(events, icalUrl);
 
       // Save URL to profile if not already there
       if (!userProfile.calendarUrls.includes(icalUrl)) {

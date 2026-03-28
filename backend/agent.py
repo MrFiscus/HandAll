@@ -65,7 +65,10 @@ def upsert_user_profile(
 
 def get_calendar_service():
     credentials = service_account.Credentials.from_service_account_file(
-        os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE", "service_account.json"),
+        os.environ.get(
+            "GOOGLE_SERVICE_ACCOUNT_FILE",
+            str(Path(__file__).resolve().parents[1] / "backend" / "credentials" / "google-service-account.json"),
+        ),
         scopes=["https://www.googleapis.com/auth/calendar"],
     )
     return build("calendar", "v3", credentials=credentials)

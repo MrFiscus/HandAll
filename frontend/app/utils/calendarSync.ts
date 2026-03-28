@@ -1,6 +1,92 @@
 import ICAL from "ical.js";
 import { CalendarEvent } from "../store/useAppStore";
 
+export interface ImportedTaskPreview {
+  task_name: string;
+  details: string;
+  due_start: string;
+  due_end: string;
+  category: "school" | "work" | "personal" | "general";
+  priority: "high" | "medium" | "low";
+  location?: string;
+  source_event_id: string;
+}
+
+const RECURRING_IMPORT_WINDOW_DAYS = 120;
+const MAX_RECURRING_OCCURRENCES = 200;
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function inferEventType(summary: string, description: string): CalendarEvent["type"] {
+  const combined = `${summary} ${description}`.toLowerCase();
+
+  if (/(class|lecture|lab|office hours|quiz|exam|midterm|club meeting)/.test(combined)) {
+    return "class";
+  }
+
+  if (/(assignment|homework|project|discussion post|report due|submission|due)/.test(combined)) {
+    return "assignment";
+  }
+
+  return "external";
+}
+
+function inferTaskCategory(event: CalendarEvent): ImportedTaskPreview["category"] {
+  const combined = `${event.title} ${event.description || ""}`.toLowerCase();
+
+  if (/(csc|math|assignment|quiz|exam|lab|homework|project|study|office hours|club|resume review)/.test(combined)) {
+    return "school";
+  }
+
+  if (/(work shift|help desk|part-time work|interview|meeting)/.test(combined)) {
+    return "work";
+  }
+
+  if (/(doctor|family|birthday|gym|workout|personal)/.test(combined)) {
+    return "personal";
+  }
+
+  return "general";
+}
+
+function inferTaskPriority(event: CalendarEvent): ImportedTaskPreview["priority"] {
+  const combined = `${event.title} ${event.description || ""}`.toLowerCase();
+
+  if (/(due|exam|midterm|quiz|project|deadline|submit)/.test(combined)) {
+    return "high";
+  }
+
+  if (/(office hours|club|study|planning)/.test(combined)) {
+    return "medium";
+  }
+
+  return event.type === "assignment" ? "high" : "low";
+}
+
+function mapOccurrenceToEvent(
+  event: ICAL.Event,
+  start: Date,
+  end: Date,
+  index: number,
+): CalendarEvent {
+  const summary = event.summary || "Untitled Event";
+  const description = event.description || "";
+  const eventIdBase = event.uid || `ical-${Date.now()}-${index}`;
+
+  return {
+    id: `${eventIdBase}-${start.toISOString()}`,
+    title: summary,
+    start,
+    end,
+    type: inferEventType(summary, description),
+    description: description || undefined,
+  };
+}
+
 /**
  * Fetches and parses iCal data from a URL
  * Note: Due to CORS restrictions, some calendar URLs may need to be accessed via a proxy
@@ -29,6 +115,17 @@ export async function fetchCalendarEvents(url: string): Promise<CalendarEvent[]>
   }
 }
 
+export function resolveCalendarImportUrl(url: string): string {
+  const trimmedUrl = url.trim();
+  if (!trimmedUrl) return "";
+
+  if (trimmedUrl.includes("google.com/calendar")) {
+    return getGoogleCalendarICalUrl(trimmedUrl) || trimmedUrl;
+  }
+
+  return trimmedUrl;
+}
+
 /**
  * Parses iCal string data into CalendarEvent objects
  */
@@ -37,42 +134,66 @@ export function parseICalData(icalData: string): CalendarEvent[] {
     const jcalData = ICAL.parse(icalData);
     const comp = new ICAL.Component(jcalData);
     const vevents = comp.getAllSubcomponents("vevent");
+    const rangeStart = addDays(new Date(), -7);
+    const rangeEnd = addDays(new Date(), RECURRING_IMPORT_WINDOW_DAYS);
+    const events: CalendarEvent[] = [];
 
-    const events: CalendarEvent[] = vevents.map((vevent, idx) => {
+    vevents.forEach((vevent, idx) => {
       const event = new ICAL.Event(vevent);
-      
-      // Get start and end times
-      const start = event.startDate.toJSDate();
-      const end = event.endDate.toJSDate();
-      
-      // Determine event type based on summary/description
-      const summary = (event.summary || "").toLowerCase();
-      let type: CalendarEvent["type"] = "external";
-      
-      if (summary.includes("class") || summary.includes("lecture") || summary.includes("lab")) {
-        type = "class";
-      } else if (summary.includes("assignment") || summary.includes("homework") || summary.includes("project")) {
-        type = "assignment";
+
+      if (event.isRecurring()) {
+        const iterator = event.iterator();
+        let occurrence = iterator.next();
+        let count = 0;
+
+        while (occurrence && count < MAX_RECURRING_OCCURRENCES) {
+          const details = event.getOccurrenceDetails(occurrence);
+          const start = details.startDate.toJSDate();
+          const end = details.endDate.toJSDate();
+
+          if (start > rangeEnd) {
+            break;
+          }
+
+          if (end >= rangeStart) {
+            events.push(mapOccurrenceToEvent(event, start, end, idx));
+          }
+
+          count += 1;
+          occurrence = iterator.next();
+        }
+
+        return;
       }
 
-      // Ensure we have a string ID for the backend
-      const externalId = event.uid || `ical-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 9)}`;
-
-      return {
-        id: externalId,
-        title: event.summary || "Untitled Event",
-        start,
-        end,
-        type,
-        description: event.description || undefined,
-      };
+      events.push(
+        mapOccurrenceToEvent(
+          event,
+          event.startDate.toJSDate(),
+          event.endDate.toJSDate(),
+          idx,
+        ),
+      );
     });
 
-    return events;
+    return events.sort((a, b) => a.start.getTime() - b.start.getTime());
   } catch (error) {
     console.error("Error parsing iCal data:", error);
     throw new Error("Failed to parse calendar data. Please ensure the URL is a valid iCal format.");
   }
+}
+
+export function convertCalendarEventsToTaskPreview(events: CalendarEvent[]): ImportedTaskPreview[] {
+  return events.map((event) => ({
+    task_name: event.title,
+    details: event.description || "",
+    due_start: event.start.toISOString(),
+    due_end: event.end.toISOString(),
+    category: inferTaskCategory(event),
+    priority: inferTaskPriority(event),
+    location: undefined,
+    source_event_id: event.id,
+  }));
 }
 
 /**

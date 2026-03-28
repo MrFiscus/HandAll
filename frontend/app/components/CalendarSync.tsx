@@ -6,18 +6,54 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
 import { Alert, AlertDescription } from "./ui/alert";
 import { useAppStore } from "../store/useAppStore";
-import { fetchCalendarEvents, getGoogleCalendarICalUrl, parseICalData } from "../utils/calendarSync";
+import { convertCalendarEventsToTaskPreview, fetchCalendarEvents, parseICalData, resolveCalendarImportUrl } from "../utils/calendarSync";
 import { RefreshCw, Calendar, AlertCircle, CheckCircle2, Info, Upload, Link } from "lucide-react";
 import { toast } from "sonner";
 import { format } from "date-fns";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
+import { CalendarEvent } from "../store/useAppStore";
 
 export default function CalendarSync() {
   const { userProfile, setUserProfile, syncCalendarEvents, removeExternalEvents, lastCalendarSync } = useAppStore();
   const [calendarUrl, setCalendarUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [showDialog, setShowDialog] = useState(false);
+  const [previewEvents, setPreviewEvents] = useState<CalendarEvent[]>([]);
+  const [previewSource, setPreviewSource] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const clearPreview = () => {
+    setPreviewEvents([]);
+    setPreviewSource(null);
+  };
+
+  const handleImportPreview = async () => {
+    if (!previewSource || previewEvents.length === 0) {
+      toast.error("Nothing to import yet.");
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      await syncCalendarEvents(previewEvents, previewSource);
+
+      if (!userProfile.calendarUrls.includes(previewSource)) {
+        await setUserProfile({
+          calendarUrls: [...userProfile.calendarUrls, previewSource],
+        });
+      }
+
+      toast.success(`Imported ${previewEvents.length} events into HandAll!`);
+      clearPreview();
+      setShowDialog(false);
+      setCalendarUrl("");
+    } catch (error) {
+      console.error("Calendar import error:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to import calendar");
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const handleSyncUrl = async () => {
     if (!calendarUrl.trim()) {
@@ -27,13 +63,7 @@ export default function CalendarSync() {
 
     setIsLoading(true);
     try {
-      let icalUrl = calendarUrl;
-      if (calendarUrl.includes("google.com/calendar")) {
-        const converted = getGoogleCalendarICalUrl(calendarUrl);
-        if (converted) {
-          icalUrl = converted;
-        }
-      }
+      const icalUrl = resolveCalendarImportUrl(calendarUrl);
 
       const events = await fetchCalendarEvents(icalUrl);
       
@@ -43,17 +73,9 @@ export default function CalendarSync() {
         return;
       }
 
-      syncCalendarEvents(events, icalUrl);
-
-      if (!userProfile.calendarUrls.includes(icalUrl)) {
-        await setUserProfile({
-          calendarUrls: [...userProfile.calendarUrls, icalUrl],
-        });
-      }
-
-      toast.success(`Synced ${events.length} events from calendar!`);
-      setShowDialog(false);
-      setCalendarUrl("");
+      setPreviewEvents(events);
+      setPreviewSource(icalUrl);
+      toast.success(`Loaded ${events.length} events. Review the breakdown before importing.`);
     } catch (error) {
       console.error("Calendar sync error:", error);
       toast.error(error instanceof Error ? error.message : "Failed to sync calendar");
@@ -79,9 +101,10 @@ export default function CalendarSync() {
             return;
           }
 
-          syncCalendarEvents(events, `file://${file.name}`);
-          toast.success(`Successfully imported ${events.length} events from ${file.name}!`);
-          setShowDialog(false);
+          const fileSource = `file://${file.name}`;
+          setPreviewEvents(events);
+          setPreviewSource(fileSource);
+          toast.success(`Loaded ${events.length} events from ${file.name}. Review the breakdown before importing.`);
         } catch (err) {
           toast.error("Failed to parse .ical file. Please ensure it's a valid iCal format.");
         } finally {
@@ -103,7 +126,7 @@ export default function CalendarSync() {
     setIsLoading(true);
     try {
       const events = await fetchCalendarEvents(url);
-      syncCalendarEvents(events, url);
+      await syncCalendarEvents(events, url);
       toast.success(`Resynced ${events.length} events!`);
     } catch (error) {
       console.error("Calendar resync error:", error);
@@ -113,14 +136,20 @@ export default function CalendarSync() {
     }
   };
 
-  const handleRemoveCalendar = (url: string) => {
-    setUserProfile({
+  const handleRemoveCalendar = async (url: string) => {
+    await setUserProfile({
       calendarUrls: userProfile.calendarUrls.filter((u) => u !== url),
     });
-    // For simplicity, we just clear and let the user resync others or use local state
-    // In a real app, you'd filter events by sourceUrl
-    removeExternalEvents();
+    await removeExternalEvents(url);
     toast.success("Calendar removed");
+  };
+
+  const previewTasks = convertCalendarEventsToTaskPreview(previewEvents);
+  const summary = {
+    total: previewEvents.length,
+    classes: previewEvents.filter((event) => event.type === "class").length,
+    assignments: previewEvents.filter((event) => event.type === "assignment").length,
+    external: previewEvents.filter((event) => event.type === "external").length,
   };
 
   return (
@@ -196,6 +225,70 @@ export default function CalendarSync() {
               )}
             </TabsContent>
           </Tabs>
+
+          {previewEvents.length > 0 && previewSource && (
+            <div className="space-y-4 rounded-xl border bg-muted/20 p-4">
+              <div className="space-y-1">
+                <h4 className="font-medium">Import Preview</h4>
+                <p className="text-sm text-muted-foreground">
+                  {previewSource.startsWith("file://")
+                    ? `Ready to import from ${previewSource.replace("file://", "")}`
+                    : `Ready to import from ${previewSource}`}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-lg border bg-background p-3">
+                  <p className="text-xs text-muted-foreground">Classes</p>
+                  <p className="text-xl font-semibold">{summary.classes}</p>
+                </div>
+                <div className="rounded-lg border bg-background p-3">
+                  <p className="text-xs text-muted-foreground">Assignments</p>
+                  <p className="text-xl font-semibold">{summary.assignments}</p>
+                </div>
+                <div className="rounded-lg border bg-background p-3">
+                  <p className="text-xs text-muted-foreground">Other Events</p>
+                  <p className="text-xl font-semibold">{summary.external}</p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Converted task preview</p>
+                <div className="max-h-64 space-y-2 overflow-y-auto rounded-lg border bg-background p-3">
+                  {previewTasks.slice(0, 8).map((task) => (
+                    <div key={task.source_event_id} className="rounded-md border p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-medium">{task.task_name}</p>
+                        <span className="text-xs uppercase text-muted-foreground">{task.priority}</span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">{task.category}</p>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {task.details || "No details provided."}
+                      </p>
+                      <p className="mt-2 text-xs text-muted-foreground">
+                        {format(new Date(task.due_start), "PPp")} - {format(new Date(task.due_end), "PPp")}
+                      </p>
+                    </div>
+                  ))}
+                  {previewTasks.length > 8 && (
+                    <p className="text-xs text-muted-foreground">
+                      Showing 8 of {previewTasks.length} converted items.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <Button variant="outline" onClick={clearPreview} disabled={isLoading}>
+                  Clear Preview
+                </Button>
+                <Button onClick={handleImportPreview} disabled={isLoading}>
+                  {isLoading ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Import {summary.total} Events
+                </Button>
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
 

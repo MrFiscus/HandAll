@@ -7,7 +7,7 @@ import { Textarea } from "./ui/textarea";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "./ui/card";
 import { Alert, AlertDescription } from "./ui/alert";
 import { useAppStore } from "../store/useAppStore";
-import { fetchCalendarEvents, getGoogleCalendarICalUrl } from "../utils/calendarSync";
+import { fetchCalendarEvents, resolveCalendarImportUrl } from "../utils/calendarSync";
 import { Calendar, Clock, Target, Info, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 const AGENT_API_BASE_URL =
@@ -27,6 +27,7 @@ export default function Setup() {
     calendarUrl: "",
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const resolvedCalendarUrl = resolveCalendarImportUrl(formData.calendarUrl);
 
   const handleNext = async () => {
     if (step < 3) {
@@ -35,7 +36,7 @@ export default function Setup() {
       setIsSubmitting(true);
       try {
         const sideGoals = formData.sideGoals.split("\n").filter((goal) => goal.trim());
-        const calendarUrls = formData.calendarUrl ? [formData.calendarUrl] : [];
+        const calendarUrls = resolvedCalendarUrl ? [resolvedCalendarUrl] : [];
         const userId = localStorage.getItem(AGENT_USER_ID_KEY) ?? crypto.randomUUID();
 
         localStorage.setItem(AGENT_USER_ID_KEY, userId);
@@ -70,17 +71,10 @@ export default function Setup() {
           throw new Error(`AI backend returned ${profileSyncResponse.status}`);
         }
 
-        if (formData.calendarUrl) {
+        if (resolvedCalendarUrl) {
           try {
-            let icalUrl = formData.calendarUrl;
-            if (formData.calendarUrl.includes("google.com/calendar")) {
-              const converted = getGoogleCalendarICalUrl(formData.calendarUrl);
-              if (converted) {
-                icalUrl = converted;
-              }
-            }
-            const events = await fetchCalendarEvents(icalUrl);
-            syncCalendarEvents(events);
+            const events = await fetchCalendarEvents(resolvedCalendarUrl);
+            await syncCalendarEvents(events, resolvedCalendarUrl);
             toast.success(`Synced ${events.length} events from your calendar!`);
           } catch (error) {
             console.error("Failed to sync calendar during setup:", error);

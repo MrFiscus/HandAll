@@ -9,6 +9,7 @@ package-lock.json
 # Environment / Secrets
 .env
 .env.local
+backend/credentials/*.json
 
 # Logs
 npm-debug.log*

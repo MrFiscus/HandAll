@@ -8,6 +8,7 @@ import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 import { dbPromise } from './src/db.js';
 import * as AI from './src/ai.js';
+import { fetchGoogleCalendarEvents } from './src/googleCalendar.js';
 
 dotenv.config();
 
@@ -39,6 +40,20 @@ if (hasFrontendBuild) {
 
 // Helper to get DB
 const getDB = () => dbPromise;
+
+async function getUserWithCalendarSources(localUserId) {
+  const db = await getDB();
+  const user = await db.get('SELECT * FROM users WHERE id = ?', localUserId);
+  const calendarSources = await db.all(
+    'SELECT url FROM calendar_sources WHERE user_id = ? ORDER BY id ASC',
+    localUserId
+  );
+
+  return {
+    ...user,
+    calendar_urls: calendarSources.map((source) => source.url),
+  };
+}
 
 async function getOrCreateLocalUser(authUser) {
   const db = await getDB();
@@ -102,26 +117,98 @@ app.get('/api/public/config', (req, res) => {
 
 app.use('/api', requireAuth);
 
+app.get('/api/google-calendar/events', async (req, res) => {
+  const start = typeof req.query.start === 'string' ? req.query.start : null;
+  const end = typeof req.query.end === 'string' ? req.query.end : null;
+  const calendarId = typeof req.query.calendarId === 'string' ? req.query.calendarId : undefined;
+  const q = typeof req.query.q === 'string' ? req.query.q : undefined;
+  const maxResults = typeof req.query.maxResults === 'string' ? Number.parseInt(req.query.maxResults, 10) : undefined;
+
+  if (!start || !end) {
+    return res.status(400).json({ error: 'Missing required start or end query parameter' });
+  }
+
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    return res.status(400).json({ error: 'Invalid start or end date' });
+  }
+
+  if (endDate <= startDate) {
+    return res.status(400).json({ error: 'The end date must be after the start date' });
+  }
+
+  try {
+    const result = await fetchGoogleCalendarEvents({
+      calendarId,
+      timeMin: startDate.toISOString(),
+      timeMax: endDate.toISOString(),
+      maxResults: Number.isFinite(maxResults) ? Math.min(maxResults, 1000) : 250,
+      q,
+    });
+
+    res.json({
+      success: true,
+      ...result,
+      range: {
+        start: startDate.toISOString(),
+        end: endDate.toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('Google Calendar import error:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to fetch Google Calendar events',
+    });
+  }
+});
+
 // --- User Profile Endpoints ---
 app.get('/api/user', async (req, res) => {
-  const db = await getDB();
-  const user = await db.get('SELECT * FROM users WHERE id = ?', req.localUser.id);
+  const user = await getUserWithCalendarSources(req.localUser.id);
   res.json(user || req.localUser);
 });
 
 app.post('/api/user/setup', async (req, res) => {
-  const { username, wake_time, sleep_time, side_goal, google_calendar_url } = req.body;
+  const { username, wake_time, sleep_time, side_goal, google_calendar_url, calendar_urls } = req.body;
   const db = await getDB();
+  const calendarUrls = Array.isArray(calendar_urls)
+    ? [...new Set(calendar_urls.filter((url) => typeof url === 'string' && url.trim()).map((url) => url.trim()))]
+    : null;
+  const primaryCalendarUrl = calendarUrls
+    ? (calendarUrls[0] ?? '')
+    : (typeof google_calendar_url === 'string' ? google_calendar_url : null);
+
   await db.run(
-    'UPDATE users SET username = COALESCE(?, username), wake_time = COALESCE(?, wake_time), sleep_time = COALESCE(?, sleep_time), side_goal = COALESCE(?, side_goal), google_calendar_url = COALESCE(?, google_calendar_url) WHERE id = ?',
+    `UPDATE users
+     SET username = COALESCE(?, username),
+         wake_time = COALESCE(?, wake_time),
+         sleep_time = COALESCE(?, sleep_time),
+         side_goal = COALESCE(?, side_goal),
+         google_calendar_url = CASE WHEN ? IS NULL THEN google_calendar_url ELSE ? END
+     WHERE id = ?`,
     username,
     wake_time,
     sleep_time,
     side_goal,
-    google_calendar_url,
+    primaryCalendarUrl,
+    primaryCalendarUrl,
     req.localUser.id
   );
-  const user = await db.get('SELECT * FROM users WHERE id = ?', req.localUser.id);
+
+  if (calendarUrls) {
+    await db.run('DELETE FROM calendar_sources WHERE user_id = ?', req.localUser.id);
+    for (const url of calendarUrls) {
+      await db.run(
+        'INSERT OR IGNORE INTO calendar_sources (user_id, url) VALUES (?, ?)',
+        req.localUser.id,
+        url
+      );
+    }
+  }
+
+  const user = await getUserWithCalendarSources(req.localUser.id);
   res.json({ success: true, user });
 });
 
@@ -137,9 +224,11 @@ app.get('/api/tasks', async (req, res) => {
     id: t.external_id || t.id.toString(),
     db_id: t.id, // Keep the real DB ID too
     title: t.title,
+    description: t.description,
     start: t.start_time,
     end: t.end_time,
     type: t.type ? t.type.toLowerCase() : 'working',
+    sourceUrl: t.source_url || undefined,
     completed: t.status === 'Completed',
     xpValue: t.type?.toLowerCase() === 'working' ? 50 : (t.type?.toLowerCase() === 'goal' ? 30 : 10)
   })));
@@ -160,13 +249,13 @@ app.post('/api/tasks/bulk', async (req, res) => {
       
       if (existing) {
           await db.run(
-              'UPDATE tasks SET title = ?, start_time = ?, end_time = ?, type = ?, status = ?, external_id = ? WHERE id = ?',
-              event.title, event.start, event.end, event.type, event.completed ? 'Completed' : 'Accepted', event.id, existing.id
+              'UPDATE tasks SET title = ?, description = ?, start_time = ?, end_time = ?, type = ?, status = ?, external_id = ?, source_url = ? WHERE id = ?',
+              event.title, event.description || null, event.start, event.end, event.type, event.completed ? 'Completed' : 'Accepted', event.id, event.source_url || null, existing.id
           );
       } else {
           await db.run(
-              'INSERT INTO tasks (user_id, external_id, title, start_time, end_time, type, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
-              req.localUser.id, event.id, event.title, event.start, event.end, event.type, event.completed ? 'Completed' : 'Accepted'
+              'INSERT INTO tasks (user_id, external_id, title, description, start_time, end_time, type, source_url, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              req.localUser.id, event.id, event.title, event.description || null, event.start, event.end, event.type, event.source_url || null, event.completed ? 'Completed' : 'Accepted'
           );
       }
     }
@@ -227,6 +316,22 @@ app.patch('/api/tasks/:id', async (req, res) => {
     }
     
     res.json({ success: true });
+});
+
+app.delete('/api/tasks/source', async (req, res) => {
+  const sourceUrl = typeof req.query.url === 'string' ? req.query.url : null;
+
+  if (!sourceUrl) {
+    return res.status(400).json({ error: 'Missing source url' });
+  }
+
+  const db = await getDB();
+  await db.run(
+    'DELETE FROM tasks WHERE user_id = ? AND source_url = ?',
+    req.localUser.id,
+    sourceUrl
+  );
+  res.json({ success: true });
 });
 
 app.delete('/api/tasks/:id', async (req, res) => {

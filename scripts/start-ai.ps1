@@ -33,6 +33,30 @@ if (-not (Test-Path $pythonExe)) {
 
 if (-not (Test-Path $uvicornExe)) {
   & $pythonExe -m pip install -r "backend/requirements.txt"
+} else {
+  $importCheck = @'
+import importlib
+required_modules = [
+    "uvicorn",
+    "fastapi",
+    "google.oauth2",
+    "googleapiclient.discovery",
+    "langchain_google_genai",
+]
+
+for module_name in required_modules:
+    importlib.import_module(module_name)
+'@
+
+  & $pythonExe -c $importCheck
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "Refreshing AI Python dependencies..." -ForegroundColor Yellow
+    & $pythonExe -m pip install -r "backend/requirements.txt"
+  }
+}
+
+if ($LASTEXITCODE -ne 0) {
+  & $pythonExe -m pip install -r "backend/requirements.txt"
 }
 
 & $pythonExe -m uvicorn "backend.main:app" --port 8011

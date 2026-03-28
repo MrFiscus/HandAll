@@ -9,6 +9,7 @@ export interface CalendarEvent {
   end: Date;
   type: "class" | "assignment" | "working" | "goal" | "freetime" | "external";
   description?: string;
+  sourceUrl?: string;
   completed?: boolean;
   xpValue?: number;
 }
@@ -40,7 +41,7 @@ export interface AppState {
   completeSetup: () => void;
   setMotivation: (level: number) => void;
   syncCalendarEvents: (newEvents: CalendarEvent[], sourceUrl?: string) => Promise<void>;
-  removeExternalEvents: () => Promise<void>;
+  removeExternalEvents: (sourceUrl?: string) => Promise<void>;
   runWeeklySync: (assignments: { title: string, hours: number }[]) => Promise<CalendarEvent[]>;
 }
 
@@ -131,7 +132,7 @@ export const useAppStore = create<AppState>()(
 
       syncCalendarEvents: async (newEvents, sourceUrl) => {
         try {
-          await api.upsertTasks(newEvents);
+          await api.upsertTasks(newEvents, sourceUrl);
           const tasks = await api.fetchTasks();
           set({ 
             events: tasks,
@@ -143,11 +144,16 @@ export const useAppStore = create<AppState>()(
         }
       },
 
-      removeExternalEvents: async () => {
+      removeExternalEvents: async (sourceUrl) => {
         const state = get();
-        const externalEvents = state.events.filter(e => e.type === 'external');
-        // Delete each external event
-        await Promise.all(externalEvents.map(e => api.deleteTask(e.id)));
+
+        if (sourceUrl) {
+          await api.deleteTasksBySource(sourceUrl);
+        } else {
+          const externalEvents = state.events.filter((e) => e.type === 'external');
+          await Promise.all(externalEvents.map((e) => api.deleteTask(e.id)));
+        }
+
         const tasks = await api.fetchTasks();
         set({ events: tasks });
       },

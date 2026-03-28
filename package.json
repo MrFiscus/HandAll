@@ -1,0 +1,9 @@
+{
+  "name": "handall-root",
+  "private": true,
+  "scripts": {
+    "start": "npm --prefix app start",
+    "init-db": "npm --prefix app run init-db",
+    "install:app": "npm --prefix app install"
+  }
+}

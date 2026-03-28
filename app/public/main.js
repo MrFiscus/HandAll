@@ -3,8 +3,25 @@ const API_BASE = '/api';
 // --- State Management ---
 let currentUser = null;
 let tasks = [];
+let supabaseClient = null;
+let authToken = null;
+let authMode = 'signup';
 
 // --- DOM Elements ---
+const authView = document.getElementById('auth-view');
+const appView = document.getElementById('app');
+const authTitle = document.getElementById('auth-title');
+const authSwitchLabel = document.getElementById('auth-switch-label');
+const authToggleLink = document.getElementById('auth-toggle-link');
+const authFirstName = document.getElementById('auth-first-name');
+const authLastName = document.getElementById('auth-last-name');
+const authEmail = document.getElementById('auth-email');
+const authPassword = document.getElementById('auth-password');
+const authTermsCheck = document.getElementById('auth-terms-check');
+const authSubmit = document.getElementById('auth-submit');
+const authMessage = document.getElementById('auth-message');
+const signupOnlyEls = document.querySelectorAll('.signup-only');
+
 const views = {
     setup: document.getElementById('setup-view'),
     motivation: document.getElementById('motivation-view'),
@@ -20,20 +37,103 @@ const redlineModal = document.getElementById('redline-modal');
 
 // --- Initialization ---
 async function init() {
+    setupEventListeners();
+    const ok = await initSupabase();
+    if (!ok) return;
+
+    const { data } = await supabaseClient.auth.getSession();
+    await handleAuthStateChange(data.session);
+
+    supabaseClient.auth.onAuthStateChange(async (_event, session) => {
+        await handleAuthStateChange(session);
+    });
+}
+
+async function fetchUser() {
+    const res = await authFetch(`${API_BASE}/user`);
+    currentUser = await res.json();
+    updateUserStats();
+}
+
+async function initSupabase() {
+    const res = await fetch('/api/public/config');
+    const cfg = await res.json();
+
+    if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) {
+        setAuthMessage('Server missing Supabase config. Set SUPABASE_URL and SUPABASE_ANON_KEY in app/.env', true);
+        return false;
+    }
+
+    supabaseClient = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseAnonKey);
+    return true;
+}
+
+async function handleAuthStateChange(session) {
+    authToken = session?.access_token || null;
+
+    if (!session) {
+        showAuthView();
+        return;
+    }
+
+    hideAuthView();
     await fetchUser();
+
     if (!currentUser.side_goal) {
         switchView('setup');
     } else {
         switchView('motivation');
     }
-    setupEventListeners();
+
     renderCalendar();
 }
 
-async function fetchUser() {
-    const res = await fetch(`${API_BASE}/user`);
-    currentUser = await res.json();
-    updateUserStats();
+function showAuthView() {
+    authView.classList.remove('hidden');
+    appView.classList.add('hidden');
+    setAuthMode(authMode);
+}
+
+function hideAuthView() {
+    authView.classList.add('hidden');
+    appView.classList.remove('hidden');
+}
+
+function setAuthMessage(message, isError = false) {
+    authMessage.innerText = message;
+    authMessage.classList.toggle('auth-error', isError);
+    authMessage.classList.toggle('auth-success', !isError && !!message);
+}
+
+function setAuthMode(mode) {
+    authMode = mode;
+    const isSignup = authMode === 'signup';
+
+    authTitle.innerText = isSignup ? 'Create an account' : 'Log in';
+    authSwitchLabel.innerText = isSignup ? 'Already have an account?' : "Don't have an account?";
+    authToggleLink.innerText = isSignup ? 'Log in' : 'Create account';
+    authSubmit.innerText = isSignup ? 'Create account' : 'Log in';
+
+    signupOnlyEls.forEach((el) => {
+        el.classList.toggle('hidden', !isSignup);
+    });
+
+    authPassword.placeholder = isSignup ? 'Enter your password' : 'Enter your password';
+    setAuthMessage('Not signed in');
+}
+
+async function authFetch(url, options = {}) {
+    const headers = { ...(options.headers || {}) };
+    headers.Authorization = `Bearer ${authToken}`;
+
+    const res = await fetch(url, { ...options, headers });
+    if (res.status === 401) {
+        await supabaseClient.auth.signOut();
+        setAuthMessage('Session expired. Please log in again.', true);
+        throw new Error('Unauthorized');
+    }
+
+    return res;
 }
 
 function renderCalendar() {
@@ -71,7 +171,7 @@ function switchView(viewName) {
 
 // --- Task Logic ---
 async function loadTasks() {
-    const res = await fetch(`${API_BASE}/tasks`);
+    const res = await authFetch(`${API_BASE}/tasks`);
     tasks = await res.json();
     renderTasks();
 }
@@ -100,7 +200,7 @@ function renderTasks() {
 }
 
 async function respondTask(taskId, action) {
-    await fetch(`${API_BASE}/tasks/respond`, {
+    await authFetch(`${API_BASE}/tasks/respond`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ taskId, action })
@@ -109,7 +209,7 @@ async function respondTask(taskId, action) {
 }
 
 async function completeTask(taskId) {
-    const res = await fetch(`${API_BASE}/tasks/complete`, {
+    const res = await authFetch(`${API_BASE}/tasks/complete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ taskId })
@@ -123,6 +223,84 @@ async function completeTask(taskId) {
 
 // --- Event Listeners ---
 function setupEventListeners() {
+    // Auth Actions
+    authToggleLink.onclick = () => {
+        setAuthMode(authMode === 'signup' ? 'login' : 'signup');
+    };
+
+    document.getElementById('auth-google-btn').onclick = async () => {
+        setAuthMessage('Redirecting to Google...');
+        const redirectTo = `${window.location.origin}${window.location.pathname}`;
+        const { error } = await supabaseClient.auth.signInWithOAuth({
+            provider: 'google',
+            options: {
+                redirectTo
+            }
+        });
+        if (error) {
+            setAuthMessage('Google Sign-In failed: ' + error.message, true);
+        }
+    };
+
+    authSubmit.onclick = async () => {
+        const email = authEmail.value.trim();
+        const password = authPassword.value;
+        if (!email || !password) {
+            setAuthMessage('Email and password are required.', true);
+            return;
+        }
+
+        if (authMode === 'login') {
+            const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+            if (error) {
+                setAuthMessage(error.message, true);
+                return;
+            }
+
+            setAuthMessage('Logged in successfully.');
+            return;
+        }
+
+        if (!authTermsCheck.checked) {
+            setAuthMessage('Please agree to the Terms & Conditions.', true);
+            return;
+        }
+
+        const firstName = authFirstName.value.trim();
+        const lastName = authLastName.value.trim();
+        const fullName = `${firstName} ${lastName}`.trim();
+
+        const { data, error } = await supabaseClient.auth.signUp({
+            email,
+            password,
+            options: {
+                data: {
+                    first_name: firstName,
+                    last_name: lastName,
+                    full_name: fullName
+                }
+            }
+        });
+
+        if (error) {
+            setAuthMessage(error.message, true);
+            return;
+        }
+
+        if (!data.session) {
+            setAuthMessage('Account created. Check your email to confirm, then log in.');
+            setAuthMode('login');
+            return;
+        }
+
+        setAuthMessage('Account created and logged in.');
+    };
+
+    document.getElementById('logout-btn').onclick = async () => {
+        await supabaseClient.auth.signOut();
+        setAuthMessage('Signed out.');
+    };
+
     // Setup View
     document.getElementById('save-setup').onclick = async () => {
         const wake_time = document.getElementById('setup-wake').value;
@@ -130,7 +308,7 @@ function setupEventListeners() {
         const side_goal = document.getElementById('setup-goal').value;
         const google_calendar_url = document.getElementById('setup-cal').value;
 
-        await fetch(`${API_BASE}/user/setup`, {
+        await authFetch(`${API_BASE}/user/setup`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ wake_time, sleep_time, side_goal, google_calendar_url })
@@ -171,7 +349,7 @@ function setupEventListeners() {
 
     // Sunday Sync
     document.getElementById('run-weekly-sync').onclick = async () => {
-        const res = await fetch(`${API_BASE}/tasks/weekly-sync`, { method: 'POST' });
+        const res = await authFetch(`${API_BASE}/tasks/weekly-sync`, { method: 'POST' });
         const data = await res.json();
         addBotMessage(`Sunday Sync Complete. I've added ${data.count} new tasks for your review.`);
         loadTasks();
@@ -186,7 +364,7 @@ async function sendChat() {
     addUserMessage(text);
     input.value = '';
 
-    const res = await fetch(`${API_BASE}/chat`, {
+    const res = await authFetch(`${API_BASE}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text })

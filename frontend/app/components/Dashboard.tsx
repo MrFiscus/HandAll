@@ -1,20 +1,33 @@
 import { useState, useMemo, useEffect } from "react";
+import { useNavigate } from "react-router";
 import { format, startOfWeek, addDays, isSameDay } from "date-fns";
 import { useAppStore } from "../store/useAppStore";
 import { Card, CardHeader, CardTitle, CardContent } from "./ui/card";
 import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
-import { Plus, CheckCircle2, Calendar as CalendarIcon } from "lucide-react";
+import { Plus, CheckCircle2, Calendar as CalendarIcon, Sparkles } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import { cn } from "./ui/utils";
 import { toast } from "sonner";
 import WelcomeGuide from "./WelcomeGuide";
 import WeeklyCalendar from "./WeeklyCalendar";
 
 export default function Dashboard() {
-  const { events, userProfile, addEvent, updateEvent, loadAppData, apiLoaded } = useAppStore();
+  const navigate = useNavigate();
+  const {
+    events,
+    userProfile,
+    addEvent,
+    updateEvent,
+    loadAppData,
+    apiLoaded,
+    pendingSuggestions,
+    updatePendingSuggestionStatus,
+    removePendingSuggestion,
+  } = useAppStore();
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [showAddEvent, setShowAddEvent] = useState(false);
   const [showWelcome, setShowWelcome] = useState(false);
@@ -47,6 +60,13 @@ export default function Dashboard() {
       isSameDay(new Date(event.start), selectedDate)
     );
   }, [events, selectedDate]);
+
+  const nextPendingSuggestions = useMemo(() => {
+    return pendingSuggestions
+      .filter((suggestion) => suggestion.status === "pending")
+      .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
+      .slice(0, 3);
+  }, [pendingSuggestions]);
 
   const handleAddEvent = async () => {
     if (!newEvent.title.trim()) {
@@ -87,6 +107,22 @@ export default function Dashboard() {
       await updateEvent(eventId, { completed: true });
       toast.success(`XP earned! 🎉`);
     }
+  };
+
+  const handleAcceptSuggestion = async (suggestionId: string) => {
+    const suggestion = pendingSuggestions.find((item) => item.id === suggestionId);
+    if (!suggestion) return;
+
+    await addEvent({
+      title: suggestion.title,
+      start: suggestion.start,
+      end: suggestion.end,
+      type: suggestion.type,
+      description: suggestion.description,
+      xpValue: suggestion.xpValue,
+    });
+    updatePendingSuggestionStatus(suggestionId, "accepted");
+    toast.success("AI task added to your calendar!");
   };
 
   const getEventColor = (type: string) => {
@@ -204,6 +240,57 @@ export default function Dashboard() {
 
         {/* Sidebar Stats and Today's Schedule */}
         <div className="space-y-6 overflow-y-auto pr-2">
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-blue-500" />
+                AI Recommendations
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {nextPendingSuggestions.length === 0 ? (
+                <div className="space-y-3 rounded-lg border border-dashed p-4">
+                  <p className="text-xs text-muted-foreground">
+                    Your main calendar only shows tasks you have already accepted. Generate a plan in Weekly Sync to see AI recommendations here.
+                  </p>
+                  <Button size="sm" className="w-full" onClick={() => navigate("/weekly-sync")}>
+                    Open Weekly Sync
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  <p className="text-xs text-muted-foreground">
+                    {nextPendingSuggestions.length} pending AI-planned task{nextPendingSuggestions.length === 1 ? "" : "s"} ready to review or add.
+                  </p>
+                  {nextPendingSuggestions.map((suggestion) => (
+                    <div key={suggestion.id} className="rounded-lg border p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium truncate">{suggestion.title}</p>
+                          <p className="text-[11px] text-muted-foreground">
+                            {format(new Date(suggestion.start), "EEE h:mm a")} - {format(new Date(suggestion.end), "h:mm a")}
+                          </p>
+                        </div>
+                        <Badge variant="secondary">{getEventBadge(suggestion.type)}</Badge>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button size="sm" className="flex-1" onClick={() => handleAcceptSuggestion(suggestion.id)}>
+                          Add
+                        </Button>
+                        <Button size="sm" variant="outline" className="flex-1" onClick={() => navigate("/weekly-sync")}>
+                          Review
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => removePendingSuggestion(suggestion.id)}>
+                          X
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </>
+              )}
+            </CardContent>
+          </Card>
+
           {/* Stats Card */}
           <Card>
             <CardHeader className="pb-2">

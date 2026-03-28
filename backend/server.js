@@ -328,13 +328,13 @@ app.post('/api/tasks/bulk', async (req, res) => {
 });
 
 app.post('/api/tasks', async (req, res) => {
-  const { title, start, end, type } = req.body;
+  const { title, description, start, end, type } = req.body;
   console.log('Adding task:', title, 'for user:', req.localUser.id);
   const db = await getDB();
   try {
     const result = await db.run(
-      'INSERT INTO tasks (user_id, title, start_time, end_time, type, status) VALUES (?, ?, ?, ?, ?, "Accepted")',
-      req.localUser.id, title, start, end, type
+      'INSERT INTO tasks (user_id, title, description, start_time, end_time, type, status) VALUES (?, ?, ?, ?, ?, ?, "Accepted")',
+      req.localUser.id, title, description || null, start, end, type
     );
     console.log('Task added with ID:', result.lastID);
     res.json({ success: true, id: result.lastID });

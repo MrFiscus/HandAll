@@ -1,46 +1,72 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Card, CardHeader, CardTitle, CardContent } from "./ui/card";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { Input } from "./ui/input";
-import { useAppStore, CalendarEvent } from "../store/useAppStore";
-import { Check, X, XCircle, Calendar, Clock, Loader2 } from "lucide-react";
-import { format, addDays } from "date-fns";
+import { useAppStore, CalendarEvent, SuggestedTask } from "../store/useAppStore";
+import { Check, X, XCircle, Calendar, Clock, Loader2, Sparkles } from "lucide-react";
+import { format, isAfter } from "date-fns";
 import { toast } from "sonner";
 
-interface SuggestedTask extends CalendarEvent {
-  status: "pending" | "accepted" | "rejected";
-  isImportant?: boolean;
+interface AssignmentInput {
+  id: string;
+  title: string;
+  description: string;
+  dueDate: Date;
+  estimatedHours: number;
+  estimateReason?: string;
 }
 
+const AGENT_USER_ID_KEY = "handall-agent-user-id";
+
 export default function WeeklySync() {
-  const { addEvent, runWeeklySync } = useAppStore();
+  const {
+    addEvent,
+    events,
+    userProfile,
+    lastMotivation,
+    runWeeklySync,
+    loadAppData,
+    apiLoaded,
+    pendingSuggestions,
+    setPendingSuggestions,
+    updatePendingSuggestionStatus,
+    removePendingSuggestion,
+  } = useAppStore();
   const [stage, setStage] = useState<"assignments" | "suggestions">("assignments");
   const [loading, setLoading] = useState(false);
-  const [assignments, setAssignments] = useState<
-    Array<{ id: string; title: string; dueDate: Date; estimatedHours: number }>
-  >([
-    {
-      id: "1",
-      title: "Physics Lab Report",
-      dueDate: addDays(new Date(), 5),
-      estimatedHours: 0,
-    },
-    {
-      id: "2",
-      title: "Math Problem Set",
-      dueDate: addDays(new Date(), 3),
-      estimatedHours: 0,
-    },
-    {
-      id: "3",
-      title: "Literature Essay",
-      dueDate: addDays(new Date(), 7),
-      estimatedHours: 0,
-    },
-  ]);
+  const [assignments, setAssignments] = useState<AssignmentInput[]>([]);
 
-  const [suggestedTasks, setSuggestedTasks] = useState<SuggestedTask[]>([]);
+  useEffect(() => {
+    if (!apiLoaded) {
+      loadAppData();
+    }
+  }, [apiLoaded, loadAppData]);
+
+  const importedAssignments = useMemo(() => {
+    return events
+      .filter((event) => event.type === "assignment" && !event.completed && isAfter(new Date(event.start), new Date()))
+      .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
+      .map((event) => ({
+        id: event.id,
+        title: event.title,
+        description: event.description || "",
+        dueDate: new Date(event.start),
+        estimatedHours: 0,
+      }));
+  }, [events]);
+
+  useEffect(() => {
+    if (assignments.length === 0 && importedAssignments.length > 0) {
+      setAssignments(importedAssignments);
+    }
+  }, [assignments.length, importedAssignments]);
+
+  useEffect(() => {
+    if (pendingSuggestions.length > 0) {
+      setStage("suggestions");
+    }
+  }, [pendingSuggestions.length]);
 
   const handleEstimateChange = (id: string, hours: number) => {
     setAssignments(
@@ -51,68 +77,108 @@ export default function WeeklySync() {
   };
 
   const handleAIEstimate = (id: string) => {
-    const estimates = [3, 4, 5, 6];
-    const randomEstimate = estimates[Math.floor(Math.random() * estimates.length)];
-    handleEstimateChange(id, randomEstimate);
-    toast.success(`AI estimated ${randomEstimate} hours for this task`);
+    const assignment = assignments.find((item) => item.id === id);
+    if (!assignment) return;
+
+    const combined = `${assignment.title} ${assignment.description}`.toLowerCase();
+    let estimate = 2;
+
+    if (/(midterm|final|exam)/.test(combined)) estimate = 4;
+    else if (/(project|implementation|simulator|hash table|openmp|shell)/.test(combined)) estimate = 5;
+    else if (/(lab report|report due)/.test(combined)) estimate = 3;
+    else if (/(discussion post|resume review)/.test(combined)) estimate = 1;
+    else if (/(quiz)/.test(combined)) estimate = 2;
+    else if (/(assignment|homework)/.test(combined)) estimate = 3;
+
+    setAssignments(
+      assignments.map((item) =>
+        item.id === id
+          ? { ...item, estimatedHours: estimate, estimateReason: "Quick local estimate. Weekly planning will refine it with AI." }
+          : item
+      )
+    );
+    toast.success(`Estimated ${estimate} hours for this task`);
   };
 
   const proceedToSuggestions = async () => {
-    if (assignments.some((a) => a.estimatedHours === 0)) {
-      toast.error("Please estimate hours for all assignments");
+    if (assignments.length === 0) {
+      toast.error("Import assignment deadlines from your calendar first.");
       return;
     }
     
     setLoading(true);
     try {
-        const payload = assignments.map(a => ({ title: a.title, hours: a.estimatedHours }));
-        const suggestions = await runWeeklySync(payload);
-        setSuggestedTasks(suggestions.map(s => ({ ...s, status: 'pending' })));
+        const userId = localStorage.getItem(AGENT_USER_ID_KEY) ?? crypto.randomUUID();
+        localStorage.setItem(AGENT_USER_ID_KEY, userId);
+
+        const result = await runWeeklySync({
+          userId,
+          name: userProfile.name || "Student",
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+          wakeTime: userProfile.wakeTime,
+          sleepTime: userProfile.sleepTime,
+          sideGoals: userProfile.sideGoals,
+          motivation: lastMotivation,
+          events,
+          assignments,
+        });
+
+        setAssignments(
+          result.assignments.map((assignment) => ({
+            id: assignment.id,
+            title: assignment.title,
+            description: assignment.description,
+            dueDate: new Date(assignment.due_date),
+            estimatedHours: assignment.estimated_hours,
+            estimateReason: assignment.estimate_reason,
+          }))
+        );
+
+        setPendingSuggestions(
+          result.suggested_tasks.map((task) => ({
+            ...task,
+            start: new Date(task.start),
+            end: new Date(task.end),
+            status: "pending",
+          }))
+        );
         setStage("suggestions");
     } catch (e) {
-        toast.error("Failed to generate suggestions");
+        toast.error(e instanceof Error ? e.message : "Failed to generate suggestions");
     } finally {
         setLoading(false);
     }
   };
 
   const handleAcceptTask = async (taskId: string) => {
-    const task = suggestedTasks.find((t) => t.id === taskId);
+    const task = pendingSuggestions.find((t) => t.id === taskId);
     if (task) {
       await addEvent({
         title: task.title,
         start: task.start,
         end: task.end,
         type: task.type,
+        description: task.description,
         xpValue: task.xpValue,
       });
       
-      setSuggestedTasks(
-        suggestedTasks.map((t) =>
-          t.id === taskId ? { ...t, status: "accepted" } : t
-        )
-      );
+      updatePendingSuggestionStatus(taskId, "accepted");
       toast.success("Task added to your calendar!");
     }
   };
 
   const handleRejectTask = (taskId: string) => {
-    const task = suggestedTasks.find((t) => t.id === taskId);
-    setSuggestedTasks(
-      suggestedTasks.map((t) =>
-        t.id === taskId ? { ...t, status: "rejected" } : t
-      )
-    );
+    updatePendingSuggestionStatus(taskId, "rejected");
     toast.info("Task rejected");
   };
 
   const handleRemoveTask = (taskId: string) => {
-    setSuggestedTasks(suggestedTasks.filter((t) => t.id !== taskId));
+    removePendingSuggestion(taskId);
     toast.success("Time slot freed up");
   };
 
   const finishSync = () => {
-    const acceptedTasks = suggestedTasks.filter((t) => t.status === "accepted");
+    const acceptedTasks = pendingSuggestions.filter((t) => t.status === "accepted");
     toast.success(`Weekly sync complete! ${acceptedTasks.length} tasks scheduled.`);
     setTimeout(() => {
       window.location.href = "/";
@@ -159,10 +225,22 @@ export default function WeeklySync() {
           <CardHeader>
             <CardTitle>Upcoming Assignments</CardTitle>
             <p className="text-sm text-muted-foreground">
-              How long will each assignment take? (AI can estimate for you)
+              Pulled from your imported calendar. Leave hours blank if you want the AI planner to estimate them.
             </p>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="rounded-lg border bg-muted/20 p-4 text-sm text-muted-foreground">
+              Motivation score for this planning run: <span className="font-semibold text-foreground">{lastMotivation}</span>/100
+              {" • "}
+              Side goals in play: <span className="font-semibold text-foreground">{userProfile.sideGoals.length}</span>
+            </div>
+
+            {assignments.length === 0 && (
+              <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+                No assignment deadlines found in your imported calendar yet. Import a calendar with due dates first, then come back to Weekly Sync.
+              </div>
+            )}
+
             {assignments.map((assignment) => (
               <div
                 key={assignment.id}
@@ -173,6 +251,12 @@ export default function WeeklySync() {
                   <p className="text-sm text-muted-foreground">
                     Due: {format(assignment.dueDate, "MMM d, yyyy")}
                   </p>
+                  {assignment.description && (
+                    <p className="mt-1 text-xs text-muted-foreground">{assignment.description}</p>
+                  )}
+                  {assignment.estimateReason && (
+                    <p className="mt-1 text-xs text-blue-600">{assignment.estimateReason}</p>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <Input
@@ -195,15 +279,16 @@ export default function WeeklySync() {
                     size="sm"
                     onClick={() => handleAIEstimate(assignment.id)}
                   >
-                    AI Estimate
+                    <Sparkles className="mr-2 h-4 w-4" />
+                    Quick Estimate
                   </Button>
                 </div>
               </div>
             ))}
 
-            <Button onClick={proceedToSuggestions} className="w-full" size="lg" disabled={loading}>
+            <Button onClick={proceedToSuggestions} className="w-full" size="lg" disabled={loading || assignments.length === 0}>
               {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              {loading ? "Generating Suggestions..." : "Continue to Task Suggestions"}
+              {loading ? "Generating Your Week..." : "Generate Working, Goal, and Free Time Tasks"}
             </Button>
           </CardContent>
         </Card>
@@ -212,11 +297,17 @@ export default function WeeklySync() {
           <CardHeader>
             <CardTitle>Suggested Tasks</CardTitle>
             <p className="text-sm text-muted-foreground">
-              Review and accept/reject suggested tasks. AI schedules only 50% of your free time.
+              Review and accept or reject the AI planner suggestions. Only 50% of your free time is used so the rest stays open.
             </p>
           </CardHeader>
           <CardContent className="space-y-4">
-            {suggestedTasks.map((task) => (
+            {pendingSuggestions.length === 0 && (
+              <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+                No pending AI task recommendations right now. Generate a weekly plan from the assignments step first.
+              </div>
+            )}
+
+            {pendingSuggestions.map((task) => (
               <div
                 key={task.id}
                 className={`p-4 rounded-lg border-2 transition-all ${

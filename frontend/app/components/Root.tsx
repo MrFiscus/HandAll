@@ -39,7 +39,7 @@ const AGENT_USER_ID_KEY = "handall-agent-user-id";
 export default function Root() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { userProfile, isSetupComplete, apiLoaded, loadAppData } = useAppStore();
+  const { userProfile, isSetupComplete, apiLoaded, loadAppData, lastMotivation } = useAppStore();
   const [showChat, setShowChat] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
@@ -142,8 +142,10 @@ export default function Root() {
         },
         body: JSON.stringify({
           user_id: userId,
+          auth_user_id: session?.user?.id ?? null,
           thread_id: threadIdRef.current,
           message: trimmedMessage,
+          motivation: lastMotivation,
         }),
       });
 

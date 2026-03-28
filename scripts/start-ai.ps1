@@ -42,6 +42,7 @@ required_modules = [
     "google.oauth2",
     "googleapiclient.discovery",
     "langchain_google_genai",
+    "tzdata",
 ]
 
 for module_name in required_modules:

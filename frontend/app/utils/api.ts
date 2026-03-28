@@ -1,6 +1,17 @@
 import { supabase } from "../lib/supabase";
 import { CalendarEvent, UserProfile } from "../store/useAppStore";
 
+const AGENT_API_BASE_URL =
+  import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "/agent-api";
+
+function toIsoString(value: Date | string | undefined): string | undefined {
+  if (!value) return undefined;
+  if (value instanceof Date) return value.toISOString();
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
+}
+
 function mapUserProfile(data: any): UserProfile {
   return {
     name: data.username || "Student",
@@ -74,6 +85,7 @@ export const api = {
       headers,
       body: JSON.stringify({
         title: event.title,
+        description: event.description,
         start: event.start.toISOString(),
         end: event.end.toISOString(),
         type: event.type
@@ -166,19 +178,85 @@ export const api = {
     return res.json();
   },
 
-  async runWeeklySync(assignments: { title: string, hours: number }[]): Promise<CalendarEvent[]> {
-    const headers = await getAuthHeaders();
-    const res = await fetch('/api/tasks/weekly-sync', {
+  async runWeeklySync(payload: {
+    userId: string;
+    name: string;
+    timezone: string;
+    wakeTime: string;
+    sleepTime: string;
+    sideGoals: string[];
+    motivation: number;
+    horizonDays?: number;
+    events: CalendarEvent[];
+    assignments: Array<{
+      id?: string;
+      title: string;
+      description?: string;
+      dueDate?: Date;
+      estimatedHours?: number;
+    }>;
+  }): Promise<{
+    success: boolean;
+    assignments: Array<{
+      id: string;
+      title: string;
+      description: string;
+      due_date: string;
+      estimated_hours: number;
+      estimate_reason: string;
+    }>;
+    suggested_tasks: Array<{
+      id: string;
+      title: string;
+      description: string;
+      start: string;
+      end: string;
+      type: "working" | "goal" | "freetime";
+      xpValue: number;
+    }>;
+    meta: Record<string, any>;
+    error?: string;
+  }> {
+    const res = await fetch(`${AGENT_API_BASE_URL}/plan-week`, {
       method: 'POST',
-      headers,
-      body: JSON.stringify({ assignments })
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        user_id: payload.userId,
+        name: payload.name,
+        timezone: payload.timezone,
+        wake_time: payload.wakeTime,
+        sleep_time: payload.sleepTime,
+        side_goals: payload.sideGoals,
+        motivation: payload.motivation,
+        horizon_days: payload.horizonDays ?? 7,
+        events: payload.events.map((event) => ({
+          id: event.id,
+          title: event.title,
+          start: toIsoString(event.start) ?? new Date().toISOString(),
+          end: toIsoString(event.end) ?? new Date().toISOString(),
+          type: event.type,
+          description: event.description ?? "",
+          completed: !!event.completed,
+          sourceUrl: event.sourceUrl,
+        })),
+        assignments: payload.assignments.map((assignment, index) => ({
+          id: assignment.id ?? `assignment-${index + 1}`,
+          title: assignment.title,
+          description: assignment.description ?? "",
+          due_date: toIsoString(assignment.dueDate),
+          estimated_hours: assignment.estimatedHours,
+        })),
+      }),
     });
+
     const data = await res.json();
-    return data.map((t: any, idx: number) => ({
-        ...t,
-        start: new Date(Date.now() + (idx + 1) * 3600000),
-        end: new Date(Date.now() + (idx + 2) * 3600000),
-    }));
+    if (!res.ok || !data.success) {
+      throw new Error(data?.error || 'Failed to generate weekly sync suggestions');
+    }
+
+    return data;
   },
 
   async fetchGoogleCalendarEventTasks(params: {

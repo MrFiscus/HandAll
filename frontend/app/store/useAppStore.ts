@@ -14,6 +14,10 @@ export interface CalendarEvent {
   xpValue?: number;
 }
 
+export interface SuggestedTask extends CalendarEvent {
+  status: "pending" | "accepted" | "rejected";
+}
+
 export interface UserProfile {
   name: string;
   level: number;
@@ -27,6 +31,7 @@ export interface UserProfile {
 export interface AppState {
   userProfile: UserProfile;
   events: CalendarEvent[];
+  pendingSuggestions: SuggestedTask[];
   isSetupComplete: boolean;
   lastMotivation: number;
   lastCalendarSync: Date | null;
@@ -42,7 +47,49 @@ export interface AppState {
   setMotivation: (level: number) => void;
   syncCalendarEvents: (newEvents: CalendarEvent[], sourceUrl?: string) => Promise<void>;
   removeExternalEvents: (sourceUrl?: string) => Promise<void>;
-  runWeeklySync: (assignments: { title: string, hours: number }[]) => Promise<CalendarEvent[]>;
+  setPendingSuggestions: (suggestions: SuggestedTask[]) => void;
+  updatePendingSuggestionStatus: (id: string, status: SuggestedTask["status"]) => void;
+  removePendingSuggestion: (id: string) => void;
+  clearPendingSuggestions: () => void;
+  runWeeklySync: (payload: {
+    userId: string;
+    name: string;
+    timezone: string;
+    wakeTime: string;
+    sleepTime: string;
+    sideGoals: string[];
+    motivation: number;
+    horizonDays?: number;
+    events: CalendarEvent[];
+    assignments: Array<{
+      id?: string;
+      title: string;
+      description?: string;
+      dueDate?: Date;
+      estimatedHours?: number;
+    }>;
+  }) => Promise<{
+    success: boolean;
+    assignments: Array<{
+      id: string;
+      title: string;
+      description: string;
+      due_date: string;
+      estimated_hours: number;
+      estimate_reason: string;
+    }>;
+    suggested_tasks: Array<{
+      id: string;
+      title: string;
+      description: string;
+      start: string;
+      end: string;
+      type: "working" | "goal" | "freetime";
+      xpValue: number;
+    }>;
+    meta: Record<string, any>;
+    error?: string;
+  }>;
 }
 
 export const useAppStore = create<AppState>()(
@@ -58,6 +105,7 @@ export const useAppStore = create<AppState>()(
         calendarUrls: [],
       },
       events: [],
+      pendingSuggestions: [],
       isSetupComplete: false,
       lastMotivation: 50,
       lastCalendarSync: null,
@@ -158,8 +206,24 @@ export const useAppStore = create<AppState>()(
         set({ events: tasks });
       },
 
-      runWeeklySync: async (assignments) => {
-        return await api.runWeeklySync(assignments);
+      setPendingSuggestions: (suggestions) => set({ pendingSuggestions: suggestions }),
+
+      updatePendingSuggestionStatus: (id, status) =>
+        set((state) => ({
+          pendingSuggestions: state.pendingSuggestions.map((suggestion) =>
+            suggestion.id === id ? { ...suggestion, status } : suggestion
+          ),
+        })),
+
+      removePendingSuggestion: (id) =>
+        set((state) => ({
+          pendingSuggestions: state.pendingSuggestions.filter((suggestion) => suggestion.id !== id),
+        })),
+
+      clearPendingSuggestions: () => set({ pendingSuggestions: [] }),
+
+      runWeeklySync: async (payload) => {
+        return await api.runWeeklySync(payload);
       }
     }),
     {

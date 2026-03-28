@@ -4,8 +4,8 @@ import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { Input } from "./ui/input";
 import { useAppStore, CalendarEvent } from "../store/useAppStore";
-import { Check, X, XCircle, Calendar, Clock } from "lucide-react";
-import { format, addDays, addHours } from "date-fns";
+import { Check, X, XCircle, Calendar, Clock, Loader2 } from "lucide-react";
+import { format, addDays } from "date-fns";
 import { toast } from "sonner";
 
 interface SuggestedTask extends CalendarEvent {
@@ -14,8 +14,9 @@ interface SuggestedTask extends CalendarEvent {
 }
 
 export default function WeeklySync() {
-  const { addEvent, userProfile, addXP } = useAppStore();
+  const { addEvent, runWeeklySync } = useAppStore();
   const [stage, setStage] = useState<"assignments" | "suggestions">("assignments");
+  const [loading, setLoading] = useState(false);
   const [assignments, setAssignments] = useState<
     Array<{ id: string; title: string; dueDate: Date; estimatedHours: number }>
   >([
@@ -39,55 +40,7 @@ export default function WeeklySync() {
     },
   ]);
 
-  const [suggestedTasks, setSuggestedTasks] = useState<SuggestedTask[]>([
-    {
-      id: "w1",
-      title: "Physics Lab - Research Phase",
-      start: addHours(new Date(), 24),
-      end: addHours(new Date(), 25.5),
-      type: "working",
-      status: "pending",
-      isImportant: true,
-      xpValue: 50,
-    },
-    {
-      id: "w2",
-      title: "Math Problem Set - Part 1",
-      start: addHours(new Date(), 26),
-      end: addHours(new Date(), 27.5),
-      type: "working",
-      status: "pending",
-      isImportant: true,
-      xpValue: 50,
-    },
-    {
-      id: "g1",
-      title: userProfile.sideGoals[0] || "Practice Guitar",
-      start: addHours(new Date(), 48),
-      end: addHours(new Date(), 49),
-      type: "goal",
-      status: "pending",
-      xpValue: 30,
-    },
-    {
-      id: "f1",
-      title: "Watch a documentary",
-      start: addHours(new Date(), 72),
-      end: addHours(new Date(), 73),
-      type: "freetime",
-      status: "pending",
-      xpValue: 10,
-    },
-    {
-      id: "g2",
-      title: userProfile.sideGoals[1] || "Morning Workout",
-      start: addHours(new Date(), 96),
-      end: addHours(new Date(), 97),
-      type: "goal",
-      status: "pending",
-      xpValue: 30,
-    },
-  ]);
+  const [suggestedTasks, setSuggestedTasks] = useState<SuggestedTask[]>([]);
 
   const handleEstimateChange = (id: string, hours: number) => {
     setAssignments(
@@ -98,75 +51,59 @@ export default function WeeklySync() {
   };
 
   const handleAIEstimate = (id: string) => {
-    // Mock AI estimation
     const estimates = [3, 4, 5, 6];
     const randomEstimate = estimates[Math.floor(Math.random() * estimates.length)];
     handleEstimateChange(id, randomEstimate);
     toast.success(`AI estimated ${randomEstimate} hours for this task`);
   };
 
-  const proceedToSuggestions = () => {
+  const proceedToSuggestions = async () => {
     if (assignments.some((a) => a.estimatedHours === 0)) {
       toast.error("Please estimate hours for all assignments");
       return;
     }
-    setStage("suggestions");
+    
+    setLoading(true);
+    try {
+        const payload = assignments.map(a => ({ title: a.title, hours: a.estimatedHours }));
+        const suggestions = await runWeeklySync(payload);
+        setSuggestedTasks(suggestions.map(s => ({ ...s, status: 'pending' })));
+        setStage("suggestions");
+    } catch (e) {
+        toast.error("Failed to generate suggestions");
+    } finally {
+        setLoading(false);
+    }
   };
 
-  const handleAcceptTask = (taskId: string) => {
-    setSuggestedTasks(
-      suggestedTasks.map((t) =>
-        t.id === taskId ? { ...t, status: "accepted" } : t
-      )
-    );
-
+  const handleAcceptTask = async (taskId: string) => {
     const task = suggestedTasks.find((t) => t.id === taskId);
     if (task) {
-      addEvent({
-        id: task.id,
+      await addEvent({
         title: task.title,
         start: task.start,
         end: task.end,
         type: task.type,
         xpValue: task.xpValue,
       });
+      
+      setSuggestedTasks(
+        suggestedTasks.map((t) =>
+          t.id === taskId ? { ...t, status: "accepted" } : t
+        )
+      );
       toast.success("Task added to your calendar!");
     }
   };
 
   const handleRejectTask = (taskId: string) => {
     const task = suggestedTasks.find((t) => t.id === taskId);
-    if (task?.isImportant) {
-      toast.warning("This is an important task! Consider rescheduling instead.");
-    }
-
     setSuggestedTasks(
       suggestedTasks.map((t) =>
         t.id === taskId ? { ...t, status: "rejected" } : t
       )
     );
-
-    // Generate alternative suggestion
-    setTimeout(() => {
-      const alternatives = {
-        working: "Complete assignment reading",
-        goal: "Short meditation session",
-        freetime: "Listen to podcast",
-      };
-
-      const newTask: SuggestedTask = {
-        id: `alt-${taskId}`,
-        title: alternatives[task!.type as keyof typeof alternatives] || "Alternative task",
-        start: task!.start,
-        end: task!.end,
-        type: task!.type,
-        status: "pending",
-        xpValue: task!.xpValue,
-      };
-
-      setSuggestedTasks((prev) => [...prev.filter((t) => t.id !== taskId), newTask]);
-      toast.info("Suggested an alternative task");
-    }, 500);
+    toast.info("Task rejected");
   };
 
   const handleRemoveTask = (taskId: string) => {
@@ -177,8 +114,6 @@ export default function WeeklySync() {
   const finishSync = () => {
     const acceptedTasks = suggestedTasks.filter((t) => t.status === "accepted");
     toast.success(`Weekly sync complete! ${acceptedTasks.length} tasks scheduled.`);
-    
-    // Navigate back after a delay
     setTimeout(() => {
       window.location.href = "/";
     }, 1500);
@@ -266,8 +201,9 @@ export default function WeeklySync() {
               </div>
             ))}
 
-            <Button onClick={proceedToSuggestions} className="w-full" size="lg">
-              Continue to Task Suggestions
+            <Button onClick={proceedToSuggestions} className="w-full" size="lg" disabled={loading}>
+              {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              {loading ? "Generating Suggestions..." : "Continue to Task Suggestions"}
             </Button>
           </CardContent>
         </Card>
@@ -298,11 +234,6 @@ export default function WeeklySync() {
                       <Badge variant="secondary" className="text-xs">
                         {getTaskBadge(task.type)}
                       </Badge>
-                      {task.isImportant && (
-                        <Badge variant="destructive" className="text-xs">
-                          Important
-                        </Badge>
-                      )}
                     </div>
                     <div className="flex items-center gap-4 text-sm text-muted-foreground">
                       <div className="flex items-center gap-1">
@@ -366,41 +297,6 @@ export default function WeeklySync() {
           </CardContent>
         </Card>
       )}
-
-      <Card>
-        <CardHeader>
-          <CardTitle>How It Works</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex items-start gap-3">
-            <Check className="h-5 w-5 text-green-500 mt-0.5" />
-            <div>
-              <p className="font-medium">Accept Task</p>
-              <p className="text-sm text-muted-foreground">
-                Add this task to your calendar
-              </p>
-            </div>
-          </div>
-          <div className="flex items-start gap-3">
-            <X className="h-5 w-5 text-orange-500 mt-0.5" />
-            <div>
-              <p className="font-medium">Reject Task</p>
-              <p className="text-sm text-muted-foreground">
-                Get an alternative suggestion for this time slot
-              </p>
-            </div>
-          </div>
-          <div className="flex items-start gap-3">
-            <XCircle className="h-5 w-5 text-red-500 mt-0.5" />
-            <div>
-              <p className="font-medium">Remove Task</p>
-              <p className="text-sm text-muted-foreground">
-                Completely free up this time slot (rest time)
-              </p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 }

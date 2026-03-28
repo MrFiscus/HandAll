@@ -14,7 +14,7 @@ import WelcomeGuide from "./WelcomeGuide";
 import CalendarSync from "./CalendarSync";
 
 export default function Dashboard() {
-  const { events, userProfile, addEvent, updateEvent, addXP, loadEventsFromSupabase, supabaseLoaded } = useAppStore();
+  const { events, userProfile, addEvent, updateEvent, loadAppData, apiLoaded } = useAppStore();
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [showAddEvent, setShowAddEvent] = useState(false);
   const [showWelcome, setShowWelcome] = useState(false);
@@ -26,45 +26,19 @@ export default function Dashboard() {
     type: "assignment" as const,
   });
 
-  // Load events from Supabase on first mount
+  // Load app data on first mount
   useEffect(() => {
-    if (!supabaseLoaded) {
-      loadEventsFromSupabase();
+    if (!apiLoaded) {
+      loadAppData();
     }
-  }, [supabaseLoaded, loadEventsFromSupabase]);
+  }, [apiLoaded, loadAppData]);
 
-  // Add sample events on first load and show welcome guide
+  // Welcome guide logic
   useEffect(() => {
     const hasSeenWelcome = localStorage.getItem("handall-welcome-seen");
     if (!hasSeenWelcome) {
       setShowWelcome(true);
       localStorage.setItem("handall-welcome-seen", "true");
-    }
-
-    if (events.length === 0 && supabaseLoaded) {
-      const tomorrow = new Date();
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      
-      const sampleEvents = [
-        {
-          id: "sample-1",
-          title: "Morning Study Session",
-          start: new Date(tomorrow.setHours(9, 0, 0, 0)),
-          end: new Date(tomorrow.setHours(10, 30, 0, 0)),
-          type: "working" as const,
-          xpValue: 50,
-        },
-        {
-          id: "sample-2",
-          title: userProfile.sideGoals[0] || "Exercise",
-          start: new Date(tomorrow.setHours(17, 0, 0, 0)),
-          end: new Date(tomorrow.setHours(18, 0, 0, 0)),
-          type: "goal" as const,
-          xpValue: 30,
-        },
-      ];
-      
-      sampleEvents.forEach(event => addEvent(event));
     }
   }, []);
 
@@ -77,7 +51,7 @@ export default function Dashboard() {
     );
   }, [events, selectedDate]);
 
-  const handleAddEvent = () => {
+  const handleAddEvent = async () => {
     if (!newEvent.title.trim()) {
       toast.error("Please enter a title");
       return;
@@ -86,8 +60,7 @@ export default function Dashboard() {
     const start = new Date(`${newEvent.date}T${newEvent.startTime}`);
     const end = new Date(`${newEvent.date}T${newEvent.endTime}`);
 
-    addEvent({
-      id: Date.now().toString(),
+    await addEvent({
       title: newEvent.title,
       start,
       end,
@@ -106,12 +79,11 @@ export default function Dashboard() {
     });
   };
 
-  const handleCompleteTask = (eventId: string) => {
+  const handleCompleteTask = async (eventId: string) => {
     const event = events.find(e => e.id === eventId);
     if (event && !event.completed) {
-      updateEvent(eventId, { completed: true });
-      addXP(event.xpValue || 0);
-      toast.success(`+${event.xpValue} XP earned! 🎉`);
+      await updateEvent(eventId, { completed: true });
+      toast.success(`XP earned! 🎉`);
     }
   };
 
@@ -308,6 +280,10 @@ export default function Dashboard() {
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">Level Progress</span>
                 <span className="text-sm font-medium">{userProfile.xp % 100}/100 XP</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-muted-foreground">Level</span>
+                <span className="text-sm font-medium">{userProfile.level}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-muted-foreground">Side Goals</span>

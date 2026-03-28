@@ -8,7 +8,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter }
 import { Alert, AlertDescription } from "./ui/alert";
 import { useAppStore } from "../store/useAppStore";
 import { fetchCalendarEvents, getGoogleCalendarICalUrl } from "../utils/calendarSync";
-import { Calendar, Clock, Target, RefreshCw, Info } from "lucide-react";
+import { Calendar, Clock, Target, Info, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Setup() {
@@ -21,48 +21,52 @@ export default function Setup() {
     sideGoals: "",
     calendarUrl: "",
   });
-  const [isLoadingCalendar, setIsLoadingCalendar] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleNext = async () => {
     if (step < 3) {
       setStep(step + 1);
     } else {
-      // Complete setup
-      setUserProfile({
-        wakeTime: formData.wakeTime,
-        sleepTime: formData.sleepTime,
-        sideGoals: formData.sideGoals.split("\n").filter(g => g.trim()),
-        calendarUrls: formData.calendarUrl ? [formData.calendarUrl] : [],
-      });
+      setIsSubmitting(true);
+      try {
+          // Complete setup
+          await setUserProfile({
+            wakeTime: formData.wakeTime,
+            sleepTime: formData.sleepTime,
+            sideGoals: formData.sideGoals.split("\n").filter(g => g.trim()),
+            calendarUrls: formData.calendarUrl ? [formData.calendarUrl] : [],
+          });
 
-      // Sync calendar events if URL is provided
-      if (formData.calendarUrl) {
-        setIsLoadingCalendar(true);
-        try {
-          let icalUrl = formData.calendarUrl;
-          if (formData.calendarUrl.includes("google.com/calendar")) {
-            const converted = getGoogleCalendarICalUrl(formData.calendarUrl);
-            if (converted) {
-              icalUrl = converted;
+          // Sync calendar events if URL is provided
+          if (formData.calendarUrl) {
+            try {
+              let icalUrl = formData.calendarUrl;
+              if (formData.calendarUrl.includes("google.com/calendar")) {
+                const converted = getGoogleCalendarICalUrl(formData.calendarUrl);
+                if (converted) {
+                  icalUrl = converted;
+                }
+              }
+              const events = await fetchCalendarEvents(icalUrl);
+              syncCalendarEvents(events);
+              toast.success(`Synced ${events.length} events from your calendar!`);
+            } catch (error) {
+              console.error("Failed to sync calendar during setup:", error);
+              toast.error("Calendar sync failed. You can try again from the dashboard.");
             }
           }
-          const events = await fetchCalendarEvents(icalUrl);
-          syncCalendarEvents(events);
-          toast.success(`Synced ${events.length} events from your calendar!`);
-        } catch (error) {
-          console.error("Failed to sync calendar during setup:", error);
-          toast.error("Calendar sync failed. You can try again from the dashboard.");
-        } finally {
-          setIsLoadingCalendar(false);
-        }
-      }
 
-      completeSetup();
-      navigate("/");
+          completeSetup();
+          navigate("/");
+      } catch (e) {
+          toast.error("Failed to save profile");
+      } finally {
+          setIsSubmitting(false);
+      }
     }
   };
 
-  const handleCalendarUrlChange = (e) => {
+  const handleCalendarUrlChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const url = e.target.value;
     setFormData({ ...formData, calendarUrl: url });
   };
@@ -105,15 +109,6 @@ export default function Setup() {
                   </AlertDescription>
                 </Alert>
               </div>
-
-              {isLoadingCalendar && (
-                <Alert className="mt-2">
-                  <Info className="h-4 w-4" />
-                  <AlertDescription>
-                    Syncing calendar events...
-                  </AlertDescription>
-                </Alert>
-              )}
             </div>
           )}
 
@@ -181,11 +176,12 @@ export default function Setup() {
 
         <CardFooter className="flex justify-between">
           {step > 1 && (
-            <Button variant="outline" onClick={() => setStep(step - 1)}>
+            <Button variant="outline" onClick={() => setStep(step - 1)} disabled={isSubmitting}>
               Back
             </Button>
           )}
-          <Button className="ml-auto" onClick={handleNext}>
+          <Button className="ml-auto" onClick={handleNext} disabled={isSubmitting}>
+            {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
             {step === 3 ? "Complete Setup" : "Next"}
           </Button>
         </CardFooter>

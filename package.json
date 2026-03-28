@@ -2,8 +2,12 @@
   "name": "handall-root",
   "private": true,
   "scripts": {
-    "start": "npm --prefix app start",
-    "init-db": "npm --prefix app run init-db",
-    "install:app": "npm --prefix app install"
+    "install-all": "npm install; npm --prefix frontend install; npm --prefix backend install",
+    "dev": "concurrently \"npm --prefix backend start\" \"npm --prefix frontend run dev\"",
+    "start": "npm --prefix backend start",
+    "build": "npm --prefix frontend run build"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
   }
 }

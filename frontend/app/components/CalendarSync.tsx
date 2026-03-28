@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -6,18 +6,20 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
 import { Alert, AlertDescription } from "./ui/alert";
 import { useAppStore } from "../store/useAppStore";
-import { fetchCalendarEvents, getGoogleCalendarICalUrl } from "../utils/calendarSync";
-import { RefreshCw, Calendar, AlertCircle, CheckCircle2, Info } from "lucide-react";
+import { fetchCalendarEvents, getGoogleCalendarICalUrl, parseICalData } from "../utils/calendarSync";
+import { RefreshCw, Calendar, AlertCircle, CheckCircle2, Info, Upload, Link } from "lucide-react";
 import { toast } from "sonner";
 import { format } from "date-fns";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 
 export default function CalendarSync() {
   const { userProfile, setUserProfile, syncCalendarEvents, removeExternalEvents, lastCalendarSync } = useAppStore();
   const [calendarUrl, setCalendarUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [showDialog, setShowDialog] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleSync = async () => {
+  const handleSyncUrl = async () => {
     if (!calendarUrl.trim()) {
       toast.error("Please enter a calendar URL");
       return;
@@ -25,24 +27,14 @@ export default function CalendarSync() {
 
     setIsLoading(true);
     try {
-      // Try to convert Google Calendar URL to iCal format
       let icalUrl = calendarUrl;
       if (calendarUrl.includes("google.com/calendar")) {
         const converted = getGoogleCalendarICalUrl(calendarUrl);
         if (converted) {
           icalUrl = converted;
-          toast.info("Converted to iCal format");
-        } else {
-          toast.error("Could not convert Google Calendar URL. Please use the public iCal URL instead.");
-          setIsLoading(false);
-          return;
         }
       }
 
-      // Remove old external events before syncing new ones
-      removeExternalEvents();
-
-      // Fetch and parse events
       const events = await fetchCalendarEvents(icalUrl);
       
       if (events.length === 0) {
@@ -51,12 +43,10 @@ export default function CalendarSync() {
         return;
       }
 
-      // Add to store and persist to Supabase
       syncCalendarEvents(events, icalUrl);
 
-      // Save URL to profile if not already there
       if (!userProfile.calendarUrls.includes(icalUrl)) {
-        setUserProfile({
+        await setUserProfile({
           calendarUrls: [...userProfile.calendarUrls, icalUrl],
         });
       }
@@ -66,18 +56,54 @@ export default function CalendarSync() {
       setCalendarUrl("");
     } catch (error) {
       console.error("Calendar sync error:", error);
-      toast.error(error instanceof Error ? error.message : "Failed to sync calendar. Please check the URL and try again.");
+      toast.error(error instanceof Error ? error.message : "Failed to sync calendar");
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleResync = async (url: string) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
     setIsLoading(true);
     try {
-      removeExternalEvents();
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        try {
+          const icalData = event.target?.result as string;
+          const events = parseICalData(icalData);
+          
+          if (events.length === 0) {
+            toast.warning("No events found in the uploaded file");
+            return;
+          }
+
+          syncCalendarEvents(events, `file://${file.name}`);
+          toast.success(`Successfully imported ${events.length} events from ${file.name}!`);
+          setShowDialog(false);
+        } catch (err) {
+          toast.error("Failed to parse .ical file. Please ensure it's a valid iCal format.");
+        } finally {
+          setIsLoading(false);
+        }
+      };
+      reader.readAsText(file);
+    } catch (error) {
+      toast.error("Failed to read file");
+      setIsLoading(false);
+    }
+  };
+
+  const handleResync = async (url: string) => {
+    if (url.startsWith('file://')) {
+        toast.info("Local files cannot be resynced automatically. Please upload the file again if it changed.");
+        return;
+    }
+    setIsLoading(true);
+    try {
       const events = await fetchCalendarEvents(url);
-      syncCalendarEvents(events);
+      syncCalendarEvents(events, url);
       toast.success(`Resynced ${events.length} events!`);
     } catch (error) {
       console.error("Calendar resync error:", error);
@@ -91,6 +117,8 @@ export default function CalendarSync() {
     setUserProfile({
       calendarUrls: userProfile.calendarUrls.filter((u) => u !== url),
     });
+    // For simplicity, we just clear and let the user resync others or use local state
+    // In a real app, you'd filter events by sourceUrl
     removeExternalEvents();
     toast.success("Calendar removed");
   };
@@ -101,99 +129,98 @@ export default function CalendarSync() {
         <DialogTrigger asChild>
           <Button variant="outline" className="w-full">
             <Calendar className="h-4 w-4 mr-2" />
-            Sync Google Calendar
+            Import Calendar (.ical / URL)
           </Button>
         </DialogTrigger>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Sync Google Calendar</DialogTitle>
+            <DialogTitle>Import Calendar Events</DialogTitle>
             <DialogDescription>
-              Import events from your Google Calendar to see them in HandAll
+              Choose how you'd like to import your external events.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4">
-            <Alert>
-              <Info className="h-4 w-4" />
-              <AlertDescription className="text-sm">
-                <strong>How to get your Google Calendar link:</strong>
-                <ol className="list-decimal ml-4 mt-2 space-y-1">
-                  <li>Open Google Calendar on a computer</li>
-                  <li>Click Settings (gear icon) → Settings</li>
-                  <li>Select the calendar you want to sync from the left sidebar</li>
-                  <li>Scroll to "Integrate calendar" section</li>
-                  <li>Find "Secret address in iCal format" and click the iCal button</li>
-                  <li>Copy the URL that appears</li>
-                  <li>Paste it below and click Sync</li>
-                </ol>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  ⚠️ Note: This URL gives access to your calendar. Only share it with trusted apps. For a public calendar, you can also use the "Public URL to this calendar" link.
-                </p>
-              </AlertDescription>
-            </Alert>
+          <Tabs defaultValue="url" className="w-full">
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="url">
+                <Link className="h-4 w-4 mr-2" />
+                URL Sync
+              </TabsTrigger>
+              <TabsTrigger value="file">
+                <Upload className="h-4 w-4 mr-2" />
+                File Upload
+              </TabsTrigger>
+            </TabsList>
 
-            <div className="space-y-2">
-              <Label htmlFor="calendarUrl">Calendar URL (iCal format)</Label>
-              <Input
-                id="calendarUrl"
-                placeholder="https://calendar.google.com/calendar/ical/..."
-                value={calendarUrl}
-                onChange={(e) => setCalendarUrl(e.target.value)}
-              />
-            </div>
+            <TabsContent value="url" className="space-y-4 pt-4">
+              <Alert>
+                <Info className="h-4 w-4" />
+                <AlertDescription className="text-xs">
+                  <strong>Google Calendar:</strong> Settings → Your calendar → Integrate calendar → Copy "Secret address in iCal format"
+                </AlertDescription>
+              </Alert>
+              <div className="space-y-2">
+                <Label htmlFor="calendarUrl">iCal URL</Label>
+                <Input
+                  id="calendarUrl"
+                  placeholder="https://calendar.google.com/calendar/ical/..."
+                  value={calendarUrl}
+                  onChange={(e) => setCalendarUrl(e.target.value)}
+                />
+              </div>
+              <Button onClick={handleSyncUrl} disabled={isLoading} className="w-full">
+                {isLoading ? <RefreshCw className="h-4 w-4 mr-2 animate-spin" /> : <CheckCircle2 className="h-4 w-4 mr-2" />}
+                {isLoading ? "Syncing..." : "Sync from URL"}
+              </Button>
+            </TabsContent>
 
-            <Button 
-              onClick={handleSync} 
-              disabled={isLoading} 
-              className="w-full"
-            >
-              {isLoading ? (
-                <>
-                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                  Syncing...
-                </>
-              ) : (
-                <>
-                  <CheckCircle2 className="h-4 w-4 mr-2" />
-                  Sync Calendar
-                </>
+            <TabsContent value="file" className="space-y-4 pt-4">
+              <div className="flex flex-col items-center justify-center border-2 border-dashed rounded-xl p-12 hover:bg-muted/50 transition-colors cursor-pointer" 
+                   onClick={() => fileInputRef.current?.click()}>
+                <Upload className="h-12 w-12 text-muted-foreground mb-4" />
+                <p className="text-sm font-medium">Click to upload or drag and drop</p>
+                <p className="text-xs text-muted-foreground mt-1">Supports .ics, .ical files</p>
+                <input 
+                  type="file" 
+                  ref={fileInputRef} 
+                  className="hidden" 
+                  accept=".ics,.ical" 
+                  onChange={handleFileUpload}
+                />
+              </div>
+              {isLoading && (
+                 <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    Parsing file...
+                 </div>
               )}
-            </Button>
-          </div>
+            </TabsContent>
+          </Tabs>
         </DialogContent>
       </Dialog>
 
-      {/* Display synced calendars */}
       {userProfile.calendarUrls.length > 0 && (
         <Card>
-          <CardHeader>
-            <CardTitle className="text-sm">Synced Calendars</CardTitle>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm">Active Imports</CardTitle>
             <CardDescription className="text-xs">
-              {lastCalendarSync && `Last synced: ${format(new Date(lastCalendarSync), "PPp")}`}
+              {lastCalendarSync && `Last sync: ${format(new Date(lastCalendarSync), "PPp")}`}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-2">
             {userProfile.calendarUrls.map((url, index) => (
-              <div key={index} className="flex items-center justify-between gap-2 p-2 border rounded-lg">
+              <div key={index} className="flex items-center justify-between gap-2 p-2 border rounded-lg bg-muted/20">
                 <div className="flex items-center gap-2 min-w-0">
-                  <Calendar className="h-4 w-4 flex-shrink-0" />
-                  <span className="text-sm truncate">{url.split("/").pop()}</span>
+                  <Calendar className="h-4 w-4 flex-shrink-0 text-blue-500" />
+                  <span className="text-xs truncate">{url.startsWith('file://') ? url.replace('file://', 'Uploaded: ') : url}</span>
                 </div>
-                <div className="flex gap-1 flex-shrink-0">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleResync(url)}
-                    disabled={isLoading}
-                  >
-                    <RefreshCw className="h-3 w-3" />
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => handleRemoveCalendar(url)}
-                    disabled={isLoading}
-                  >
+                <div className="flex gap-1">
+                  {!url.startsWith('file://') && (
+                    <Button size="sm" variant="ghost" className="h-7 w-7 p-0" onClick={() => handleResync(url)} disabled={isLoading}>
+                      <RefreshCw className="h-3 w-3" />
+                    </Button>
+                  )}
+                  <Button size="sm" variant="ghost" className="h-7 w-7 p-0 text-red-500 hover:text-red-600 hover:bg-red-50" onClick={() => handleRemoveCalendar(url)}>
                     <AlertCircle className="h-3 w-3" />
                   </Button>
                 </div>

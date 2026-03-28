@@ -30,6 +30,7 @@ export async function initDB() {
     CREATE TABLE IF NOT EXISTS tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER,
+      external_id TEXT,
       title TEXT,
       type TEXT, -- 'Working', 'Goal', 'Free'
       start_time DATETIME,
@@ -48,6 +49,9 @@ export async function initDB() {
 
   // Migration for existing databases created before auth_user_id existed.
   await db.exec('ALTER TABLE users ADD COLUMN auth_user_id TEXT').catch(() => {});
+  
+  // Migration for external_id on tasks
+  await db.exec('ALTER TABLE tasks ADD COLUMN external_id TEXT').catch(() => {});
 
   // Ensure only one legacy local user keeps NULL auth_user_id.
   await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_auth_user_id ON users(auth_user_id)');

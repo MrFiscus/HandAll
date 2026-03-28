@@ -18,10 +18,10 @@ export const api = {
     if (!res.ok) throw new Error('Failed to fetch user');
     const data = await res.json();
     return {
-      level: data.level,
-      xp: data.xp,
-      wakeTime: data.wake_time,
-      sleepTime: data.sleep_time,
+      level: data.level || 0,
+      xp: data.xp || 0,
+      wakeTime: data.wake_time || "07:00",
+      sleepTime: data.sleep_time || "23:00",
       sideGoals: data.side_goal ? [data.side_goal] : [],
       calendarUrls: data.google_calendar_url ? [data.google_calendar_url] : [],
     };
@@ -64,6 +64,24 @@ export const api = {
         end: event.end.toISOString(),
         type: event.type
       })
+    });
+    return res.json();
+  },
+
+  async upsertTasks(events: CalendarEvent[]) {
+    const headers = await getAuthHeaders();
+    // We'll create a new endpoint for bulk upsert to be efficient
+    const res = await fetch('/api/tasks/bulk', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ events: events.map(e => ({
+        id: e.id,
+        title: e.title,
+        start: e.start.toISOString(),
+        end: e.end.toISOString(),
+        type: e.type,
+        completed: e.completed
+      }))})
     });
     return res.json();
   },

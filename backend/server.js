@@ -27,7 +27,6 @@ app.use(cors());
 app.use(bodyParser.json());
 
 // Serve static files from the React app's build directory
-// Note: You'll need to run `npm run build` in the frontend folder first.
 app.use(express.static(path.join(__dirname, '../frontend/dist')));
 
 // Helper to get DB
@@ -35,10 +34,13 @@ const getDB = () => dbPromise;
 
 async function getOrCreateLocalUser(authUser) {
   const db = await getDB();
+  console.log('Fetching/Creating user for auth_id:', authUser.id);
+  
   let user = await db.get('SELECT * FROM users WHERE auth_user_id = ?', authUser.id);
 
   if (!user) {
     const username = authUser.email || authUser.user_metadata?.full_name || 'Student';
+    console.log('Creating new user:', username);
     const result = await db.run(
       'INSERT INTO users (auth_user_id, username, xp, level) VALUES (?, ?, 0, 0)',
       authUser.id,
@@ -52,7 +54,7 @@ async function getOrCreateLocalUser(authUser) {
 
 async function requireAuth(req, res, next) {
   if (!supabase) {
-    // If Supabase is not configured, we might be in a local-only dev mode or misconfigured
+    console.error('Supabase not configured');
     return res.status(500).json({ error: 'Supabase is not configured on the server' });
   }
 
@@ -63,14 +65,20 @@ async function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'Missing auth token' });
   }
 
-  const { data, error } = await supabase.auth.getUser(token);
-  if (error || !data?.user) {
-    return res.status(401).json({ error: 'Invalid or expired auth token' });
-  }
+  try {
+    const { data, error } = await supabase.auth.getUser(token);
+    if (error || !data?.user) {
+      console.error('Auth error:', error);
+      return res.status(401).json({ error: 'Invalid or expired auth token' });
+    }
 
-  req.authUser = data.user;
-  req.localUser = await getOrCreateLocalUser(data.user);
-  next();
+    req.authUser = data.user;
+    req.localUser = await getOrCreateLocalUser(data.user);
+    next();
+  } catch (err) {
+    console.error('Server auth error:', err);
+    res.status(500).json({ error: 'Internal server error during auth' });
+  }
 }
 
 app.get('/api/health', (req, res) => {
@@ -112,26 +120,66 @@ app.get('/api/tasks', async (req, res) => {
     'SELECT * FROM tasks WHERE user_id = ? ORDER BY start_time ASC',
     req.localUser.id
   );
-  // Transform DB rows to frontend format if necessary
+  
   res.json(tasks.map(t => ({
-    id: t.id.toString(),
+    id: t.external_id || t.id.toString(),
+    db_id: t.id, // Keep the real DB ID too
     title: t.title,
     start: t.start_time,
     end: t.end_time,
-    type: t.type.toLowerCase(),
+    type: t.type ? t.type.toLowerCase() : 'working',
     completed: t.status === 'Completed',
-    xpValue: t.type === 'Working' ? 50 : (t.type === 'Goal' ? 30 : 10)
+    xpValue: t.type?.toLowerCase() === 'working' ? 50 : (t.type?.toLowerCase() === 'goal' ? 30 : 10)
   })));
+});
+
+app.post('/api/tasks/bulk', async (req, res) => {
+  const { events } = req.body;
+  const db = await getDB();
+  console.log(`Bulk upserting ${events.length} events for user ${req.localUser.id}`);
+  
+  try {
+    for (const event of events) {
+      // Try matching by external_id first, then fallback to title+start time uniqueness
+      const existing = await db.get(
+        'SELECT id FROM tasks WHERE user_id = ? AND (external_id = ? OR (external_id IS NULL AND title = ? AND start_time = ?))', 
+        req.localUser.id, event.id, event.title, event.start
+      );
+      
+      if (existing) {
+          await db.run(
+              'UPDATE tasks SET title = ?, start_time = ?, end_time = ?, type = ?, status = ?, external_id = ? WHERE id = ?',
+              event.title, event.start, event.end, event.type, event.completed ? 'Completed' : 'Accepted', event.id, existing.id
+          );
+      } else {
+          await db.run(
+              'INSERT INTO tasks (user_id, external_id, title, start_time, end_time, type, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
+              req.localUser.id, event.id, event.title, event.start, event.end, event.type, event.completed ? 'Completed' : 'Accepted'
+          );
+      }
+    }
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Bulk upsert error:', err);
+    res.status(500).json({ error: 'Failed to bulk sync' });
+  }
 });
 
 app.post('/api/tasks', async (req, res) => {
   const { title, start, end, type } = req.body;
+  console.log('Adding task:', title, 'for user:', req.localUser.id);
   const db = await getDB();
-  const result = await db.run(
-    'INSERT INTO tasks (user_id, title, start_time, end_time, type, status) VALUES (?, ?, ?, ?, ?, "Accepted")',
-    req.localUser.id, title, start, end, type,
-  );
-  res.json({ success: true, id: result.lastID });
+  try {
+    const result = await db.run(
+      'INSERT INTO tasks (user_id, title, start_time, end_time, type, status) VALUES (?, ?, ?, ?, ?, "Accepted")',
+      req.localUser.id, title, start, end, type
+    );
+    console.log('Task added with ID:', result.lastID);
+    res.json({ success: true, id: result.lastID });
+  } catch (err) {
+    console.error('Add task error:', err);
+    res.status(500).json({ error: 'Failed to add task' });
+  }
 });
 
 app.patch('/api/tasks/:id', async (req, res) => {
@@ -139,25 +187,31 @@ app.patch('/api/tasks/:id', async (req, res) => {
     const { completed, status } = req.body;
     const db = await getDB();
     
+    // id might be external_id or internal_id
+    const task = await db.get('SELECT * FROM tasks WHERE user_id = ? AND (id = ? OR external_id = ?)', req.localUser.id, id, id);
+    
+    if (!task) {
+        return res.status(404).json({ error: 'Task not found' });
+    }
+
     if (completed !== undefined) {
         const newStatus = completed ? 'Completed' : 'Accepted';
-        await db.run('UPDATE tasks SET status = ? WHERE id = ? AND user_id = ?', newStatus, id, req.localUser.id);
+        await db.run('UPDATE tasks SET status = ? WHERE id = ?', newStatus, task.id);
         
         if (completed) {
-            const task = await db.get('SELECT type FROM tasks WHERE id = ?', id);
             let xpGained = 10;
-            if(task.type.toLowerCase() === 'working') xpGained = 50;
-            if(task.type.toLowerCase() === 'goal') xpGained = 30;
+            if(task.type?.toLowerCase() === 'working') xpGained = 50;
+            if(task.type?.toLowerCase() === 'goal') xpGained = 30;
 
             const user = await db.get('SELECT * FROM users WHERE id = ?', req.localUser.id);
-            const newXp = user.xp + xpGained;
+            const newXp = (user.xp || 0) + xpGained;
             const newLevel = Math.floor(newXp / 100);
 
             await db.run('UPDATE users SET xp = ?, level = ? WHERE id = ?', newXp, newLevel, req.localUser.id);
             return res.json({ success: true, xpGained, newLevel, newXp });
         }
     } else if (status) {
-        await db.run('UPDATE tasks SET status = ? WHERE id = ? AND user_id = ?', status, id, req.localUser.id);
+        await db.run('UPDATE tasks SET status = ? WHERE id = ?', status, task.id);
     }
     
     res.json({ success: true });
@@ -166,58 +220,11 @@ app.patch('/api/tasks/:id', async (req, res) => {
 app.delete('/api/tasks/:id', async (req, res) => {
     const { id } = req.params;
     const db = await getDB();
-    await db.run('DELETE FROM tasks WHERE id = ? AND user_id = ?', id, req.localUser.id);
+    await db.run('DELETE FROM tasks WHERE user_id = ? AND (id = ? OR external_id = ?)', req.localUser.id, id, id);
     res.json({ success: true });
 });
 
-app.post('/api/tasks/weekly-sync', async (req, res) => {
-  const { assignments } = req.body; // Array of { title, hours }
-  const db = await getDB();
-  const user = req.localUser;
-
-  const pendingTasks = [];
-  if (assignments && assignments.length > 0) {
-      assignments.forEach(a => {
-        const decomposed = AI.decomposeTask(a.title, a.hours || 2);
-        pendingTasks.push(...decomposed);
-      });
-  } else {
-      // Default mock if none provided
-      const mockAssignments = [
-        { title: 'Math Problem Set', hours: 3 },
-        { title: 'History Essay', hours: 2 }
-      ];
-      mockAssignments.forEach(a => {
-        const decomposed = AI.decomposeTask(a.title, a.hours);
-        pendingTasks.push(...decomposed);
-      });
-  }
-
-  for(let i=0; i<2; i++) {
-    pendingTasks.push(AI.suggestGoalTask(user.side_goal));
-    pendingTasks.push(AI.suggestFreeTimeTask());
-  }
-
-  // Return suggested tasks for user review (frontend will then POST back to /api/tasks to confirm)
-  res.json(pendingTasks.map((t, idx) => ({
-      id: `suggested-${Date.now()}-${idx}`,
-      title: t.title,
-      type: t.type.toLowerCase(),
-      xpValue: t.type === 'Working' ? 50 : (t.type === 'Goal' ? 30 : 10)
-  })));
-});
-
-// --- Chat Endpoint ---
-app.post('/api/chat', (req, res) => {
-  const { message } = req.body;
-  let reply = "I'm not sure how to help with that yet. Try asking me to add a task!";
-  if(message.toLowerCase().includes('add')) {
-    reply = "I've added that to your list for review!";
-  }
-  res.json({ reply });
-});
-
-// Fallback for SPA (React Router)
+// Fallback for SPA
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
 });

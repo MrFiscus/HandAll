@@ -143,19 +143,27 @@ TOOLS = [list_events, manage_event]
 
 
 def fetch_user_data(state: AgentState) -> Dict[str, Any]:
-    """Load a user's profile from Supabase and place it into state['user_metadata']."""
+    """Load a user's profile from Supabase and place it into state['user_metadata'].""" 
     supabase = get_supabase_client()
     user_id = state["user_id"]
 
-    response = (
-        supabase.table("profiles")
-        .select("name, timezone, prefs")
-        .eq("id", user_id)
-        .single()
-        .execute()
-    )
+    try:
+        response = (
+            supabase.table("profiles")
+            .select("name, timezone, prefs")
+            .eq("id", user_id)
+            .limit(1)
+            .execute()
+        )
+        if isinstance(response.data, list) and response.data:
+            profile = response.data[0]
+        elif isinstance(response.data, dict):
+            profile = response.data
+        else:
+            profile = {}
+    except Exception:
+        profile = {}
 
-    profile = response.data or {}
     user_metadata = {
         "name": profile.get("name", "there"),
         "timezone": profile.get("timezone", "UTC"),

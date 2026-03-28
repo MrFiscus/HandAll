@@ -10,23 +10,34 @@ import { dbPromise } from './src/db.js';
 import * as AI from './src/ai.js';
 import { fetchGoogleCalendarEvents } from './src/googleCalendar.js';
 
-dotenv.config();
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootEnvFile = path.join(__dirname, '../.env');
+const frontendEnvFile = path.join(__dirname, '../frontend/.env');
 const frontendDistDir = path.join(__dirname, '../frontend/dist');
 const frontendIndexFile = path.join(frontendDistDir, 'index.html');
 const hasFrontendBuild = fs.existsSync(frontendIndexFile);
 const calendarImportsDir = path.join(__dirname, 'imports', 'generated');
 
+// Load env: repo root first (shared), then optional frontend/.env (Vite-style names).
 dotenv.config({ path: rootEnvFile });
+dotenv.config({ path: frontendEnvFile });
+dotenv.config(); // cwd fallback (e.g. backend/.env)
 
 const app = express();
 const PORT = 3001;
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+// Supabase JS auth.validateUserToken expects the project URL + anon (publishable) key.
+// Support common .env spellings: SUPABASE_ANON_KEY, SUPABASE_KEY, VITE_SUPABASE_*.
+const SUPABASE_URL =
+  process.env.SUPABASE_URL ||
+  process.env.VITE_SUPABASE_URL ||
+  '';
+const SUPABASE_ANON_KEY =
+  process.env.SUPABASE_ANON_KEY ||
+  process.env.SUPABASE_KEY ||
+  process.env.VITE_SUPABASE_ANON_KEY ||
+  '';
 
 const supabase = SUPABASE_URL && SUPABASE_ANON_KEY
   ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
@@ -61,7 +72,7 @@ async function getUserWithCalendarSources(localUserId) {
 async function getOrCreateLocalUser(authUser) {
   const db = await getDB();
   console.log('Fetching/Creating user for auth_id:', authUser.id);
-  
+
   let user = await db.get('SELECT * FROM users WHERE auth_user_id = ?', authUser.id);
 
   if (!user) {
@@ -72,7 +83,14 @@ async function getOrCreateLocalUser(authUser) {
       authUser.id,
       username
     );
-    user = await db.get('SELECT * FROM users WHERE id = ?', result.lastID);
+    // sqlite/sqlite3 promise wrappers sometimes omit lastID; never trust it alone.
+    const lastId = result?.lastID ?? result?.lastInsertRowid;
+    if (lastId != null && Number.isFinite(Number(lastId))) {
+      user = await db.get('SELECT * FROM users WHERE id = ?', Number(lastId));
+    }
+    if (!user) {
+      user = await db.get('SELECT * FROM users WHERE auth_user_id = ?', authUser.id);
+    }
   }
 
   return user;
@@ -100,6 +118,10 @@ async function requireAuth(req, res, next) {
 
     req.authUser = data.user;
     req.localUser = await getOrCreateLocalUser(data.user);
+    if (!req.localUser?.id) {
+      console.error('No local user row after getOrCreate for auth id:', data.user.id);
+      return res.status(500).json({ error: 'Failed to load or create your profile' });
+    }
     next();
   } catch (err) {
     console.error('Server auth error:', err);
@@ -328,19 +350,46 @@ app.post('/api/tasks/bulk', async (req, res) => {
 });
 
 app.post('/api/tasks', async (req, res) => {
-  const { title, description, start, end, type } = req.body;
-  console.log('Adding task:', title, 'for user:', req.localUser.id);
-  const db = await getDB();
   try {
+    const rawId = req.localUser?.id;
+    const localUserId =
+      rawId == null ? NaN : typeof rawId === 'bigint' ? Number(rawId) : Number(rawId);
+    if (!Number.isFinite(localUserId)) {
+      return res.status(500).json({ error: 'User session not bound to a local profile' });
+    }
+
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const title = body.title != null ? String(body.title).trim() : '';
+    const description =
+      body.description != null && String(body.description).trim() !== ''
+        ? String(body.description).trim()
+        : null;
+    const start = body.start != null ? String(body.start) : '';
+    const end = body.end != null ? String(body.end) : '';
+    const type = body.type != null ? String(body.type) : 'assignment';
+
+    if (!title || !start || !end) {
+      return res.status(400).json({ error: 'title, start, and end are required' });
+    }
+
+    const db = await getDB();
+    console.log('Adding task:', title, 'for user:', localUserId);
     const result = await db.run(
       'INSERT INTO tasks (user_id, title, description, start_time, end_time, type, status) VALUES (?, ?, ?, ?, ?, ?, "Accepted")',
-      req.localUser.id, title, description || null, start, end, type
+      localUserId,
+      title,
+      description,
+      start,
+      end,
+      type
     );
-    console.log('Task added with ID:', result.lastID);
-    res.json({ success: true, id: result.lastID });
+    const newId = result?.lastID ?? result?.lastInsertRowid;
+    console.log('Task added with ID:', newId);
+    res.json({ success: true, id: newId });
   } catch (err) {
     console.error('Add task error:', err);
-    res.status(500).json({ error: 'Failed to add task' });
+    const message = err instanceof Error ? err.message : 'Failed to add task';
+    res.status(500).json({ error: message });
   }
 });
 

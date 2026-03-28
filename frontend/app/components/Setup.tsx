@@ -49,26 +49,43 @@ export default function Setup() {
           calendarUrls,
         });
 
-        const profileSyncResponse = await fetch(`${AGENT_API_BASE_URL}/profile/sync`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            user_id: userId,
-            name: formData.name.trim() || "Student",
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-            prefs: {
-              wakeTime: formData.wakeTime,
-              sleepTime: formData.sleepTime,
-              sideGoals,
-              calendarUrls,
+        // Optional: Python FastAPI agent (port 8011). Core app uses Express + SQLite; do not block setup if agent is off.
+        try {
+          const profileSyncResponse = await fetch(`${AGENT_API_BASE_URL}/profile/sync`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
             },
-          }),
-        });
-
-        if (!profileSyncResponse.ok) {
-          throw new Error(`AI backend returned ${profileSyncResponse.status}`);
+            body: JSON.stringify({
+              user_id: userId,
+              name: formData.name.trim() || "Student",
+              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+              prefs: {
+                wakeTime: formData.wakeTime,
+                sleepTime: formData.sleepTime,
+                sideGoals,
+                calendarUrls,
+              },
+            }),
+          });
+          const agentPayload = await profileSyncResponse.json().catch(() => null);
+          const agentOk =
+            profileSyncResponse.ok && agentPayload && agentPayload.success !== false;
+          if (!agentOk) {
+            console.warn(
+              "AI profile/sync skipped or failed:",
+              profileSyncResponse.status,
+              agentPayload,
+            );
+            toast.warning(
+              "AI agent is offline or returned an error. Your profile was saved — run `npm run install-all` and dev to enable chat.",
+            );
+          }
+        } catch (agentErr) {
+          console.warn("AI backend unreachable (optional):", agentErr);
+          toast.warning(
+            "Could not reach the AI backend. Your profile was saved — start the agent (port 8011) for chat features.",
+          );
         }
 
         if (resolvedCalendarUrl) {
@@ -86,7 +103,11 @@ export default function Setup() {
         navigate("/");
       } catch (error) {
         console.error("Failed to complete setup:", error);
-        toast.error("Failed to save profile or sync the AI backend.");
+        const msg =
+          error instanceof Error
+            ? error.message
+            : "Failed to complete setup.";
+        toast.error(msg);
       } finally {
         setIsSubmitting(false);
       }

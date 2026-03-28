@@ -28,7 +28,8 @@ if (-not $env:SUPABASE_KEY -and $env:SUPABASE_ANON_KEY) {
 }
 
 if (-not (Test-Path $pythonExe)) {
-  Write-Error "Python environment not found. Run 'npm run install-all' first."
+  Write-Warning "Python AI backend skipped: no venv at $venvDir. Run 'npm run install-all' (or scripts\setup-ai.ps1) to enable the agent on port 8011."
+  exit 0
 }
 
 if (-not (Test-Path $uvicornExe)) {

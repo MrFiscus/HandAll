@@ -28,12 +28,13 @@ function mapUserProfile(data: any): UserProfile {
 
 async function getAuthHeaders() {
   if (!supabase) return { 'Content-Type': 'application/json' };
-  
+
   const { data: { session } } = await supabase.auth.getSession();
-  return {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${session?.access_token}`
-  };
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (session?.access_token) {
+    headers.Authorization = `Bearer ${session.access_token}`;
+  }
+  return headers;
 }
 
 export const api = {
@@ -47,6 +48,13 @@ export const api = {
 
   async updateUserSetup(profile: Partial<UserProfile>): Promise<{ success: boolean; user?: UserProfile }> {
     const headers = await getAuthHeaders();
+    if (!headers.Authorization) {
+      throw new Error(
+        supabase
+          ? 'Not signed in. Please log in again before completing setup.'
+          : 'Supabase is not configured.',
+      );
+    }
     const res = await fetch('/api/user/setup', {
       method: 'POST',
       headers,
@@ -59,7 +67,12 @@ export const api = {
         calendar_urls: profile.calendarUrls
       })
     });
-    const data = await res.json();
+    const data = (await res.json().catch(() => null)) ?? {};
+    if (!res.ok) {
+      const msg =
+        typeof data.error === 'string' ? data.error : `Failed to save profile (${res.status})`;
+      throw new Error(msg);
+    }
     return {
       success: !!data.success,
       user: data.user ? mapUserProfile(data.user) : undefined,
@@ -80,6 +93,13 @@ export const api = {
 
   async addTask(event: Omit<CalendarEvent, 'id'>) {
     const headers = await getAuthHeaders();
+    if (!headers.Authorization) {
+      throw new Error(
+        supabase
+          ? 'Not signed in. Please log in again.'
+          : 'Supabase is not configured. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY.',
+      );
+    }
     const res = await fetch('/api/tasks', {
       method: 'POST',
       headers,
@@ -91,7 +111,18 @@ export const api = {
         type: event.type
       })
     });
-    return res.json();
+    const data = (await res.json().catch(() => null)) ?? {};
+    if (!res.ok) {
+      const msg =
+        typeof data?.error === 'string' ? data.error : `Request failed (${res.status})`;
+      throw new Error(msg);
+    }
+    if (data && data.success === false) {
+      throw new Error(
+        typeof data.error === 'string' ? data.error : 'Failed to add task',
+      );
+    }
+    return data;
   },
 
   async upsertTasks(events: CalendarEvent[], sourceUrl?: string) {

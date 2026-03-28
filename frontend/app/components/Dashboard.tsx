@@ -82,23 +82,34 @@ export default function Dashboard() {
       return;
     }
 
-    await addEvent({
-      title: newEvent.title,
-      start,
-      end,
-      type: newEvent.type,
-      xpValue: newEvent.type === "working" ? 50 : newEvent.type === "goal" ? 30 : 10,
-    });
+    try {
+      await addEvent({
+        title: newEvent.title,
+        start,
+        end,
+        type: newEvent.type,
+        xpValue:
+          newEvent.type === "working"
+            ? 50
+            : newEvent.type === "goal"
+              ? 30
+              : 10,
+      });
 
-    toast.success("Event added to calendar!");
-    setShowAddEvent(false);
-    setNewEvent({
-      title: "",
-      date: format(new Date(), "yyyy-MM-dd"),
-      startTime: "09:00",
-      endTime: "10:00",
-      type: "assignment",
-    });
+      toast.success("Event added to calendar!");
+      setShowAddEvent(false);
+      setNewEvent({
+        title: "",
+        date: format(new Date(), "yyyy-MM-dd"),
+        startTime: "09:00",
+        endTime: "10:00",
+        type: "assignment",
+      });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Could not save this event.";
+      toast.error(message);
+    }
   };
 
   const handleCompleteTask = async (eventId: string) => {
@@ -160,7 +171,7 @@ export default function Dashboard() {
         <div className="flex gap-2">
            <Dialog open={showAddEvent} onOpenChange={setShowAddEvent}>
             <DialogTrigger asChild>
-              <Button>
+              <Button type="button">
                 <Plus className="mr-2 h-4 w-4" />
                 Add Event
               </Button>
@@ -223,7 +234,7 @@ export default function Dashboard() {
                     </SelectContent>
                   </Select>
                 </div>
-                <Button onClick={handleAddEvent} className="w-full">
+                <Button type="button" onClick={handleAddEvent} className="w-full">
                   Add Event
                 </Button>
               </div>

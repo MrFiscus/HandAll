@@ -147,13 +147,11 @@ export const useAppStore = create<AppState>()(
 
       addEvent: async (event) => {
         try {
-          const res = await api.addTask(event);
-          if (res.success) {
-              const tasks = await api.fetchTasks();
-              set({ events: tasks });
-          } else {
-              throw new Error(res.error || "Failed to add task");
-          }
+          // addTask throws on HTTP/errors; do not require res.success — some proxies
+          // or clients can return 2xx with a minimal body where success is omitted.
+          await api.addTask(event);
+          const tasks = await api.fetchTasks();
+          set({ events: tasks });
         } catch (err) {
           console.error("Add event error:", err);
           throw err;

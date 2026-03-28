@@ -47,6 +47,18 @@ export async function initDB() {
       url TEXT,
       FOREIGN KEY(user_id) REFERENCES users(id)
     );
+
+    CREATE TABLE IF NOT EXISTS calendar_imports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      source_url TEXT NOT NULL,
+      import_type TEXT DEFAULT 'ical',
+      event_count INTEGER DEFAULT 0,
+      file_path TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    );
   `);
 
   // Migration for existing databases created before auth_user_id existed.

@@ -12,6 +12,7 @@ import { toast } from "sonner";
 import { format } from "date-fns";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { CalendarEvent } from "../store/useAppStore";
+import { api } from "../utils/api";
 
 export default function CalendarSync() {
   const { userProfile, setUserProfile, syncCalendarEvents, removeExternalEvents, lastCalendarSync } = useAppStore();
@@ -35,7 +36,23 @@ export default function CalendarSync() {
 
     setIsLoading(true);
     try {
+      const previewTasks = convertCalendarEventsToTaskPreview(previewEvents);
+
       await syncCalendarEvents(previewEvents, previewSource);
+      const persistenceResult = await api.saveCalendarImportBreakdown({
+        sourceUrl: previewSource,
+        importType: previewSource.startsWith("file://") ? "file-upload" : "url-sync",
+        events: previewEvents.map((event) => ({
+          id: event.id,
+          title: event.title,
+          description: event.description,
+          start: event.start.toISOString(),
+          end: event.end.toISOString(),
+          type: event.type,
+          sourceUrl: event.sourceUrl ?? previewSource,
+        })),
+        tasks: previewTasks,
+      });
 
       if (!userProfile.calendarUrls.includes(previewSource)) {
         await setUserProfile({
@@ -43,7 +60,7 @@ export default function CalendarSync() {
         });
       }
 
-      toast.success(`Imported ${previewEvents.length} events into HandAll!`);
+      toast.success(`Imported ${previewEvents.length} events into HandAll and saved the breakdown to ${persistenceResult.filePath}.`);
       clearPreview();
       setShowDialog(false);
       setCalendarUrl("");

@@ -128,6 +128,44 @@ export const api = {
     return res.json();
   },
 
+  async saveCalendarImportBreakdown(payload: {
+    sourceUrl: string;
+    importType?: string;
+    events: Array<{
+      id: string;
+      title: string;
+      start: string;
+      end: string;
+      type: string;
+      description?: string;
+      sourceUrl?: string;
+    }>;
+    tasks: Array<{
+      task_name: string;
+      details: string;
+      due_start: string;
+      due_end: string;
+      category: string;
+      priority: string;
+      location?: string;
+      source_event_id: string;
+    }>;
+  }) {
+    const headers = await getAuthHeaders();
+    const res = await fetch('/api/calendar-imports', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => null);
+      throw new Error(errorData?.error || 'Failed to save calendar import breakdown');
+    }
+
+    return res.json();
+  },
+
   async runWeeklySync(assignments: { title: string, hours: number }[]): Promise<CalendarEvent[]> {
     const headers = await getAuthHeaders();
     const res = await fetch('/api/tasks/weekly-sync', {

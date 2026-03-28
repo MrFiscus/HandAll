@@ -18,6 +18,7 @@ const rootEnvFile = path.join(__dirname, '../.env');
 const frontendDistDir = path.join(__dirname, '../frontend/dist');
 const frontendIndexFile = path.join(frontendDistDir, 'index.html');
 const hasFrontendBuild = fs.existsSync(frontendIndexFile);
+const calendarImportsDir = path.join(__dirname, 'imports', 'generated');
 
 dotenv.config({ path: rootEnvFile });
 
@@ -37,6 +38,8 @@ app.use(bodyParser.json());
 if (hasFrontendBuild) {
   app.use(express.static(frontendDistDir));
 }
+
+fs.mkdirSync(calendarImportsDir, { recursive: true });
 
 // Helper to get DB
 const getDB = () => dbPromise;
@@ -160,6 +163,64 @@ app.get('/api/google-calendar/events', async (req, res) => {
     console.error('Google Calendar import error:', error);
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to fetch Google Calendar events',
+    });
+  }
+});
+
+app.post('/api/calendar-imports', async (req, res) => {
+  const { sourceUrl, importType, events, tasks } = req.body;
+
+  if (typeof sourceUrl !== 'string' || !sourceUrl.trim()) {
+    return res.status(400).json({ error: 'sourceUrl is required' });
+  }
+
+  if (!Array.isArray(events) || !Array.isArray(tasks)) {
+    return res.status(400).json({ error: 'events and tasks arrays are required' });
+  }
+
+  try {
+    const db = await getDB();
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeSource = sourceUrl
+      .replace(/^file:\/\//, '')
+      .replace(/[^a-zA-Z0-9-_]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80) || 'calendar-import';
+    const fileName = `${timestamp}-${safeSource}.json`;
+    const relativePath = path.join('backend', 'imports', 'generated', fileName);
+    const absolutePath = path.join(calendarImportsDir, fileName);
+
+    const payload = {
+      sourceUrl,
+      importType: typeof importType === 'string' ? importType : 'ical',
+      importedAt: new Date().toISOString(),
+      eventCount: events.length,
+      events,
+      tasks,
+    };
+
+    fs.writeFileSync(absolutePath, JSON.stringify(payload, null, 2), 'utf8');
+
+    const result = await db.run(
+      `INSERT INTO calendar_imports (user_id, source_url, import_type, event_count, file_path, payload_json)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      req.localUser.id,
+      sourceUrl,
+      payload.importType,
+      events.length,
+      relativePath,
+      JSON.stringify(payload)
+    );
+
+    res.json({
+      success: true,
+      importId: result.lastID,
+      filePath: relativePath,
+    });
+  } catch (error) {
+    console.error('Calendar import persistence error:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to persist calendar import',
     });
   }
 });

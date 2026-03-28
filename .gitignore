@@ -10,6 +10,7 @@ package-lock.json
 .env
 .env.local
 backend/credentials/*.json
+backend/imports/generated/*.json
 
 # Logs
 npm-debug.log*

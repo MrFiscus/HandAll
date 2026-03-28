@@ -1,5 +1,13 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import {
+  fetchEventsFromSupabase,
+  upsertEventsToSupabase,
+  addEventToSupabase,
+  deleteEventFromSupabase,
+  updateEventInSupabase,
+  removeExternalEventsFromSupabase,
+} from "../utils/supabaseEvents";
 
 export interface CalendarEvent {
   id: string;
@@ -27,7 +35,8 @@ export interface AppState {
   isSetupComplete: boolean;
   lastMotivation: number;
   lastCalendarSync: Date | null;
-  
+  supabaseLoaded: boolean;
+
   // Actions
   setUserProfile: (profile: Partial<UserProfile>) => void;
   addEvent: (event: CalendarEvent) => void;
@@ -36,13 +45,14 @@ export interface AppState {
   completeSetup: () => void;
   setMotivation: (level: number) => void;
   addXP: (amount: number) => void;
-  syncCalendarEvents: (newEvents: CalendarEvent[]) => void;
+  syncCalendarEvents: (newEvents: CalendarEvent[], sourceUrl?: string) => void;
   removeExternalEvents: () => void;
+  loadEventsFromSupabase: () => Promise<void>;
 }
 
 export const useAppStore = create<AppState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       userProfile: {
         level: 0,
         xp: 0,
@@ -55,28 +65,36 @@ export const useAppStore = create<AppState>()(
       isSetupComplete: false,
       lastMotivation: 50,
       lastCalendarSync: null,
+      supabaseLoaded: false,
 
       setUserProfile: (profile) =>
         set((state) => ({
           userProfile: { ...state.userProfile, ...profile },
         })),
 
-      addEvent: (event) =>
+      addEvent: (event) => {
         set((state) => ({
           events: [...state.events, event],
-        })),
+        }));
+        // Fire-and-forget Supabase sync
+        addEventToSupabase(event).catch(console.error);
+      },
 
-      removeEvent: (id) =>
+      removeEvent: (id) => {
         set((state) => ({
           events: state.events.filter((e) => e.id !== id),
-        })),
+        }));
+        deleteEventFromSupabase(id).catch(console.error);
+      },
 
-      updateEvent: (id, updates) =>
+      updateEvent: (id, updates) => {
         set((state) => ({
           events: state.events.map((e) =>
             e.id === id ? { ...e, ...updates } : e
           ),
-        })),
+        }));
+        updateEventInSupabase(id, updates).catch(console.error);
+      },
 
       completeSetup: () => set({ isSetupComplete: true }),
 
@@ -95,16 +113,32 @@ export const useAppStore = create<AppState>()(
           };
         }),
 
-      syncCalendarEvents: (newEvents) =>
+      syncCalendarEvents: (newEvents, sourceUrl) => {
         set((state) => ({
           events: [...state.events, ...newEvents],
           lastCalendarSync: new Date(),
-        })),
+        }));
+        // Persist synced events to Supabase
+        upsertEventsToSupabase(newEvents, sourceUrl).catch(console.error);
+      },
 
-      removeExternalEvents: () =>
+      removeExternalEvents: () => {
         set((state) => ({
           events: state.events.filter((e) => e.type !== "external"),
-        })),
+        }));
+        removeExternalEventsFromSupabase().catch(console.error);
+      },
+
+      loadEventsFromSupabase: async () => {
+        try {
+          const events = await fetchEventsFromSupabase();
+          set({ events, supabaseLoaded: true });
+        } catch (error) {
+          console.error("Failed to load events from Supabase:", error);
+          // Keep local events if Supabase fails
+          set({ supabaseLoaded: true });
+        }
+      },
     }),
     {
       name: "handall-storage",

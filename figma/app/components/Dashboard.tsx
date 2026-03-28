@@ -14,7 +14,7 @@ import WelcomeGuide from "./WelcomeGuide";
 import CalendarSync from "./CalendarSync";
 
 export default function Dashboard() {
-  const { events, userProfile, addEvent, updateEvent, addXP } = useAppStore();
+  const { events, userProfile, addEvent, updateEvent, addXP, loadEventsFromSupabase, supabaseLoaded } = useAppStore();
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [showAddEvent, setShowAddEvent] = useState(false);
   const [showWelcome, setShowWelcome] = useState(false);
@@ -26,6 +26,13 @@ export default function Dashboard() {
     type: "assignment" as const,
   });
 
+  // Load events from Supabase on first mount
+  useEffect(() => {
+    if (!supabaseLoaded) {
+      loadEventsFromSupabase();
+    }
+  }, [supabaseLoaded, loadEventsFromSupabase]);
+
   // Add sample events on first load and show welcome guide
   useEffect(() => {
     const hasSeenWelcome = localStorage.getItem("handall-welcome-seen");
@@ -34,7 +41,7 @@ export default function Dashboard() {
       localStorage.setItem("handall-welcome-seen", "true");
     }
 
-    if (events.length === 0) {
+    if (events.length === 0 && supabaseLoaded) {
       const tomorrow = new Date();
       tomorrow.setDate(tomorrow.getDate() + 1);
       

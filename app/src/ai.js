@@ -1,45 +1,30 @@
-// AI Logic Service - Simulating DeepSeek API
-export const decomposeTask = (title, totalHours) => {
-  const chunks = [];
-  for (let i = 0; i < totalHours; i++) {
-    chunks.push({
-      title: `${title} - Part ${i + 1}`,
-      type: 'Working',
-      duration: 1 // hour
-    });
-  }
-  return chunks;
-};
+export async function estimateEffort(task) {
+    console.log(`AI: Estimating effort for ${task.title}...`);
+    // Mock AI estimation
+    return 4; // hours
+}
 
-export const suggestGoalTask = (sideGoal) => {
-  const activities = [
-    `Progress ${sideGoal}: Skill Drill`,
-    `Focus on ${sideGoal} basics`,
-    `Advanced practice: ${sideGoal}`
-  ];
-  return {
-    title: activities[Math.floor(Math.random() * activities.length)],
-    type: 'Goal',
-    duration: 1
-  };
-};
+export async function decomposeBigTask(task, estimatedHours) {
+    console.log(`AI: Decomposing ${task.title} into chunks of ${estimatedHours} hours total...`);
+    const chunks = [];
+    for(let i=0; i < estimatedHours; i++) {
+        chunks.push({ 
+            ...task, 
+            id: `${task.id}-${i}`, 
+            title: `${task.title} - Part ${i+1}`, 
+            duration: 1, 
+            type: "Working Time Task" 
+        });
+    }
+    return chunks;
+}
 
-export const suggestFreeTimeTask = () => {
-  const activities = [
-    "Quick nap",
-    "Short walk in nature",
-    "Casual gaming",
-    "Read 5 pages",
-    "Stretching"
-  ];
-  return {
-    title: activities[Math.floor(Math.random() * activities.length)],
-    type: 'Free',
-    duration: 0.5
-  };
-};
+export async function generateGoalSuggestions(sideGoal, freeTime) {
+    console.log(`AI: Generating goal suggestions for side goal: ${sideGoal}`);
+    return { title: `Practice ${sideGoal}`, duration: 1, type: "Goal Task" };
+}
 
-export const redlineIdentifyNonEssential = (tasks) => {
-  // Logic to identify tasks that can be pushed back (Goal or Free)
-  return tasks.filter(t => t.type === 'Goal' || t.type === 'Free').slice(0, 3);
-};
+export async function generateFreeTimeSuggestions(history, freeTime) {
+    console.log("AI: Generating free time suggestions based on history...");
+    return { title: "Watch a movie or play games", duration: 1, type: "Free Time Task" };
+}

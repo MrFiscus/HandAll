@@ -1,6 +1,7 @@
 import express from 'express';
 import bodyParser from 'body-parser';
 import cors from 'cors';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -12,6 +13,12 @@ dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const rootEnvFile = path.join(__dirname, '../.env');
+const frontendDistDir = path.join(__dirname, '../frontend/dist');
+const frontendIndexFile = path.join(frontendDistDir, 'index.html');
+const hasFrontendBuild = fs.existsSync(frontendIndexFile);
+
+dotenv.config({ path: rootEnvFile });
 
 const app = express();
 const PORT = 3001;
@@ -26,8 +33,9 @@ const supabase = SUPABASE_URL && SUPABASE_ANON_KEY
 app.use(cors());
 app.use(bodyParser.json());
 
-// Serve static files from the React app's build directory
-app.use(express.static(path.join(__dirname, '../frontend/dist')));
+if (hasFrontendBuild) {
+  app.use(express.static(frontendDistDir));
+}
 
 // Helper to get DB
 const getDB = () => dbPromise;
@@ -96,21 +104,25 @@ app.use('/api', requireAuth);
 
 // --- User Profile Endpoints ---
 app.get('/api/user', async (req, res) => {
-  res.json(req.localUser);
+  const db = await getDB();
+  const user = await db.get('SELECT * FROM users WHERE id = ?', req.localUser.id);
+  res.json(user || req.localUser);
 });
 
 app.post('/api/user/setup', async (req, res) => {
-  const { wake_time, sleep_time, side_goal, google_calendar_url } = req.body;
+  const { username, wake_time, sleep_time, side_goal, google_calendar_url } = req.body;
   const db = await getDB();
   await db.run(
-    'UPDATE users SET wake_time = ?, sleep_time = ?, side_goal = ?, google_calendar_url = ? WHERE id = ?',
+    'UPDATE users SET username = COALESCE(?, username), wake_time = COALESCE(?, wake_time), sleep_time = COALESCE(?, sleep_time), side_goal = COALESCE(?, side_goal), google_calendar_url = COALESCE(?, google_calendar_url) WHERE id = ?',
+    username,
     wake_time,
     sleep_time,
     side_goal,
     google_calendar_url,
     req.localUser.id
   );
-  res.json({ success: true });
+  const user = await db.get('SELECT * FROM users WHERE id = ?', req.localUser.id);
+  res.json({ success: true, user });
 });
 
 // --- Task Management Endpoints ---
@@ -224,9 +236,15 @@ app.delete('/api/tasks/:id', async (req, res) => {
     res.json({ success: true });
 });
 
-// Fallback for SPA
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
+  if (hasFrontendBuild) {
+    return res.sendFile(frontendIndexFile);
+  }
+
+  res.status(404).json({
+    error: 'Frontend build not found',
+    message: 'Run `npm --prefix frontend run build` for production, or use the Vite dev server at http://localhost:3000.'
+  });
 });
 
 app.listen(PORT, () => {

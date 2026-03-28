@@ -14,6 +14,7 @@ export interface CalendarEvent {
 }
 
 export interface UserProfile {
+  name: string;
   level: number;
   xp: number;
   wakeTime: string;
@@ -47,6 +48,7 @@ export const useAppStore = create<AppState>()(
   persist(
     (set, get) => ({
       userProfile: {
+        name: "Student",
         level: 0,
         xp: 0,
         wakeTime: "07:00",
@@ -71,7 +73,25 @@ export const useAppStore = create<AppState>()(
       },
 
       setUserProfile: async (profile) => {
-        await api.updateUserSetup(profile);
+        const current = get().userProfile;
+        set({
+          userProfile: {
+            ...current,
+            ...profile,
+            name: profile.name ?? current.name,
+            wakeTime: profile.wakeTime ?? current.wakeTime,
+            sleepTime: profile.sleepTime ?? current.sleepTime,
+            sideGoals: profile.sideGoals ?? current.sideGoals,
+            calendarUrls: profile.calendarUrls ?? current.calendarUrls,
+          },
+        });
+
+        const result = await api.updateUserSetup(profile);
+        if (result.user) {
+          set({ userProfile: result.user });
+          return;
+        }
+
         const user = await api.fetchUser();
         set({ userProfile: user });
       },

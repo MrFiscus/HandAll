@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAppStore } from "../store/useAppStore";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { Button } from "./ui/button";
@@ -7,40 +7,144 @@ import { Label } from "./ui/label";
 import { Separator } from "./ui/separator";
 import { Badge } from "./ui/badge";
 import CalendarSync from "./CalendarSync";
-import { User, Clock, Target, Trash2 } from "lucide-react";
+import { Camera, Loader2, Upload, User, Clock, Target, Trash2 } from "lucide-react";
 import { toast } from "sonner";
+import { supabase } from "../lib/supabase";
 
 export default function Settings() {
   const { userProfile, setUserProfile } = useAppStore();
+  const [name, setName] = useState(userProfile.name);
   const [wakeTime, setWakeTime] = useState(userProfile.wakeTime);
   const [sleepTime, setSleepTime] = useState(userProfile.sleepTime);
   const [newGoal, setNewGoal] = useState("");
+  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [profileName, setProfileName] = useState(userProfile.name || "Student");
 
-  const handleSaveSchedule = () => {
-    setUserProfile({
-      wakeTime,
-      sleepTime,
+  useEffect(() => {
+    if (!supabase) return;
+
+    let isMounted = true;
+
+    supabase.auth.getUser().then(({ data }) => {
+      if (!isMounted) return;
+      const metadata = data.user?.user_metadata;
+      setProfileName(userProfile.name || metadata?.full_name || metadata?.name || "Student");
+      setAvatarUrl(metadata?.custom_avatar || metadata?.avatar_url || metadata?.picture || null);
     });
-    toast.success("Schedule updated!");
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      const metadata = session?.user?.user_metadata;
+      setProfileName(userProfile.name || metadata?.full_name || metadata?.name || "Student");
+      setAvatarUrl(metadata?.custom_avatar || metadata?.avatar_url || metadata?.picture || null);
+    });
+
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, [userProfile.name]);
+
+  useEffect(() => {
+    setName(userProfile.name);
+    setProfileName(userProfile.name || "Student");
+  }, [userProfile.name]);
+
+  const handleSaveProfile = async () => {
+    const trimmedName = name.trim() || "Student";
+
+    try {
+      if (supabase) {
+        const { error } = await supabase.auth.updateUser({
+          data: {
+            full_name: trimmedName,
+          },
+        });
+
+        if (error) throw error;
+      }
+
+      await setUserProfile({
+        name: trimmedName,
+        wakeTime,
+        sleepTime,
+      });
+
+      setProfileName(trimmedName);
+      toast.success("Profile updated!");
+    } catch (error: any) {
+      toast.error(error.message || "Failed to update profile.");
+    }
   };
 
-  const handleAddGoal = () => {
+  const handleAddGoal = async () => {
     if (!newGoal.trim()) {
       toast.error("Please enter a goal");
       return;
     }
-    setUserProfile({
+    await setUserProfile({
       sideGoals: [...userProfile.sideGoals, newGoal.trim()],
     });
     setNewGoal("");
     toast.success("Goal added!");
   };
 
-  const handleRemoveGoal = (index: number) => {
-    setUserProfile({
+  const handleRemoveGoal = async (index: number) => {
+    await setUserProfile({
       sideGoals: userProfile.sideGoals.filter((_, i) => i !== index),
     });
     toast.success("Goal removed");
+  };
+
+  const handleAvatarFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!supabase) {
+      toast.error("Supabase is not available.");
+      return;
+    }
+
+    if (!file.type.startsWith("image/")) {
+      toast.error("Please choose an image file.");
+      return;
+    }
+
+    if (file.size > 1024 * 1024) {
+      toast.error("Please choose an image smaller than 1 MB.");
+      return;
+    }
+
+    setIsUploadingAvatar(true);
+
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error("Failed to read image file."));
+        reader.readAsDataURL(file);
+      });
+
+      const { data, error } = await supabase.auth.updateUser({
+        data: {
+          custom_avatar: dataUrl,
+        },
+      });
+
+      if (error) throw error;
+
+      const metadata = data.user?.user_metadata;
+      setAvatarUrl(metadata?.custom_avatar || metadata?.avatar_url || metadata?.picture || null);
+      toast.success("Profile photo updated!");
+    } catch (error: any) {
+      toast.error(error.message || "Failed to update profile photo.");
+    } finally {
+      setIsUploadingAvatar(false);
+      e.target.value = "";
+    }
   };
 
   return (
@@ -60,6 +164,55 @@ export default function Settings() {
           <CardDescription>Your level and progress</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
+          <div className="flex flex-col gap-4 rounded-xl border bg-slate-50/70 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-4">
+              {avatarUrl ? (
+                <img
+                  src={avatarUrl}
+                  alt={`${profileName} profile`}
+                  className="h-16 w-16 rounded-full object-cover ring-2 ring-border"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-purple-500 text-white shadow-sm">
+                  <Camera className="h-6 w-6" />
+                </div>
+              )}
+              <div>
+                <p className="font-medium">{profileName}</p>
+                <p className="text-sm text-muted-foreground">
+                  Upload a photo to personalize your profile.
+                </p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleAvatarFile}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={isUploadingAvatar}
+              >
+                {isUploadingAvatar ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                Change Photo
+              </Button>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="displayName">Display Name</Label>
+            <Input
+              id="displayName"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Student"
+            />
+          </div>
           <div className="flex items-center gap-4">
             <div className="flex-1">
               <div className="flex justify-between mb-2">
@@ -86,6 +239,7 @@ export default function Settings() {
               <div className="text-2xl font-bold text-purple-600">{userProfile.level}</div>
             </div>
           </div>
+          <Button onClick={handleSaveProfile}>Save Profile</Button>
         </CardContent>
       </Card>
 
@@ -119,7 +273,7 @@ export default function Settings() {
               />
             </div>
           </div>
-          <Button onClick={handleSaveSchedule}>Save Schedule</Button>
+          <Button onClick={handleSaveProfile}>Save Schedule</Button>
         </CardContent>
       </Card>
 

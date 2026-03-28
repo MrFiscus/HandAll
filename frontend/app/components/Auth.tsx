@@ -2,8 +2,52 @@ import React, { useState } from "react";
 import { supabase } from "../lib/supabase";
 import { toast } from "sonner";
 import { useNavigate } from "react-router";
-import { AlertTriangle } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowRight,
+  CalendarDays,
+  CheckCircle2,
+  Sparkles,
+} from "lucide-react";
 import { Button } from "./ui/button";
+import { Input } from "./ui/input";
+import { Label } from "./ui/label";
+import { Checkbox } from "./ui/checkbox";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "./ui/card";
+
+function GoogleLogo() {
+  return (
+    <svg
+      aria-hidden="true"
+      className="h-4 w-4"
+      viewBox="0 0 24 24"
+      xmlns="http://www.w3.org/2000/svg"
+    >
+      <path
+        d="M21.805 12.23c0-.79-.07-1.55-.2-2.28H12v4.32h5.49a4.7 4.7 0 0 1-2.04 3.08v2.56h3.3c1.93-1.78 3.055-4.4 3.055-7.68Z"
+        fill="#4285F4"
+      />
+      <path
+        d="M12 22c2.76 0 5.07-.91 6.76-2.47l-3.3-2.56c-.91.61-2.08.98-3.46.98-2.66 0-4.92-1.8-5.73-4.22H2.86v2.64A10 10 0 0 0 12 22Z"
+        fill="#34A853"
+      />
+      <path
+        d="M6.27 13.73A5.96 5.96 0 0 1 5.95 12c0-.6.11-1.18.32-1.73V7.63H2.86A10 10 0 0 0 2 12c0 1.61.38 3.14 1.06 4.37l3.21-2.64Z"
+        fill="#FBBC05"
+      />
+      <path
+        d="M12 5.98c1.5 0 2.84.52 3.9 1.54l2.92-2.92C17.07 2.98 14.76 2 12 2A10 10 0 0 0 2.86 7.63l3.41 2.64C7.08 7.78 9.34 5.98 12 5.98Z"
+        fill="#EA4335"
+      />
+    </svg>
+  );
+}
 
 export default function Auth() {
   const navigate = useNavigate();
@@ -13,10 +57,17 @@ export default function Auth() {
   const [password, setPassword] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!supabase) return;
+
+    if (isSignUp && !acceptedTerms) {
+      toast.error("Please accept the terms to create your account.");
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -26,7 +77,7 @@ export default function Auth() {
           password,
           options: {
             data: {
-              full_name: `${firstName} ${lastName}`,
+              full_name: `${firstName} ${lastName}`.trim(),
             },
           },
         });
@@ -62,233 +113,231 @@ export default function Auth() {
 
   if (!supabase) {
     return (
-      <div className="h-screen w-screen flex items-center justify-center bg-slate-950 p-4 font-sans">
-        <div className="max-w-md w-full p-8 border border-white/10 rounded-2xl shadow-2xl bg-slate-900 text-center space-y-6">
-          <AlertTriangle className="h-16 w-16 text-yellow-500 mx-auto" />
-          <h1 className="text-2xl font-bold text-white">Supabase Not Configured</h1>
-          <p className="text-slate-400 text-sm leading-relaxed">
-            Authentication requires Supabase credentials. Please create a <code className="bg-slate-800 text-slate-200 px-1 rounded font-mono">.env</code> file in the <code className="bg-slate-800 text-slate-200 px-1 rounded font-mono">frontend/</code> directory with:
-          </p>
-          <pre className="bg-black text-green-400 p-4 rounded-lg text-xs text-left overflow-x-auto border border-white/5 font-mono">
-            VITE_SUPABASE_URL=your_url_here{"\n"}
-            VITE_SUPABASE_ANON_KEY=your_anon_key_here
-          </pre>
-          <Button onClick={() => window.location.reload()} className="w-full bg-slate-100 text-slate-900 hover:bg-white">
-            Retry Connection
-          </Button>
+      <div className="min-h-screen bg-background px-4 py-10">
+        <div className="mx-auto flex min-h-[calc(100vh-5rem)] max-w-5xl items-center justify-center">
+          <Card className="w-full max-w-xl border-yellow-200 bg-card/95 shadow-2xl">
+            <CardHeader className="text-center">
+              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-yellow-100 text-yellow-600">
+                <AlertTriangle className="h-8 w-8" />
+              </div>
+              <CardTitle className="text-3xl font-semibold">Supabase Not Configured</CardTitle>
+              <CardDescription className="text-base leading-7">
+                Authentication needs your Supabase credentials. Add a{" "}
+                <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-sm">.env</code>{" "}
+                file inside{" "}
+                <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-sm">frontend/</code>{" "}
+                with:
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <pre className="overflow-x-auto rounded-xl border bg-slate-950 p-4 text-left text-xs text-green-400">
+                VITE_SUPABASE_URL=your_url_here{"\n"}
+                VITE_SUPABASE_ANON_KEY=your_anon_key_here
+              </pre>
+              <Button onClick={() => window.location.reload()} className="w-full">
+                Retry Connection
+              </Button>
+            </CardContent>
+          </Card>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="auth-body-wrapper min-h-screen">
-      <style dangerouslySetInnerHTML={{ __html: `
-        .auth-body-wrapper {
-          background:
-            radial-gradient(circle at 15% 15%, rgba(69, 107, 162, 0.42), rgba(12, 24, 42, 0.08) 38%),
-            radial-gradient(circle at 95% 10%, rgba(5, 42, 84, 0.5), transparent 45%),
-            linear-gradient(165deg, #0f2545 0%, #08172f 50%, #071224 100%);
-          display: grid;
-          place-items: center;
-          padding: 20px;
-          color: #e0e0e0;
-          font-family: 'Segoe UI', sans-serif;
-        }
-        .auth-card {
-          width: 100%;
-          max-width: 640px;
-          background: linear-gradient(180deg, rgba(19, 36, 64, 0.96), rgba(9, 25, 47, 0.95));
-          border-radius: 22px;
-          border: 1px solid rgba(117, 157, 206, 0.28);
-          padding: 32px;
-          box-shadow: 0 24px 70px rgba(1, 9, 22, 0.5), inset 0 1px 0 rgba(192, 219, 255, 0.08);
-        }
-        .auth-card h1 {
-          margin: 0 0 10px;
-          color: #ecf2fb;
-          font-size: clamp(34px, 4.5vw, 58px);
-          line-height: 1;
-          letter-spacing: -0.02em;
-          font-weight: 700;
-        }
-        .auth-switch { margin: 0 0 22px; color: #b7c6db; font-size: 1rem; }
-        .auth-link {
-          border: 0;
-          background: transparent;
-          color: #c8d7eb;
-          text-decoration: underline;
-          text-underline-offset: 3px;
-          cursor: pointer;
-          font-size: inherit;
-          padding: 0;
-          margin-left: 5px;
-        }
-        .auth-row {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 12px;
-        }
-        .auth-card input {
-          width: 100%;
-          background: #0b1d38;
-          border: 1px solid #2a466a;
-          color: #f0f5fd;
-          padding: 14px 16px;
-          border-radius: 12px;
-          margin: 0 0 12px;
-          font-size: 1rem;
-          outline: none;
-        }
-        .auth-card input::placeholder { color: #7f95b5; }
-        .auth-card input:focus {
-          border-color: #6e95c4;
-          box-shadow: 0 0 0 3px rgba(86, 133, 193, 0.2);
-        }
-        .auth-terms {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          color: #b7c6db;
-          font-size: 1rem;
-          margin: 2px 0 18px;
-        }
-        .auth-terms input { width: 18px; height: 18px; accent-color: #5f85b7; margin: 0; }
-        .auth-submit {
-          width: 100%;
-          border: 1px solid #5576a0;
-          background: linear-gradient(180deg, #5f7ea5, #4d6f96);
-          color: #f0f5fd;
-          font-size: 1.12rem;
-          font-weight: 600;
-          border-radius: 12px;
-          padding: 14px;
-          cursor: pointer;
-          transition: filter 0.2s;
-        }
-        .auth-submit:hover { filter: brightness(1.1); }
-        .auth-submit:disabled { opacity: 0.7; cursor: not-allowed; }
-        .auth-divider {
-          margin: 20px 0 14px;
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          color: #9fb4d2;
-        }
-        .auth-divider::before,
-        .auth-divider::after {
-          content: '';
-          height: 1px;
-          flex: 1;
-          background: rgba(124, 161, 204, 0.4);
-        }
-        .auth-social-row {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 12px;
-        }
-        .auth-social {
-          background: linear-gradient(180deg, #506e95, #4a6386);
-          border: 1px solid #5f7ea5;
-          border-radius: 12px;
-          color: #e8eef8;
-          padding: 12px;
-          font-size: 1.02rem;
-          display: flex;
-          gap: 10px;
-          justify-content: center;
-          align-items: center;
-          cursor: pointer;
-          transition: opacity 0.2s;
-        }
-        .auth-social:hover { opacity: 1; }
-        .auth-social:disabled { opacity: 0.5; cursor: not-allowed; }
-        .brand-dot {
-          width: 24px;
-          height: 24px;
-          border-radius: 50%;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          font-weight: 700;
-          font-size: 0.95rem;
-        }
-        .brand-dot.google { background: #f4f4f4; color: #ef6d35; }
-        .brand-dot.facebook { background: #26a8ef; color: #ffffff; }
-      ` }} />
+    <div className="relative min-h-screen overflow-hidden bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 px-4 py-4 sm:py-6">
+      <div className="absolute inset-0 overflow-hidden">
+        <div className="absolute -left-20 top-10 h-72 w-72 rounded-full bg-blue-200/40 blur-3xl" />
+        <div className="absolute right-0 top-0 h-80 w-80 rounded-full bg-violet-200/50 blur-3xl" />
+        <div className="absolute bottom-0 left-1/3 h-64 w-64 rounded-full bg-cyan-100/60 blur-3xl" />
+      </div>
 
-      <div className="auth-card">
-        <h1>{isSignUp ? "Create an account" : "Welcome back"}</h1>
-        <p className="auth-switch">
-          <span>{isSignUp ? "Already have an account?" : "Don't have an account?"}</span>
-          <button 
-            className="auth-link" 
-            onClick={() => setIsSignUp(!isSignUp)}
-            type="button"
-          >
-            {isSignUp ? "Log in" : "Sign up"}
-          </button>
-        </p>
+      <div className="relative mx-auto flex min-h-[calc(100vh-2rem)] max-w-6xl items-center justify-center sm:min-h-[calc(100vh-3rem)]">
+        <Card className="w-full overflow-hidden border-white/70 bg-white/85 shadow-[0_24px_80px_rgba(15,23,42,0.14)] backdrop-blur lg:max-h-[calc(100vh-2rem)]">
+          <div className="grid lg:grid-cols-[1.05fr_0.95fr]">
+            <div className="relative overflow-hidden bg-gradient-to-br from-slate-950 via-blue-900 to-indigo-900 p-6 text-white sm:p-8">
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.16),transparent_35%),radial-gradient(circle_at_bottom_right,rgba(96,165,250,0.3),transparent_40%)]" />
+              <div className="relative flex h-full flex-col justify-between gap-6">
+                <div className="space-y-4">
+                  <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-sm text-blue-50 backdrop-blur">
+                    <Sparkles className="h-4 w-4" />
+                    HandAll
+                  </div>
 
-        <form onSubmit={handleAuth}>
-          {isSignUp && (
-            <div className="auth-row">
-              <input 
-                type="text" 
-                placeholder="First name" 
-                value={firstName}
-                onChange={(e) => setFirstName(e.target.value)}
-                required
-              />
-              <input 
-                type="text" 
-                placeholder="Last name" 
-                value={lastName}
-                onChange={(e) => setLastName(e.target.value)}
-                required
-              />
+                  <div className="space-y-3">
+                    <h1 className="text-3xl font-semibold leading-tight sm:text-4xl">
+                      Plan your week with more clarity and less friction.
+                    </h1>
+                    <p className="max-w-lg text-sm leading-6 text-blue-100/85 sm:text-base">
+                      HandAll keeps your classes, tasks, calendar, and daily energy in one place
+                      so your schedule feels manageable again.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid gap-2.5">
+                  {[
+                    "Sync coursework and calendar events in one flow",
+                    "Track side goals alongside your daily schedule",
+                    "Use the AI assistant when your week gets messy",
+                  ].map((item) => (
+                    <div
+                      key={item}
+                      className="flex items-start gap-3 rounded-2xl border border-white/12 bg-white/8 px-4 py-2.5 backdrop-blur-sm"
+                    >
+                      <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-cyan-300" />
+                      <p className="text-sm leading-5 text-blue-50/90">{item}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-3 rounded-2xl border border-white/12 bg-white/8 px-4 py-3 backdrop-blur-sm">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white/12">
+                    <CalendarDays className="h-5 w-5 text-cyan-200" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-white">Built for student routines</p>
+                    <p className="text-sm leading-5 text-blue-100/80">
+                      Keep assignments, motivation, and planning moving together.
+                    </p>
+                  </div>
+                </div>
+              </div>
             </div>
-          )}
 
-          <input 
-            type="email" 
-            placeholder="Email" 
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
-          <input 
-            type="password" 
-            placeholder="Enter your password" 
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
+            <div className="bg-white/90 p-6 sm:p-8">
+              <div className="mx-auto max-w-md space-y-6">
+                <div className="space-y-2.5">
+                  <div className="inline-flex rounded-full border bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700">
+                    {isSignUp ? "Create your account" : "Welcome back"}
+                  </div>
+                  <div className="space-y-1.5">
+                    <h2 className="text-2xl font-semibold tracking-tight text-slate-950 sm:text-3xl">
+                      {isSignUp ? "Start organizing with HandAll" : "Sign in to continue"}
+                    </h2>
+                    <p className="text-sm leading-5 text-slate-600">
+                      {isSignUp
+                        ? "Set up your schedule, connect your calendar, and let HandAll shape a plan around your real week."
+                        : "Pick up where you left off and get back to your dashboard, weekly sync, and AI assistant."}
+                    </p>
+                  </div>
+                </div>
 
-          {isSignUp && (
-            <label className="auth-terms">
-              <input type="checkbox" required />
-              <span>I agree to the <a href="#" className="auth-link">Terms &amp; Conditions</a></span>
-            </label>
-          )}
+                <form onSubmit={handleAuth} className="space-y-4">
+                  {isSignUp && (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="firstName">First name</Label>
+                        <Input
+                          id="firstName"
+                          type="text"
+                          placeholder="Jordan"
+                          value={firstName}
+                          onChange={(e) => setFirstName(e.target.value)}
+                          required
+                          className="h-10"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="lastName">Last name</Label>
+                        <Input
+                          id="lastName"
+                          type="text"
+                          placeholder="Lee"
+                          value={lastName}
+                          onChange={(e) => setLastName(e.target.value)}
+                          required
+                          className="h-10"
+                        />
+                      </div>
+                    </div>
+                  )}
 
-          <button className="auth-submit" type="submit" disabled={loading}>
-            {loading ? "Processing..." : (isSignUp ? "Create account" : "Log in")}
-          </button>
-        </form>
+                  <div className="space-y-2">
+                    <Label htmlFor="email">Email</Label>
+                    <Input
+                      id="email"
+                      type="email"
+                      placeholder="you@school.edu"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      required
+                      className="h-10"
+                    />
+                  </div>
 
-        <div className="auth-divider"><span>Or {isSignUp ? "register" : "login"} with</span></div>
+                  <div className="space-y-2">
+                    <Label htmlFor="password">Password</Label>
+                    <Input
+                      id="password"
+                      type="password"
+                      placeholder={isSignUp ? "Create a password" : "Enter your password"}
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
+                      className="h-10"
+                    />
+                  </div>
 
-        <div className="auth-social-row">
-          <button className="auth-social" type="button" onClick={handleGoogleLogin}>
-            <span className="brand-dot google">G</span>
-            <span>Google</span>
-          </button>
-          <button className="auth-social" type="button" disabled title="Coming soon">
-            <span className="brand-dot facebook">f</span>
-            <span>Facebook</span>
-          </button>
-        </div>
+                  {isSignUp && (
+                    <div className="flex items-start gap-3 rounded-xl border bg-slate-50 px-4 py-2.5">
+                      <Checkbox
+                        id="terms"
+                        checked={acceptedTerms}
+                        onCheckedChange={(checked) => setAcceptedTerms(checked === true)}
+                        className="mt-0.5"
+                      />
+                      <Label htmlFor="terms" className="cursor-pointer text-sm leading-5 text-slate-600">
+                        I agree to the terms and understand HandAll will use my schedule data to
+                        personalize planning suggestions.
+                      </Label>
+                    </div>
+                  )}
+
+                  <Button type="submit" size="lg" className="h-10 w-full">
+                    {loading ? "Processing..." : isSignUp ? "Create Account" : "Sign In"}
+                    {!loading && <ArrowRight className="h-4 w-4" />}
+                  </Button>
+                </form>
+
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <span className="w-full border-t" />
+                  </div>
+                  <div className="relative flex justify-center text-xs uppercase tracking-[0.2em] text-slate-400">
+                    <span className="bg-white px-3">or continue with</span>
+                  </div>
+                </div>
+
+                <div className="grid gap-3">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="lg"
+                    className="h-10"
+                    onClick={handleGoogleLogin}
+                  >
+                    <GoogleLogo />
+                    Google
+                  </Button>
+                </div>
+
+                <div className="rounded-2xl bg-slate-50 px-4 py-3 text-center">
+                  <p className="text-sm text-slate-600">
+                    {isSignUp ? "Already have an account?" : "Need an account first?"}{" "}
+                    <button
+                      className="font-medium text-blue-700 transition-colors hover:text-blue-800"
+                      onClick={() => setIsSignUp(!isSignUp)}
+                      type="button"
+                    >
+                      {isSignUp ? "Sign in" : "Create one"}
+                    </button>
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </Card>
       </div>
     </div>
   );

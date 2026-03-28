@@ -1,11 +1,17 @@
+import os
+from pathlib import Path
 from typing import Any, Dict
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from dotenv import load_dotenv
 
-from backend.agent import run_agent, upsert_user_profile
+ROOT_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
+load_dotenv(ROOT_ENV_FILE, override=True)
 
+if not os.getenv("SUPABASE_KEY") and os.getenv("SUPABASE_ANON_KEY"):
+    os.environ["SUPABASE_KEY"] = os.environ["SUPABASE_ANON_KEY"]
 
 app = FastAPI(title="HandAll AI Agent Backend")
 app.add_middleware(
@@ -48,22 +54,54 @@ def health_check() -> Dict[str, str]:
 
 @app.post("/profile/sync")
 def sync_profile(request: ProfileSyncRequest) -> Dict[str, Any]:
-    profile = upsert_user_profile(
-        user_id=request.user_id,
-        name=request.name,
-        timezone_name=request.timezone,
-        prefs=request.prefs,
-    )
-    return {"success": True, "profile": profile}
+    try:
+        from backend.agent import upsert_user_profile
+
+        profile = upsert_user_profile(
+            user_id=request.user_id,
+            name=request.name,
+            timezone_name=request.timezone,
+            prefs=request.prefs,
+        )
+        return {"success": True, "profile": profile}
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            "profile": {
+                "id": request.user_id,
+                "name": request.name,
+                "timezone": request.timezone,
+                "prefs": request.prefs,
+            },
+        }
 
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest) -> Dict[str, Any]:
-    result = run_agent(
-        user_id=request.user_id,
-        thread_id=request.thread_id,
-        message=request.message,
-    )
+    try:
+        if not os.getenv("GOOGLE_API_KEY"):
+            result = {
+                "response": (
+                    "The AI backend is connected, but `GOOGLE_API_KEY` is not configured yet. "
+                    "Add it to the root `.env` file to enable real AI responses."
+                )
+            }
+        else:
+            from backend.agent import run_agent
+
+            result = run_agent(
+                user_id=request.user_id,
+                thread_id=request.thread_id,
+                message=request.message,
+            )
+    except Exception as exc:
+        result = {
+            "response": (
+                "The AI backend is running, but it's missing required configuration or hit an internal error. "
+                f"Details: {exc}"
+            )
+        }
     return {
         "response": result["response"],
         "user_id": request.user_id,

@@ -1,6 +1,18 @@
 import { supabase } from "../lib/supabase";
 import { CalendarEvent, UserProfile } from "../store/useAppStore";
 
+function mapUserProfile(data: any): UserProfile {
+  return {
+    name: data.username || "Student",
+    level: data.level || 0,
+    xp: data.xp || 0,
+    wakeTime: data.wake_time || "07:00",
+    sleepTime: data.sleep_time || "23:00",
+    sideGoals: data.side_goal ? [data.side_goal] : [],
+    calendarUrls: data.google_calendar_url ? [data.google_calendar_url] : [],
+  };
+}
+
 async function getAuthHeaders() {
   if (!supabase) return { 'Content-Type': 'application/json' };
   
@@ -17,29 +29,27 @@ export const api = {
     const res = await fetch('/api/user', { headers });
     if (!res.ok) throw new Error('Failed to fetch user');
     const data = await res.json();
-    return {
-      level: data.level || 0,
-      xp: data.xp || 0,
-      wakeTime: data.wake_time || "07:00",
-      sleepTime: data.sleep_time || "23:00",
-      sideGoals: data.side_goal ? [data.side_goal] : [],
-      calendarUrls: data.google_calendar_url ? [data.google_calendar_url] : [],
-    };
+    return mapUserProfile(data);
   },
 
-  async updateUserSetup(profile: Partial<UserProfile>) {
+  async updateUserSetup(profile: Partial<UserProfile>): Promise<{ success: boolean; user?: UserProfile }> {
     const headers = await getAuthHeaders();
     const res = await fetch('/api/user/setup', {
       method: 'POST',
       headers,
       body: JSON.stringify({
+        username: profile.name,
         wake_time: profile.wakeTime,
         sleep_time: profile.sleepTime,
         side_goal: profile.sideGoals?.[0],
         google_calendar_url: profile.calendarUrls?.[0]
       })
     });
-    return res.json();
+    const data = await res.json();
+    return {
+      success: !!data.success,
+      user: data.user ? mapUserProfile(data.user) : undefined,
+    };
   },
 
   async fetchTasks(): Promise<CalendarEvent[]> {

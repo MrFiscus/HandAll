@@ -17,6 +17,11 @@ export default defineConfig({
         target: 'http://localhost:3001',
         changeOrigin: true,
       },
+      '/agent-api': {
+        target: 'http://127.0.0.1:8011',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/agent-api/, ''),
+      },
     },
   },
   resolve: {

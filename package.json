@@ -2,13 +2,18 @@
   "name": "handall-root",
   "private": true,
   "scripts": {
-    "install-all": "npm install; npm --prefix frontend install; npm --prefix backend install; python -m venv .venv; .\\.venv\\Scripts\\python -m pip install -r backend/requirements.txt",
-    "start:backend": "npm --prefix backend start",
-    "start:frontend": "npm --prefix frontend run dev",
-    "start:ai": ".\\.venv\\Scripts\\uvicorn backend.main:app --reload --port 8000 --env-file .env",
-    "dev": "concurrently -n \"NODE,VITE,AI\" -c \"blue,green,magenta\" \"npm run start:backend\" \"npm run start:frontend\" \"npm run start:ai\"",
+    "setup": "npm install && npm --prefix frontend install && npm --prefix backend install && powershell -ExecutionPolicy Bypass -File scripts\\setup-ai.ps1",
+    "dev": "concurrently -n \"API,WEB,AI\" -c \"blue,green,magenta\" \"npm run dev:api\" \"npm run dev:web\" \"npm run dev:ai\"",
+    "build": "npm --prefix frontend run build",
+    "serve": "npm --prefix backend start",
     "start": "npm run dev",
-    "build": "npm --prefix frontend run build"
+    "dev:api": "npm --prefix backend start",
+    "dev:web": "npm --prefix frontend run dev",
+    "dev:ai": "powershell -ExecutionPolicy Bypass -File scripts\\start-ai.ps1",
+    "install-all": "npm run setup",
+    "start:backend": "npm run dev:api",
+    "start:frontend": "npm run dev:web",
+    "start:ai": "npm run dev:ai"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

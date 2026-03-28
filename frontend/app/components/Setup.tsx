@@ -11,7 +11,7 @@ import { fetchCalendarEvents, getGoogleCalendarICalUrl } from "../utils/calendar
 import { Calendar, Clock, Target, Info, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 const AGENT_API_BASE_URL =
-  import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "http://127.0.0.1:8000";
+  import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "/agent-api";
 const AGENT_USER_ID_KEY = "handall-agent-user-id";
 
 export default function Setup() {
@@ -41,6 +41,7 @@ export default function Setup() {
         localStorage.setItem(AGENT_USER_ID_KEY, userId);
 
         await setUserProfile({
+          name: formData.name.trim() || "Student",
           wakeTime: formData.wakeTime,
           sleepTime: formData.sleepTime,
           sideGoals,

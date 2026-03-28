@@ -33,7 +33,7 @@ interface ChatApiResponse {
 }
 
 const AGENT_API_BASE_URL =
-  import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "http://127.0.0.1:8000";
+  import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "/agent-api";
 const AGENT_USER_ID_KEY = "handall-agent-user-id";
 
 export default function Root() {
@@ -57,6 +57,16 @@ export default function Root() {
   const [loading, setLoading] = useState(true);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const threadIdRef = useRef<string>(crypto.randomUUID());
+  const displayName =
+    userProfile.name ||
+    session?.user?.user_metadata?.full_name ||
+    session?.user?.user_metadata?.name ||
+    "Student";
+  const avatarUrl =
+    session?.user?.user_metadata?.custom_avatar ||
+    session?.user?.user_metadata?.avatar_url ||
+    session?.user?.user_metadata?.picture ||
+    null;
 
   useEffect(() => {
     if (!supabase) {
@@ -163,8 +173,8 @@ export default function Root() {
           id: (Date.now() + 1).toString(),
           role: "assistant",
           content:
-            `I couldn't reach the backend just now (${message}). ` +
-            "Make sure the FastAPI server is running on port 8000 and setup completed successfully.",
+            `I couldn't reach the AI backend just now (${message}). ` +
+            "Make sure `npm run dev` is still running, then try again.",
           timestamp: new Date(),
         },
       ]);
@@ -258,15 +268,30 @@ export default function Root() {
         </nav>
 
         <div className="p-4 border-t space-y-4">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center text-white font-bold">
-              {userProfile.level}
+          <Button
+            variant="ghost"
+            className="h-auto w-full justify-start rounded-xl p-2 hover:bg-accent/60"
+            onClick={() => navigate("/settings")}
+          >
+            <div className="flex items-center gap-3">
+              {avatarUrl ? (
+                <img
+                  src={avatarUrl}
+                  alt={`${displayName} profile`}
+                  className="h-10 w-10 rounded-full object-cover ring-2 ring-border"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <div className="flex h-10 w-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 items-center justify-center text-white font-bold">
+                  {userProfile.level}
+                </div>
+              )}
+              <div className="min-w-0 text-left">
+                <p className="text-sm font-medium truncate">{displayName}</p>
+                <p className="text-xs text-muted-foreground">Level {userProfile.level}</p>
+              </div>
             </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">Level {userProfile.level}</p>
-              <p className="text-xs text-muted-foreground">{userProfile.xp} XP</p>
-            </div>
-          </div>
+          </Button>
           <div className="h-2 bg-secondary rounded-full overflow-hidden">
             <div
               className="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all"

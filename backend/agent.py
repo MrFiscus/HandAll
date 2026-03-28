@@ -1,5 +1,6 @@
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Annotated, Any, Dict, List, Optional, TypedDict
 
 from google.oauth2 import service_account
@@ -11,7 +12,15 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
+from dotenv import load_dotenv
 from supabase import Client, create_client
+
+
+ROOT_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
+load_dotenv(ROOT_ENV_FILE)
+
+if not os.getenv("SUPABASE_KEY") and os.getenv("SUPABASE_ANON_KEY"):
+    os.environ["SUPABASE_KEY"] = os.environ["SUPABASE_ANON_KEY"]
 
 
 # The state object is the shared data packet passed from node to node.
@@ -24,8 +33,10 @@ class AgentState(TypedDict):
 
 
 def get_supabase_client() -> Client:
-    supabase_url = os.environ["SUPABASE_URL"]
-    supabase_key = os.environ["SUPABASE_KEY"]
+    supabase_url = os.getenv("SUPABASE_URL")
+    supabase_key = os.getenv("SUPABASE_KEY")
+    if not supabase_url or not supabase_key:
+        raise RuntimeError("SUPABASE_URL or SUPABASE_KEY is not configured")
     return create_client(supabase_url, supabase_key)
 
 
@@ -36,13 +47,16 @@ def upsert_user_profile(
     timezone_name: str,
     prefs: Dict[str, Any],
 ) -> Dict[str, Any]:
-    supabase = get_supabase_client()
     payload = {
         "id": user_id,
         "name": name,
         "timezone": timezone_name,
         "prefs": prefs,
     }
+    try:
+        supabase = get_supabase_client()
+    except RuntimeError:
+        return payload
     response = supabase.table("profiles").upsert(payload).execute()
     if isinstance(response.data, list) and response.data:
         return response.data[0]
@@ -144,8 +158,17 @@ TOOLS = [list_events, manage_event]
 
 def fetch_user_data(state: AgentState) -> Dict[str, Any]:
     """Load a user's profile from Supabase and place it into state['user_metadata'].""" 
-    supabase = get_supabase_client()
     user_id = state["user_id"]
+    try:
+        supabase = get_supabase_client()
+    except RuntimeError:
+        return {
+            "user_metadata": {
+                "name": "there",
+                "timezone": "UTC",
+                "prefs": {},
+            }
+        }
 
     try:
         response = (

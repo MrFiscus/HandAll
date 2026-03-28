@@ -35,11 +35,24 @@ function mapUserProfile(data: any): UserProfile {
     sideGoals,
     calendarUrls: Array.isArray(data.calendar_urls)
       ? data.calendar_urls
-      : data.google_calendar_url
-        ? [data.google_calendar_url]
-        : [],
+      : (data.google_calendar_url ? [data.google_calendar_url] : []),
     motivation,
+    googleCalendarConnected: !!data.google_calendar_connected,
   };
+}
+
+function inferGoogleEventType(title: string, description: string): CalendarEvent["type"] {
+  const combined = `${title} ${description}`.toLowerCase();
+
+  if (/(class|lecture|lab|office hours|quiz|exam|midterm|club meeting)/.test(combined)) {
+    return "class";
+  }
+
+  if (/(assignment|homework|project|discussion post|report due|submission|due)/.test(combined)) {
+    return "assignment";
+  }
+
+  return "external";
 }
 
 async function getAuthHeaders() {
@@ -477,5 +490,180 @@ export const api = {
     }
 
     return res.json();
+  },
+
+  async fetchGoogleCalendarEventTasksFromProviderToken(params: {
+    providerToken: string;
+    start: string;
+    end: string;
+    calendarId?: string;
+    q?: string;
+    maxResults?: number;
+  }): Promise<{
+    success: boolean;
+    calendarId: string;
+    range: { start: string; end: string };
+    events: Array<{
+      id: string;
+      title: string;
+      description: string;
+      startTime: string | null;
+      endTime: string | null;
+      location: string;
+      attendees: Array<{
+        email: string;
+        displayName: string;
+        responseStatus: string;
+        optional: boolean;
+        organizer: boolean;
+        self: boolean;
+      }>;
+      recurrence: string[];
+      reminders: Array<{ method: string; minutes: number | null }>;
+      status: string;
+      calendarId: string;
+      htmlLink: string;
+    }>;
+    tasks: Array<{
+      task_name: string;
+      details: string;
+      due_start: string | null;
+      due_end: string | null;
+      category: string;
+      priority: string;
+      location: string;
+      attendees: Array<{
+        email: string;
+        displayName: string;
+        responseStatus: string;
+        optional: boolean;
+        organizer: boolean;
+        self: boolean;
+      }>;
+      recurrence: string[];
+      reminders: Array<{ method: string; minutes: number | null }>;
+      source_event_id: string;
+      source_html_link: string;
+    }>;
+  }> {
+    const headers = await getAuthHeaders();
+    const res = await fetch('/api/google-calendar/oauth-events', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        providerToken: params.providerToken,
+        start: params.start,
+        end: params.end,
+        calendarId: params.calendarId,
+        q: params.q,
+        maxResults: params.maxResults,
+      }),
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => null);
+      throw new Error(errorData?.error || 'Failed to fetch Google Calendar events from Google login');
+    }
+
+    return res.json();
+  },
+
+  async fetchGoogleCalendarConnection(): Promise<{
+    success: boolean;
+    connected: boolean;
+    calendarId: string;
+  }> {
+    const headers = await getAuthHeaders();
+    const res = await fetch('/api/google-calendar/connection', { headers });
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => null);
+      throw new Error(errorData?.error || 'Failed to fetch Google Calendar connection status');
+    }
+    return res.json();
+  },
+
+  async connectGoogleCalendar(params: {
+    providerToken: string;
+    providerRefreshToken?: string;
+    providerTokenExpiry?: string;
+    calendarId?: string;
+    start?: string;
+    end?: string;
+    maxResults?: number;
+  }) {
+    const headers = await getAuthHeaders();
+    const res = await fetch('/api/google-calendar/connect', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(params),
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => null);
+      throw new Error(errorData?.error || 'Failed to connect Google Calendar');
+    }
+
+    return res.json();
+  },
+
+  async syncConnectedGoogleCalendar(params?: {
+    start?: string;
+    end?: string;
+    maxResults?: number;
+  }) {
+    const headers = await getAuthHeaders();
+    const res = await fetch('/api/google-calendar/sync-connected', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(params || {}),
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => null);
+      throw new Error(errorData?.error || 'Failed to sync connected Google Calendar');
+    }
+
+    return res.json();
+  },
+
+  async disconnectGoogleCalendar() {
+    const headers = await getAuthHeaders();
+    const res = await fetch('/api/google-calendar/connection', {
+      method: 'DELETE',
+      headers,
+    });
+
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => null);
+      throw new Error(errorData?.error || 'Failed to disconnect Google Calendar');
+    }
+
+    return res.json();
+  },
+
+  mapGoogleEventsToCalendarEvents(
+    events: Array<{
+      id: string;
+      title: string;
+      description: string;
+      startTime: string | null;
+      endTime: string | null;
+      calendarId?: string;
+      htmlLink?: string;
+    }>,
+    sourceUrl: string,
+  ): CalendarEvent[] {
+    return events
+      .filter((event) => event.startTime && event.endTime)
+      .map((event) => ({
+        id: event.id,
+        title: event.title,
+        description: event.description || undefined,
+        start: new Date(event.startTime as string),
+        end: new Date(event.endTime as string),
+        type: inferGoogleEventType(event.title, event.description || ""),
+        sourceUrl,
+      }))
+      .filter((event) => !Number.isNaN(event.start.getTime()) && !Number.isNaN(event.end.getTime()));
   }
 };

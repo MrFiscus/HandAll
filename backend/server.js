@@ -8,12 +8,11 @@ import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 import { dbPromise } from './src/db.js';
 import * as AI from './src/ai.js';
-import { fetchGoogleCalendarEvents } from './src/googleCalendar.js';
-import nodeFetch from 'node-fetch';
-
-if (!globalThis.fetch) {
-  globalThis.fetch = nodeFetch;
-}
+import {
+  fetchGoogleCalendarEvents,
+  fetchGoogleCalendarEventsWithAccessToken,
+  fetchGoogleCalendarEventsWithRefreshToken,
+} from './src/googleCalendar.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -50,7 +49,6 @@ const supabase = SUPABASE_URL && SUPABASE_ANON_KEY
 
 app.use(cors());
 app.use(bodyParser.json({ limit: '10mb' }));
-app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
 
 if (hasFrontendBuild) {
   app.use(express.static(frontendDistDir));
@@ -99,8 +97,13 @@ async function getUserWithCalendarSources(localUserId) {
     'SELECT url FROM calendar_sources WHERE user_id = ? ORDER BY id ASC',
     localUserId
   );
-  const urls = calendarSources.map((source) => source.url);
-  return shapeUserForApi(user, urls);
+  const shapedUser = shapeUserForApi(user, calendarSources.map((source) => source.url));
+  return shapedUser
+    ? {
+        ...shapedUser,
+        google_calendar_connected: !!user?.google_calendar_connected,
+      }
+    : shapedUser;
 }
 
 function sideGoalsListFromUserRow(user) {
@@ -109,6 +112,31 @@ function sideGoalsListFromUserRow(user) {
   if (fromJson.length) return fromJson;
   if (user.side_goal && String(user.side_goal).trim()) return [String(user.side_goal).trim()];
   return [];
+}
+
+function buildCalendarSyncRange(start, end) {
+  const startDate = start ? new Date(start) : new Date();
+  const endDate = end ? new Date(end) : new Date();
+
+  if (!start) {
+    startDate.setDate(startDate.getDate() - 7);
+  }
+  if (!end) {
+    endDate.setDate(endDate.getDate() + 90);
+  }
+
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    throw new Error('Invalid start or end date');
+  }
+
+  if (endDate <= startDate) {
+    throw new Error('The end date must be after the start date');
+  }
+
+  return {
+    start: startDate.toISOString(),
+    end: endDate.toISOString(),
+  };
 }
 
 async function getOrCreateLocalUser(authUser) {
@@ -277,6 +305,301 @@ app.get('/api/google-calendar/events', async (req, res) => {
     console.error('Google Calendar import error:', error);
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to fetch Google Calendar events',
+    });
+  }
+});
+
+app.post('/api/google-calendar/oauth-events', async (req, res) => {
+  const {
+    providerToken,
+    start,
+    end,
+    calendarId,
+    q,
+    maxResults,
+  } = req.body || {};
+
+  if (typeof providerToken !== 'string' || !providerToken.trim()) {
+    return res.status(400).json({ error: 'providerToken is required' });
+  }
+
+  if (typeof start !== 'string' || typeof end !== 'string') {
+    return res.status(400).json({ error: 'start and end are required' });
+  }
+
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    return res.status(400).json({ error: 'Invalid start or end date' });
+  }
+
+  if (endDate <= startDate) {
+    return res.status(400).json({ error: 'The end date must be after the start date' });
+  }
+
+  try {
+    const result = await fetchGoogleCalendarEventsWithAccessToken({
+      accessToken: providerToken.trim(),
+      calendarId: typeof calendarId === 'string' ? calendarId : undefined,
+      timeMin: startDate.toISOString(),
+      timeMax: endDate.toISOString(),
+      maxResults: Number.isFinite(Number(maxResults)) ? Math.min(Number(maxResults), 1000) : 250,
+      q: typeof q === 'string' ? q : undefined,
+    });
+
+    res.json({
+      success: true,
+      ...result,
+      range: {
+        start: startDate.toISOString(),
+        end: endDate.toISOString(),
+      },
+    });
+  } catch (error) {
+    console.error('Google OAuth calendar import error:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to fetch Google Calendar events with Google login',
+    });
+  }
+});
+
+app.get('/api/google-calendar/connection', async (req, res) => {
+  const db = await getDB();
+  const user = await db.get(
+    `SELECT google_calendar_connected, google_calendar_calendar_id
+     FROM users
+     WHERE id = ?`,
+    req.localUser.id,
+  );
+
+  res.json({
+    success: true,
+    connected: !!user?.google_calendar_connected,
+    calendarId: user?.google_calendar_calendar_id || 'primary',
+  });
+});
+
+app.post('/api/google-calendar/connect', async (req, res) => {
+  const {
+    providerToken,
+    providerRefreshToken,
+    providerTokenExpiry,
+    calendarId,
+    start,
+    end,
+    q,
+    maxResults,
+  } = req.body || {};
+
+  if (typeof providerToken !== 'string' || !providerToken.trim()) {
+    return res.status(400).json({ error: 'providerToken is required' });
+  }
+
+  let syncRange;
+  try {
+    syncRange = buildCalendarSyncRange(start, end);
+  } catch (error) {
+    return res.status(400).json({
+      error: error instanceof Error ? error.message : 'Invalid calendar sync range',
+    });
+  }
+
+  try {
+    const result = await fetchGoogleCalendarEventsWithAccessToken({
+      accessToken: providerToken.trim(),
+      calendarId: typeof calendarId === 'string' ? calendarId : undefined,
+      timeMin: syncRange.start,
+      timeMax: syncRange.end,
+      maxResults: Number.isFinite(Number(maxResults)) ? Math.min(Number(maxResults), 1000) : 250,
+      q: typeof q === 'string' ? q : undefined,
+    });
+
+    const db = await getDB();
+    await db.run(
+      `UPDATE users
+       SET google_calendar_connected = 1,
+           google_calendar_calendar_id = ?,
+           google_calendar_access_token = ?,
+           google_calendar_refresh_token = CASE
+             WHEN ? IS NULL OR ? = '' THEN google_calendar_refresh_token
+             ELSE ?
+           END,
+           google_calendar_token_expiry = CASE
+             WHEN ? IS NULL OR ? = '' THEN google_calendar_token_expiry
+             ELSE ?
+           END
+       WHERE id = ?`,
+      result.calendarId || 'primary',
+      providerToken.trim(),
+      providerRefreshToken ?? null,
+      providerRefreshToken ?? null,
+      providerRefreshToken ?? null,
+      providerTokenExpiry ?? null,
+      providerTokenExpiry ?? null,
+      providerTokenExpiry ?? null,
+      req.localUser.id,
+    );
+
+    const sourceUrl = `google-oauth:${result.calendarId || 'primary'}`;
+    await db.run(
+      'INSERT OR IGNORE INTO calendar_sources (user_id, url) VALUES (?, ?)',
+      req.localUser.id,
+      sourceUrl,
+    );
+
+    res.json({
+      success: true,
+      connected: true,
+      sourceUrl,
+      ...result,
+      range: syncRange,
+    });
+  } catch (error) {
+    console.error('Google Calendar connect error:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to connect Google Calendar',
+    });
+  }
+});
+
+app.post('/api/google-calendar/sync-connected', async (req, res) => {
+  const { start, end, q, maxResults } = req.body || {};
+
+  let syncRange;
+  try {
+    syncRange = buildCalendarSyncRange(start, end);
+  } catch (error) {
+    return res.status(400).json({
+      error: error instanceof Error ? error.message : 'Invalid calendar sync range',
+    });
+  }
+
+  try {
+    const db = await getDB();
+    const user = await db.get(
+      `SELECT google_calendar_connected, google_calendar_calendar_id, google_calendar_refresh_token
+       FROM users
+       WHERE id = ?`,
+      req.localUser.id,
+    );
+
+    if (!user?.google_calendar_connected) {
+      return res.status(400).json({ error: 'Google Calendar is not connected for this user.' });
+    }
+
+    if (!user.google_calendar_refresh_token) {
+      return res.status(400).json({
+        error: 'No Google refresh token is stored. Reconnect Google Calendar and approve access again.',
+      });
+    }
+
+    const result = await fetchGoogleCalendarEventsWithRefreshToken({
+      refreshToken: user.google_calendar_refresh_token,
+      calendarId: user.google_calendar_calendar_id || 'primary',
+      timeMin: syncRange.start,
+      timeMax: syncRange.end,
+      maxResults: Number.isFinite(Number(maxResults)) ? Math.min(Number(maxResults), 1000) : 250,
+      q: typeof q === 'string' ? q : undefined,
+    });
+
+    await db.run(
+      `UPDATE users
+       SET google_calendar_access_token = ?,
+           google_calendar_token_expiry = ?
+       WHERE id = ?`,
+      result.refreshedAccessToken,
+      result.refreshedAccessTokenExpiry || '',
+      req.localUser.id,
+    );
+
+    res.json({
+      success: true,
+      connected: true,
+      sourceUrl: `google-oauth:${result.calendarId || 'primary'}`,
+      calendarId: result.calendarId,
+      events: result.events,
+      tasks: result.tasks,
+      range: syncRange,
+    });
+  } catch (error) {
+    console.error('Google Calendar sync-connected error:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to sync connected Google Calendar',
+    });
+  }
+});
+
+app.delete('/api/google-calendar/connection', async (req, res) => {
+  const db = await getDB();
+  const user = await db.get(
+    'SELECT google_calendar_calendar_id FROM users WHERE id = ?',
+    req.localUser.id,
+  );
+  const sourceUrl = `google-oauth:${user?.google_calendar_calendar_id || 'primary'}`;
+
+  await db.run(
+    `UPDATE users
+     SET google_calendar_connected = 0,
+         google_calendar_calendar_id = '',
+         google_calendar_access_token = '',
+         google_calendar_refresh_token = '',
+         google_calendar_token_expiry = ''
+     WHERE id = ?`,
+    req.localUser.id,
+  );
+  await db.run(
+    'DELETE FROM calendar_sources WHERE user_id = ? AND url = ?',
+    req.localUser.id,
+    sourceUrl,
+  );
+
+  res.json({ success: true, sourceUrl });
+});
+
+app.post('/api/calendar-url-preview', async (req, res) => {
+  const { url } = req.body || {};
+
+  if (typeof url !== 'string' || !url.trim()) {
+    return res.status(400).json({ error: 'url is required' });
+  }
+
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(url.trim());
+  } catch {
+    return res.status(400).json({ error: 'Invalid calendar URL' });
+  }
+
+  if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+    return res.status(400).json({ error: 'Only http and https calendar URLs are supported' });
+  }
+
+  try {
+    const response = await fetch(parsedUrl.toString(), {
+      method: 'GET',
+      redirect: 'follow',
+      headers: {
+        'User-Agent': 'HandAll-Calendar-Importer/1.0',
+      },
+    });
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: `Failed to fetch calendar URL (${response.status} ${response.statusText})`,
+      });
+    }
+
+    const icalData = await response.text();
+    res.json({
+      success: true,
+      url: parsedUrl.toString(),
+      icalData,
+    });
+  } catch (error) {
+    console.error('Calendar URL preview fetch error:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to fetch calendar URL',
     });
   }
 });

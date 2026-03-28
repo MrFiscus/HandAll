@@ -47,8 +47,8 @@ export interface UserProfile {
   sleepTime: string;
   sideGoals: string[];
   calendarUrls: string[];
-  /** 0–100, persisted on server; drives planner + AI */
   motivation?: number;
+  googleCalendarConnected: boolean;
 }
 
 export interface AppState {
@@ -125,6 +125,7 @@ export const useAppStore = create<AppState>()(
         sleepTime: "23:00",
         sideGoals: [],
         calendarUrls: [],
+        googleCalendarConnected: false,
       },
       events: [],
       pendingSuggestions: [],

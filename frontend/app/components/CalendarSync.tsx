@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -13,6 +13,9 @@ import { format } from "date-fns";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { CalendarEvent } from "../store/useAppStore";
 import { api } from "../utils/api";
+import { supabase } from "../lib/supabase";
+
+const GOOGLE_CALENDAR_CONNECT_QUERY = "google_calendar_connect";
 
 export default function CalendarSync() {
   const { userProfile, setUserProfile, syncCalendarEvents, removeExternalEvents, lastCalendarSync } = useAppStore();
@@ -21,7 +24,25 @@ export default function CalendarSync() {
   const [showDialog, setShowDialog] = useState(false);
   const [previewEvents, setPreviewEvents] = useState<CalendarEvent[]>([]);
   const [previewSource, setPreviewSource] = useState<string | null>(null);
+  const [isGoogleCalendarConnected, setIsGoogleCalendarConnected] = useState(userProfile.googleCalendarConnected);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setIsGoogleCalendarConnected(userProfile.googleCalendarConnected);
+  }, [userProfile.googleCalendarConnected]);
+
+  useEffect(() => {
+    const loadConnectionState = async () => {
+      try {
+        const connection = await api.fetchGoogleCalendarConnection();
+        setIsGoogleCalendarConnected(connection.connected);
+      } catch (error) {
+        console.error("Failed to load Google Calendar connection state:", error);
+      }
+    };
+
+    loadConnectionState();
+  }, []);
 
   const clearPreview = () => {
     setPreviewEvents([]);
@@ -154,11 +175,76 @@ export default function CalendarSync() {
   };
 
   const handleRemoveCalendar = async (url: string) => {
+    if (url.startsWith("google-oauth:")) {
+      await handleDisconnectGoogleCalendar();
+      return;
+    }
+
     await setUserProfile({
       calendarUrls: userProfile.calendarUrls.filter((u) => u !== url),
     });
     await removeExternalEvents(url);
     toast.success("Calendar removed");
+  };
+
+  const handleConnectGoogleCalendar = async () => {
+    if (!supabase) {
+      toast.error("Supabase is not configured.");
+      return;
+    }
+
+    const redirectUrl = new URL(`${window.location.origin}/settings`);
+    redirectUrl.searchParams.set(GOOGLE_CALENDAR_CONNECT_QUERY, "1");
+
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        scopes: "https://www.googleapis.com/auth/calendar.readonly",
+        redirectTo: redirectUrl.toString(),
+        queryParams: {
+          access_type: "offline",
+          prompt: "consent",
+        },
+      },
+    });
+
+    if (error) {
+      toast.error(error.message || "Google Calendar connection failed");
+    }
+  };
+
+  const handleSyncConnectedGoogleCalendar = async () => {
+    setIsLoading(true);
+    try {
+      const result = await api.syncConnectedGoogleCalendar({ maxResults: 500 });
+      const importedEvents = api.mapGoogleEventsToCalendarEvents(result.events, result.sourceUrl);
+      await syncCalendarEvents(importedEvents, result.sourceUrl);
+      toast.success(`Synced ${importedEvents.length} events from your connected Google Calendar.`);
+    } catch (error) {
+      console.error("Connected Google Calendar sync error:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to sync connected Google Calendar");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleDisconnectGoogleCalendar = async () => {
+    setIsLoading(true);
+    try {
+      const result = await api.disconnectGoogleCalendar();
+      await setUserProfile({
+        calendarUrls: userProfile.calendarUrls.filter((url) => url !== result.sourceUrl),
+        googleCalendarConnected: false,
+      });
+      await removeExternalEvents(result.sourceUrl);
+      setIsGoogleCalendarConnected(false);
+      toast.success("Disconnected Google Calendar.");
+    } catch (error) {
+      console.error("Failed to disconnect Google Calendar:", error);
+      toast.error(error instanceof Error ? error.message : "Failed to disconnect Google Calendar");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const previewTasks = convertCalendarEventsToTaskPreview(previewEvents);
@@ -171,6 +257,47 @@ export default function CalendarSync() {
 
   return (
     <div className="space-y-4">
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Google Calendar</CardTitle>
+          <CardDescription className="text-xs">
+            Connect a real Google Calendar account once, then sync it later without relying on a temporary login token.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center justify-between rounded-lg border bg-muted/20 p-3">
+            <div>
+              <p className="text-sm font-medium">Connection status</p>
+              <p className="text-xs text-muted-foreground">
+                {isGoogleCalendarConnected ? "Connected and ready to sync." : "Not connected yet."}
+              </p>
+            </div>
+            <div className={`rounded-full px-2 py-1 text-xs font-medium ${isGoogleCalendarConnected ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-700"}`}>
+              {isGoogleCalendarConnected ? "Connected" : "Not connected"}
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            {!isGoogleCalendarConnected ? (
+              <Button onClick={handleConnectGoogleCalendar} className="flex-1">
+                <Calendar className="h-4 w-4 mr-2" />
+                Connect Google Calendar
+              </Button>
+            ) : (
+              <>
+                <Button onClick={handleSyncConnectedGoogleCalendar} disabled={isLoading} className="flex-1">
+                  {isLoading ? <RefreshCw className="h-4 w-4 mr-2 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-2" />}
+                  Sync Connected Calendar
+                </Button>
+                <Button variant="outline" onClick={handleDisconnectGoogleCalendar} disabled={isLoading}>
+                  Disconnect
+                </Button>
+              </>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
         <DialogTrigger asChild>
           <Button variant="outline" className="w-full">

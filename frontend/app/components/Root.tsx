@@ -18,6 +18,8 @@ import { Input } from "./ui/input";
 import { format } from "date-fns";
 import WelcomeGuide from "./WelcomeGuide";
 import { supabase } from "../lib/supabase";
+import { api } from "../utils/api";
+import { toast } from "sonner";
 
 interface ChatMessage {
   id: string;
@@ -35,11 +37,20 @@ interface ChatApiResponse {
 const AGENT_API_BASE_URL =
   import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "/agent-api";
 const AGENT_USER_ID_KEY = "handall-agent-user-id";
+const GOOGLE_CALENDAR_SYNC_KEY = "handall-google-calendar-sync";
+const GOOGLE_CALENDAR_CONNECT_QUERY = "google_calendar_connect";
 
 export default function Root() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { userProfile, isSetupComplete, apiLoaded, loadAppData, lastMotivation } = useAppStore();
+  const {
+    userProfile,
+    isSetupComplete,
+    apiLoaded,
+    loadAppData,
+    lastMotivation,
+    syncCalendarEvents,
+  } = useAppStore();
   const [showChat, setShowChat] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
@@ -111,6 +122,76 @@ export default function Root() {
       navigate("/setup");
     }
   }, [session, apiLoaded, isSetupComplete, location.pathname, navigate]);
+
+  useEffect(() => {
+    const maybeHandleGoogleCalendarConnection = async () => {
+      if (!session || !apiLoaded) {
+        return;
+      }
+
+      const syncKey = `${GOOGLE_CALENDAR_SYNC_KEY}:${session.user.id}`;
+      const url = new URL(window.location.href);
+      const connectRequested = url.searchParams.get(GOOGLE_CALENDAR_CONNECT_QUERY) === "1";
+      const provider = session.user?.app_metadata?.provider;
+      const providerToken = (session as any)?.provider_token as string | undefined;
+      const providerRefreshToken = (session as any)?.provider_refresh_token as string | undefined;
+      const providerExpiresAt = (session as any)?.expires_at
+        ? new Date(Number((session as any).expires_at) * 1000).toISOString()
+        : undefined;
+
+      if (connectRequested && provider === "google" && providerToken) {
+        try {
+          const result = await api.connectGoogleCalendar({
+            providerToken,
+            providerRefreshToken,
+            providerTokenExpiry: providerExpiresAt,
+            maxResults: 500,
+          });
+
+          const importedEvents = api.mapGoogleEventsToCalendarEvents(result.events, result.sourceUrl);
+          if (importedEvents.length > 0) {
+            await syncCalendarEvents(importedEvents, result.sourceUrl);
+          }
+
+          await loadAppData();
+          sessionStorage.setItem(syncKey, "connected");
+          url.searchParams.delete(GOOGLE_CALENDAR_CONNECT_QUERY);
+          window.history.replaceState({}, "", url.toString());
+          toast.success(`Connected Google Calendar and imported ${importedEvents.length} events.`);
+          return;
+        } catch (error) {
+          console.error("Google Calendar connect callback failed:", error);
+          toast.error(
+            error instanceof Error
+              ? error.message
+              : "Could not complete Google Calendar connection.",
+          );
+        }
+      }
+
+      if (!userProfile.googleCalendarConnected) {
+        return;
+      }
+
+      const todayKey = `${syncKey}:${new Date().toISOString().slice(0, 10)}`;
+      if (sessionStorage.getItem(todayKey) === "done") {
+        return;
+      }
+
+      try {
+        const result = await api.syncConnectedGoogleCalendar({ maxResults: 500 });
+        const importedEvents = api.mapGoogleEventsToCalendarEvents(result.events, result.sourceUrl);
+        if (importedEvents.length > 0) {
+          await syncCalendarEvents(importedEvents, result.sourceUrl);
+        }
+        sessionStorage.setItem(todayKey, "done");
+      } catch (error) {
+        console.error("Connected Google Calendar sync failed:", error);
+      }
+    };
+
+    maybeHandleGoogleCalendarConnection();
+  }, [session, apiLoaded, syncCalendarEvents, loadAppData, userProfile.googleCalendarConnected]);
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });

@@ -25,6 +25,11 @@ export async function initDB() {
       wake_time TEXT DEFAULT '07:00',
       side_goal TEXT DEFAULT '',
       google_calendar_url TEXT DEFAULT '',
+      google_calendar_connected INTEGER DEFAULT 0,
+      google_calendar_calendar_id TEXT DEFAULT '',
+      google_calendar_access_token TEXT DEFAULT '',
+      google_calendar_refresh_token TEXT DEFAULT '',
+      google_calendar_token_expiry TEXT DEFAULT '',
       level INTEGER DEFAULT 0,
       xp INTEGER DEFAULT 0
     );
@@ -65,6 +70,11 @@ export async function initDB() {
 
   // Migration for existing databases created before auth_user_id existed.
   await db.exec('ALTER TABLE users ADD COLUMN auth_user_id TEXT').catch(() => {});
+  await db.exec('ALTER TABLE users ADD COLUMN google_calendar_connected INTEGER DEFAULT 0').catch(() => {});
+  await db.exec("ALTER TABLE users ADD COLUMN google_calendar_calendar_id TEXT DEFAULT ''").catch(() => {});
+  await db.exec("ALTER TABLE users ADD COLUMN google_calendar_access_token TEXT DEFAULT ''").catch(() => {});
+  await db.exec("ALTER TABLE users ADD COLUMN google_calendar_refresh_token TEXT DEFAULT ''").catch(() => {});
+  await db.exec("ALTER TABLE users ADD COLUMN google_calendar_token_expiry TEXT DEFAULT ''").catch(() => {});
   
   // Migration for external_id on tasks
   await db.exec('ALTER TABLE tasks ADD COLUMN external_id TEXT').catch(() => {});

@@ -173,12 +173,15 @@ def _generate_ai_suggestions(side_goals: List[str], motivation: int) -> Dict[str
     if not model:
         return {"goal": fallback_goal, "free_time": fallback_free}
 
+    goals_line = json.dumps(side_goals)
     prompt = (
-        "You are helping a student plan free time and goal tasks. "
-        "Return only valid JSON with keys goal and free_time, each containing a short array of task titles. "
-        "Make goal suggestions practical and specific. Make free_time suggestions restorative and light.\n\n"
-        f"motivation={motivation}\n"
-        f"side_goals={json.dumps(side_goals)}"
+        "You are helping a student plan free time and personal side-goal work. "
+        "They may have MULTIPLE side goals; your goal-task suggestions must give fair, practical coverage across ALL of them "
+        "(rotate themes so no goal is ignored). Academic deadlines are handled separately — these are personal growth tasks.\n"
+        "Return only valid JSON with keys goal and free_time, each an array of short actionable task titles. "
+        "goal titles should mention which goal they support when multiple goals exist.\n\n"
+        f"motivation={motivation} (0=exhausted, 100=high energy)\n"
+        f"side_goals={goals_line}"
     )
 
     try:
@@ -293,6 +296,21 @@ def _build_busy_intervals(
     return busy
 
 
+def _usable_gap_fraction(motivation: int) -> float:
+    """Lower motivation → leave more buffer; higher → use more of each gap for planning."""
+    if motivation <= 25:
+        return 0.32
+    if motivation <= 40:
+        return 0.38
+    if motivation <= 55:
+        return 0.45
+    if motivation <= 70:
+        return 0.52
+    if motivation <= 85:
+        return 0.58
+    return 0.64
+
+
 def _calculate_usable_slots(
     busy_intervals: List[Dict[str, datetime]],
     tz: ZoneInfo,
@@ -300,10 +318,12 @@ def _calculate_usable_slots(
     sleep_time: str,
     plan_start: datetime,
     horizon_days: int,
+    motivation: int = 50,
 ) -> List[Dict[str, Any]]:
     wake = _parse_time(wake_time, "07:00")
     sleep = _parse_time(sleep_time, "23:00")
     slots: List[Dict[str, Any]] = []
+    frac = _usable_gap_fraction(motivation)
 
     busy_by_day: Dict[str, List[Dict[str, datetime]]] = defaultdict(list)
     for interval in busy_intervals:
@@ -322,7 +342,7 @@ def _calculate_usable_slots(
             gap_end = min(interval["start"], day_end)
             if gap_end > cursor:
                 gap_minutes = (gap_end - cursor).total_seconds() / 60
-                usable_minutes = _round_down_to_30(gap_minutes * 0.5)
+                usable_minutes = _round_down_to_30(gap_minutes * frac)
                 if usable_minutes >= 30:
                     slots.append(
                         {
@@ -336,7 +356,7 @@ def _calculate_usable_slots(
 
         if day_end > cursor:
             gap_minutes = (day_end - cursor).total_seconds() / 60
-            usable_minutes = _round_down_to_30(gap_minutes * 0.5)
+            usable_minutes = _round_down_to_30(gap_minutes * frac)
             if usable_minutes >= 30:
                 slots.append(
                     {
@@ -358,6 +378,20 @@ def _daily_working_limit(motivation: int) -> int:
     if motivation <= 70:
         return 3
     return 4
+
+
+def _working_block_minutes(motivation: int, remaining_minutes: int, slot_remaining: int) -> int:
+    """Chunk size for deadline work: low energy → short bursts; high → longer focus."""
+    if motivation <= 35:
+        return 30
+    if motivation <= 55:
+        return 30 if remaining_minutes < 50 or slot_remaining < 50 else 60
+    if motivation <= 75:
+        return 60 if remaining_minutes >= 60 and slot_remaining >= 60 else 30
+    # high motivation — allow longer blocks when the slot supports it
+    if slot_remaining >= 90 and remaining_minutes >= 75:
+        return 90
+    return 60 if remaining_minutes >= 60 and slot_remaining >= 60 else 30
 
 
 def _make_task(
@@ -415,6 +449,7 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
         payload.get("sleep_time") or "23:00",
         plan_start,
         horizon_days,
+        motivation,
     )
 
     suggestions: List[Dict[str, Any]] = []
@@ -434,7 +469,9 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
                 slot_index += 1
                 continue
 
-            duration = 60 if remaining_minutes >= 60 else 30
+            duration = _working_block_minutes(
+                motivation, remaining_minutes, slot["remaining_minutes"]
+            )
             if slot["remaining_minutes"] < duration:
                 slot_index += 1
                 continue
@@ -473,13 +510,20 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
     goal_index = 0
     free_index = 0
     extra_counter = 0
+    num_goals = len(side_goals)
     for slot in remaining_slots:
         if slot["remaining_minutes"] < 30:
             continue
 
-        duration = 60 if slot["remaining_minutes"] >= 60 else 30
+        if motivation <= 40:
+            duration = 30
+        elif motivation >= 80 and slot["remaining_minutes"] >= 60:
+            duration = 60
+        else:
+            duration = 60 if slot["remaining_minutes"] >= 60 else 30
+
         choose_goal = (
-            side_goals
+            num_goals > 0
             and (
                 extra_bias == "goal"
                 or (extra_bias == "balanced" and extra_counter % 2 == 0)
@@ -489,10 +533,18 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
         if choose_goal and goal_ideas:
             idea = goal_ideas[goal_index % len(goal_ideas)]
             task_type = "goal"
-            description = "Goal task suggested from your current motivation and side goals."
+            active_goal = side_goals[extra_counter % num_goals] if num_goals else ""
+            if active_goal and active_goal.lower() not in idea.lower():
+                title = f"{active_goal}: {idea}"
+            else:
+                title = idea
+            description = (
+                f"Side-goal block aligned to motivation {motivation}/100. "
+                f"Covers your goals: {', '.join(side_goals)}."
+            )
             goal_index += 1
         else:
-            idea = free_ideas[free_index % len(free_ideas)]
+            title = free_ideas[free_index % len(free_ideas)]
             task_type = "freetime"
             description = "Free time suggestion to protect rest and keep your schedule sustainable."
             free_index += 1
@@ -500,7 +552,7 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
         suggestions.append(
             _make_task(
                 task_id=f"extra-{task_type}-{extra_counter + 1}",
-                title=idea,
+                title=title,
                 description=description,
                 start=slot["start"],
                 duration_minutes=duration,
@@ -532,5 +584,7 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
             "timezone": timezone_name,
             "planning_window_days": horizon_days,
             "free_slots_considered": len(usable_slots),
+            "side_goals": side_goals,
+            "daily_working_block_cap": _daily_working_limit(motivation),
         },
     }

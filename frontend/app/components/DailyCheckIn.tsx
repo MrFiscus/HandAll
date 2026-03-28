@@ -12,8 +12,13 @@ export default function DailyCheckIn() {
   const [motivation, setMotivationLocal] = useState(lastMotivation);
   const [submitted, setSubmitted] = useState(false);
 
-  const handleSubmit = () => {
-    setMotivation(motivation);
+  const handleSubmit = async () => {
+    try {
+      await setMotivation(motivation);
+    } catch (e) {
+      console.error(e);
+      useAppStore.setState({ lastMotivation: motivation });
+    }
     setSubmitted(true);
 
     setTimeout(() => {

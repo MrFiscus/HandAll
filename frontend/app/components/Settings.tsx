@@ -12,7 +12,7 @@ import { toast } from "sonner";
 import { supabase } from "../lib/supabase";
 
 export default function Settings() {
-  const { userProfile, setUserProfile } = useAppStore();
+  const { userProfile, setUserProfile, lastMotivation } = useAppStore();
   const [name, setName] = useState(userProfile.name);
   const [wakeTime, setWakeTime] = useState(userProfile.wakeTime);
   const [sleepTime, setSleepTime] = useState(userProfile.sleepTime);
@@ -71,6 +71,7 @@ export default function Settings() {
         name: trimmedName,
         wakeTime,
         sleepTime,
+        motivation: lastMotivation,
       });
 
       setProfileName(trimmedName);

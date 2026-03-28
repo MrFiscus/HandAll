@@ -1,3 +1,4 @@
+import json
 import os
 import sqlite3
 from contextvars import ContextVar
@@ -89,6 +90,23 @@ def _open_app_db() -> sqlite3.Connection:
     connection = sqlite3.connect(SQLITE_DB_PATH)
     connection.row_factory = sqlite3.Row
     return connection
+
+
+def _side_goals_from_user_record(user: Optional[Dict[str, Any]]) -> List[str]:
+    if not user:
+        return []
+    raw = user.get("side_goals_json")
+    if raw and isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return [str(g).strip() for g in data if str(g).strip()]
+        except Exception:
+            pass
+    sg = user.get("side_goal") or ""
+    if isinstance(sg, str) and sg.strip():
+        return [sg.strip()]
+    return []
 
 
 def _normalize_task_type(task_type: str) -> str:
@@ -498,7 +516,7 @@ def rebalance_app_plan(days: int = 7) -> Dict[str, Any]:
                 "timezone": timezone_name,
                 "wake_time": local_user.get("wake_time") or "07:00",
                 "sleep_time": local_user.get("sleep_time") or "23:00",
-                "side_goals": [local_user["side_goal"]] if local_user.get("side_goal") else [],
+                "side_goals": _side_goals_from_user_record(local_user),
                 "motivation": motivation,
                 "horizon_days": safe_days,
                 "events": current_events,
@@ -580,8 +598,45 @@ def fetch_user_data(state: AgentState) -> Dict[str, Any]:
     user_metadata = {
         "name": profile.get("name", "there"),
         "timezone": profile.get("timezone", "UTC"),
-        "prefs": profile.get("prefs", {}),
+        "prefs": dict(profile.get("prefs") or {}),
     }
+
+    auth_uid = state.get("auth_user_id")
+    if auth_uid:
+        try:
+            with _open_app_db() as connection:
+                row = connection.execute(
+                    """
+                    SELECT username, side_goals_json, side_goal, motivation, wake_time, sleep_time
+                    FROM users
+                    WHERE auth_user_id = ?
+                    LIMIT 1
+                    """,
+                    (auth_uid,),
+                ).fetchone()
+            if row:
+                row_d = dict(row)
+                prefs = dict(user_metadata["prefs"])
+                goals = _side_goals_from_user_record(row_d)
+                prefs["side_goals"] = goals
+                prefs["sideGoals"] = goals
+                mot = row_d.get("motivation")
+                if mot is not None and str(mot).strip() != "":
+                    try:
+                        prefs["motivation"] = max(0, min(100, int(float(mot))))
+                    except (TypeError, ValueError):
+                        prefs.setdefault("motivation", 50)
+                else:
+                    prefs.setdefault("motivation", 50)
+                if row_d.get("wake_time"):
+                    prefs["wakeTime"] = row_d["wake_time"]
+                if row_d.get("sleep_time"):
+                    prefs["sleepTime"] = row_d["sleep_time"]
+                user_metadata["prefs"] = prefs
+                user_metadata["name"] = user_metadata.get("name") or row_d.get("username") or "there"
+        except Exception:
+            pass
+
     current_context = dict(_get_agent_context())
     current_context["user_metadata"] = user_metadata
     CURRENT_AGENT_CONTEXT.set(current_context)
@@ -594,11 +649,16 @@ def build_system_prompt(user_metadata: Dict[str, Any]) -> str:
     prefs = user_metadata.get("prefs", {})
     context = _get_agent_context()
     motivation = context.get("motivation", 50)
+    goals = prefs.get("side_goals") or prefs.get("sideGoals") or []
+    if isinstance(goals, str):
+        goals = [goals] if goals.strip() else []
+    goals_line = json.dumps(goals) if goals else "[]"
     return (
         f"You are HandAll's helpful AI planning agent assisting {name}. "
         f"The user's timezone is {timezone_name}. "
-        f"The user preferences are: {prefs}. "
-        f"The user's current motivation score is {motivation}/100. "
+        f"Current motivation/energy: {motivation}/100 (low = prefer shorter sessions, more rest, lighter tasks; high = can plan deeper work). "
+        f"Full side-goals list (use ALL in advice, not just one): {goals_line}. "
+        f"Other preferences: {json.dumps({k: v for k, v in prefs.items() if k not in {'side_goals', 'sideGoals'}})}. "
         "Use HandAll schedule tools to add, remove, inspect, and rebalance tasks inside the app whenever the user asks about their workload or plan. "
         "Use the Google Calendar tools only when the user explicitly wants external calendar events inspected or changed. "
         "When you edit the app schedule, confirm what you changed in plain language. Be concise, accurate, and proactive."

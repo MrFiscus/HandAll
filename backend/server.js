@@ -52,8 +52,39 @@ if (hasFrontendBuild) {
 
 fs.mkdirSync(calendarImportsDir, { recursive: true });
 
+const PLANNER_URL = (process.env.HANDALL_PLANNER_URL || 'http://127.0.0.1:8011').replace(/\/$/, '');
+
 // Helper to get DB
 const getDB = () => dbPromise;
+
+function parseSideGoalsJson(raw) {
+  if (!raw || typeof raw !== 'string') return [];
+  try {
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr.filter((g) => typeof g === 'string' && g.trim());
+  } catch {
+    return [];
+  }
+}
+
+function shapeUserForApi(user, calendarUrls) {
+  if (!user) return user;
+  let sideGoals = parseSideGoalsJson(user.side_goals_json);
+  if (sideGoals.length === 0 && user.side_goal && String(user.side_goal).trim()) {
+    sideGoals = [String(user.side_goal).trim()];
+  }
+  const motivation = Number.isFinite(Number(user.motivation))
+    ? Math.max(0, Math.min(100, Number(user.motivation)))
+    : 50;
+  return {
+    ...user,
+    calendar_urls: calendarUrls,
+    side_goals: sideGoals,
+    side_goal: sideGoals[0] ?? '',
+    motivation,
+  };
+}
 
 async function getUserWithCalendarSources(localUserId) {
   const db = await getDB();
@@ -62,11 +93,16 @@ async function getUserWithCalendarSources(localUserId) {
     'SELECT url FROM calendar_sources WHERE user_id = ? ORDER BY id ASC',
     localUserId
   );
+  const urls = calendarSources.map((source) => source.url);
+  return shapeUserForApi(user, urls);
+}
 
-  return {
-    ...user,
-    calendar_urls: calendarSources.map((source) => source.url),
-  };
+function sideGoalsListFromUserRow(user) {
+  if (!user) return [];
+  const fromJson = parseSideGoalsJson(user.side_goals_json);
+  if (fromJson.length) return fromJson;
+  if (user.side_goal && String(user.side_goal).trim()) return [String(user.side_goal).trim()];
+  return [];
 }
 
 async function getOrCreateLocalUser(authUser) {
@@ -254,45 +290,244 @@ app.get('/api/user', async (req, res) => {
 });
 
 app.post('/api/user/setup', async (req, res) => {
-  const { username, wake_time, sleep_time, side_goal, google_calendar_url, calendar_urls } = req.body;
+  const { username, wake_time, sleep_time, side_goal, side_goals, motivation, google_calendar_url, calendar_urls } =
+    req.body;
   const db = await getDB();
-  const calendarUrls = Array.isArray(calendar_urls)
-    ? [...new Set(calendar_urls.filter((url) => typeof url === 'string' && url.trim()).map((url) => url.trim()))]
-    : null;
-  const primaryCalendarUrl = calendarUrls
-    ? (calendarUrls[0] ?? '')
-    : (typeof google_calendar_url === 'string' ? google_calendar_url : null);
+  const uid = req.localUser.id;
+  const current = await db.get('SELECT * FROM users WHERE id = ?', uid);
+  if (!current) {
+    return res.status(404).json({ error: 'User not found' });
+  }
 
-  await db.run(
-    `UPDATE users
-     SET username = COALESCE(?, username),
-         wake_time = COALESCE(?, wake_time),
-         sleep_time = COALESCE(?, sleep_time),
-         side_goal = COALESCE(?, side_goal),
-         google_calendar_url = CASE WHEN ? IS NULL THEN google_calendar_url ELSE ? END
-     WHERE id = ?`,
-    username,
-    wake_time,
-    sleep_time,
-    side_goal,
-    primaryCalendarUrl,
-    primaryCalendarUrl,
-    req.localUser.id
-  );
+  let nextUsername = current.username || 'Student';
+  if (typeof username === 'string' && username.trim()) nextUsername = username.trim();
 
-  if (calendarUrls) {
-    await db.run('DELETE FROM calendar_sources WHERE user_id = ?', req.localUser.id);
-    for (const url of calendarUrls) {
-      await db.run(
-        'INSERT OR IGNORE INTO calendar_sources (user_id, url) VALUES (?, ?)',
-        req.localUser.id,
-        url
-      );
+  let nextWake = current.wake_time || '07:00';
+  if (typeof wake_time === 'string' && wake_time.trim()) nextWake = wake_time.trim();
+
+  let nextSleep = current.sleep_time || '23:00';
+  if (typeof sleep_time === 'string' && sleep_time.trim()) nextSleep = sleep_time.trim();
+
+  let sideGoalsJson = current.side_goals_json || '[]';
+  let legacySideGoal = current.side_goal || '';
+  if (Array.isArray(side_goals)) {
+    const cleaned = side_goals.map((s) => String(s).trim()).filter(Boolean);
+    sideGoalsJson = JSON.stringify(cleaned);
+    legacySideGoal = cleaned[0] || '';
+  } else if (typeof side_goal === 'string') {
+    const t = side_goal.trim();
+    if (t) {
+      sideGoalsJson = JSON.stringify([t]);
+      legacySideGoal = t;
     }
   }
 
-  const user = await getUserWithCalendarSources(req.localUser.id);
+  let nextMotivation = Number.isFinite(Number(current.motivation)) ? Number(current.motivation) : 50;
+  if (motivation !== undefined && motivation !== null && String(motivation).length > 0) {
+    const n = Number(motivation);
+    if (Number.isFinite(n)) nextMotivation = Math.max(0, Math.min(100, Math.round(n)));
+  }
+
+  const calendarUrls = Array.isArray(calendar_urls)
+    ? [...new Set(calendar_urls.filter((url) => typeof url === 'string' && url.trim()).map((url) => url.trim()))]
+    : null;
+  let nextGcal = current.google_calendar_url || '';
+  if (calendarUrls) {
+    nextGcal = calendarUrls[0] ?? '';
+  } else if (typeof google_calendar_url === 'string') {
+    nextGcal = google_calendar_url;
+  }
+
+  await db.run(
+    `UPDATE users
+     SET username = ?, wake_time = ?, sleep_time = ?, side_goal = ?, side_goals_json = ?, motivation = ?, google_calendar_url = ?
+     WHERE id = ?`,
+    nextUsername,
+    nextWake,
+    nextSleep,
+    legacySideGoal,
+    sideGoalsJson,
+    nextMotivation,
+    nextGcal,
+    uid
+  );
+
+  if (calendarUrls) {
+    await db.run('DELETE FROM calendar_sources WHERE user_id = ?', uid);
+    for (const url of calendarUrls) {
+      await db.run('INSERT OR IGNORE INTO calendar_sources (user_id, url) VALUES (?, ?)', uid, url);
+    }
+  }
+
+  const user = await getUserWithCalendarSources(uid);
   res.json({ success: true, user });
+});
+
+app.patch('/api/user/motivation', async (req, res) => {
+  try {
+    const n = Number(req.body?.motivation);
+    if (!Number.isFinite(n)) {
+      return res.status(400).json({ error: 'motivation must be a number' });
+    }
+    const m = Math.max(0, Math.min(100, Math.round(n)));
+    const db = await getDB();
+    await db.run('UPDATE users SET motivation = ? WHERE id = ?', m, req.localUser.id);
+    const user = await getUserWithCalendarSources(req.localUser.id);
+    res.json({ success: true, user });
+  } catch (err) {
+    console.error('motivation patch:', err);
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update motivation' });
+  }
+});
+
+function normalizePlannerTaskType(t) {
+  const x = String(t || 'working').toLowerCase();
+  if (x === 'free') return 'freetime';
+  return x;
+}
+
+app.post('/api/schedule/rebalance', async (req, res) => {
+  try {
+    const db = await getDB();
+    const uid = req.localUser.id;
+    const user = await db.get('SELECT * FROM users WHERE id = ?', uid);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    let motivation = Number.isFinite(Number(user.motivation)) ? Number(user.motivation) : 50;
+    if (req.body?.motivation !== undefined && req.body?.motivation !== null) {
+      const n = Number(req.body.motivation);
+      if (Number.isFinite(n)) motivation = Math.max(0, Math.min(100, Math.round(n)));
+    }
+    await db.run('UPDATE users SET motivation = ? WHERE id = ?', motivation, uid);
+
+    const horizonDays = Math.max(3, Math.min(14, parseInt(String(req.body?.horizon_days), 10) || 7));
+    const timezone =
+      typeof req.body?.timezone === 'string' && req.body.timezone.trim() ? req.body.timezone.trim() : 'UTC';
+
+    const now = new Date();
+    const horizon = new Date(now.getTime() + horizonDays * 86400000);
+    const nowIso = now.toISOString();
+    const horizonIso = horizon.toISOString();
+
+    const allRows = await db.all(
+      `SELECT * FROM tasks WHERE user_id = ? AND end_time >= ? AND start_time <= ? ORDER BY start_time ASC`,
+      uid,
+      nowIso,
+      horizonIso
+    );
+
+    const currentEvents = [];
+    for (const row of allRows) {
+      const rowType = (row.type || 'working').toLowerCase();
+      const rowStatus = (row.status || '').toLowerCase();
+      if (['working', 'goal', 'freetime', 'free'].includes(rowType) && rowStatus !== 'completed') {
+        continue;
+      }
+      currentEvents.push({
+        id: row.external_id || String(row.id),
+        title: row.title,
+        description: row.description || '',
+        start: row.start_time,
+        end: row.end_time,
+        type: rowType,
+        completed: rowStatus === 'completed',
+        sourceUrl: row.source_url,
+      });
+    }
+
+    const sideGoals = sideGoalsListFromUserRow(user);
+
+    const planPayload = {
+      user_id: String(uid),
+      name: user.username || 'Student',
+      timezone,
+      wake_time: user.wake_time || '07:00',
+      sleep_time: user.sleep_time || '23:00',
+      side_goals: sideGoals,
+      motivation,
+      horizon_days: horizonDays,
+      events: currentEvents,
+      assignments: [],
+    };
+
+    let planRes;
+    try {
+      planRes = await fetch(`${PLANNER_URL}/plan-week`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify(planPayload),
+      });
+    } catch (netErr) {
+      console.error('Planner fetch failed:', netErr);
+      const fresh = await getUserWithCalendarSources(uid);
+      return res.status(503).json({
+        error: 'Planner service unavailable',
+        detail: 'Start the Python AI backend on port 8011. Motivation was saved.',
+        user: fresh,
+      });
+    }
+
+    const planData = await planRes.json().catch(() => ({}));
+    if (!planRes.ok || !planData.success) {
+      const fresh = await getUserWithCalendarSources(uid);
+      return res.status(503).json({
+        error: planData.error || `Planner returned ${planRes.status}`,
+        user: fresh,
+      });
+    }
+
+    await db.run(
+      `DELETE FROM tasks
+       WHERE user_id = ?
+         AND start_time >= ?
+         AND start_time <= ?
+         AND lower(type) IN ('working', 'goal', 'freetime', 'free')
+         AND lower(COALESCE(status, '')) != 'completed'`,
+      uid,
+      nowIso,
+      horizonIso
+    );
+
+    const suggested = planData.suggested_tasks || [];
+    for (const task of suggested) {
+      const ttype = normalizePlannerTaskType(task.type);
+      await db.run(
+        `INSERT INTO tasks (user_id, external_id, title, description, start_time, end_time, type, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'Accepted')`,
+        uid,
+        task.id || null,
+        task.title,
+        task.description || null,
+        task.start,
+        task.end,
+        ttype
+      );
+    }
+
+    const tasks = await db.all('SELECT * FROM tasks WHERE user_id = ? ORDER BY start_time ASC', uid);
+    res.json({
+      success: true,
+      motivation,
+      inserted: suggested.length,
+      assignments: planData.assignments || [],
+      meta: planData.meta || {},
+      tasks: tasks.map((t) => ({
+        id: t.external_id || t.id.toString(),
+        db_id: t.id,
+        title: t.title,
+        description: t.description,
+        start: t.start_time,
+        end: t.end_time,
+        type: t.type ? t.type.toLowerCase() : 'working',
+        sourceUrl: t.source_url || undefined,
+        completed: t.status === 'Completed',
+        xpValue: t.type?.toLowerCase() === 'working' ? 50 : t.type?.toLowerCase() === 'goal' ? 30 : 10,
+      })),
+    });
+  } catch (err) {
+    console.error('schedule rebalance:', err);
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Rebalance failed' });
+  }
 });
 
 // --- Task Management Endpoints ---

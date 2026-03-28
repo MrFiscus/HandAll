@@ -13,16 +13,32 @@ function toIsoString(value: Date | string | undefined): string | undefined {
 }
 
 function mapUserProfile(data: any): UserProfile {
+  let sideGoals: string[] = [];
+  if (Array.isArray(data.side_goals)) {
+    sideGoals = data.side_goals
+      .filter((g: unknown) => typeof g === "string" && (g as string).trim())
+      .map((g: string) => g.trim());
+  } else if (typeof data.side_goal === "string" && data.side_goal.trim()) {
+    sideGoals = [data.side_goal.trim()];
+  }
+  let motivation: number | undefined;
+  if (data.motivation !== undefined && data.motivation !== null) {
+    const n = Number(data.motivation);
+    if (Number.isFinite(n)) motivation = Math.max(0, Math.min(100, Math.round(n)));
+  }
   return {
     name: data.username || "Student",
     level: data.level || 0,
     xp: data.xp || 0,
     wakeTime: data.wake_time || "07:00",
     sleepTime: data.sleep_time || "23:00",
-    sideGoals: data.side_goal ? [data.side_goal] : [],
+    sideGoals,
     calendarUrls: Array.isArray(data.calendar_urls)
       ? data.calendar_urls
-      : (data.google_calendar_url ? [data.google_calendar_url] : []),
+      : data.google_calendar_url
+        ? [data.google_calendar_url]
+        : [],
+    motivation,
   };
 }
 
@@ -63,9 +79,11 @@ export const api = {
         wake_time: profile.wakeTime,
         sleep_time: profile.sleepTime,
         side_goal: profile.sideGoals?.[0],
+        side_goals: profile.sideGoals,
+        motivation: profile.motivation,
         google_calendar_url: profile.calendarUrls?.[0],
-        calendar_urls: profile.calendarUrls
-      })
+        calendar_urls: profile.calendarUrls,
+      }),
     });
     const data = (await res.json().catch(() => null)) ?? {};
     if (!res.ok) {
@@ -77,6 +95,102 @@ export const api = {
       success: !!data.success,
       user: data.user ? mapUserProfile(data.user) : undefined,
     };
+  },
+
+  async patchMotivation(level: number) {
+    const headers = await getAuthHeaders();
+    if (!headers.Authorization) {
+      throw new Error(supabase ? "Not signed in." : "Supabase is not configured.");
+    }
+    const res = await fetch("/api/user/motivation", {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ motivation: level }),
+    });
+    const data = (await res.json().catch(() => null)) ?? {};
+    if (!res.ok) {
+      throw new Error(
+        typeof data.error === "string" ? data.error : "Failed to save motivation",
+      );
+    }
+    return data as { success: boolean; user?: any };
+  },
+
+  async rebalanceSchedule(opts?: {
+    motivation?: number;
+    horizonDays?: number;
+    timezone?: string;
+  }) {
+    const headers = await getAuthHeaders();
+    if (!headers.Authorization) {
+      throw new Error(supabase ? "Not signed in." : "Supabase is not configured.");
+    }
+    const res = await fetch("/api/schedule/rebalance", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        motivation: opts?.motivation,
+        horizon_days: opts?.horizonDays,
+        timezone:
+          opts?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC",
+      }),
+    });
+    const data = (await res.json().catch(() => null)) ?? {};
+    if (res.ok && data.success) {
+      return {
+        success: true as const,
+        motivation: data.motivation as number,
+        tasks: (data.tasks || []) as any[],
+        meta: data.meta,
+      };
+    }
+    if (res.status === 503) {
+      return {
+        success: false as const,
+        soft: true as const,
+        error: typeof data.error === "string" ? data.error : "Planner unavailable",
+        user: data.user ? mapUserProfile(data.user) : undefined,
+      };
+    }
+    throw new Error(
+      typeof data.error === "string" ? data.error : "Schedule rebalance failed",
+    );
+  },
+
+  async pushAgentProfile(profile: {
+    name: string;
+    wakeTime: string;
+    sleepTime: string;
+    sideGoals: string[];
+    calendarUrls: string[];
+    motivation: number;
+  }) {
+    if (!supabase) return;
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session?.user?.id) return;
+      await fetch(`${AGENT_API_BASE_URL}/profile/sync`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: session.user.id,
+          name: profile.name || "Student",
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+          prefs: {
+            wakeTime: profile.wakeTime,
+            sleepTime: profile.sleepTime,
+            sideGoals: profile.sideGoals,
+            side_goals: profile.sideGoals,
+            calendarUrls: profile.calendarUrls,
+            motivation: profile.motivation,
+          },
+        }),
+      });
+    } catch {
+      /* Python agent optional */
+    }
   },
 
   async fetchTasks(): Promise<CalendarEvent[]> {

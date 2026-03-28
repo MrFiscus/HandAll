@@ -47,6 +47,8 @@ export interface UserProfile {
   sleepTime: string;
   sideGoals: string[];
   calendarUrls: string[];
+  /** 0–100, persisted on server; drives planner + AI */
+  motivation?: number;
 }
 
 export interface AppState {
@@ -64,7 +66,7 @@ export interface AppState {
   removeEvent: (id: string) => Promise<void>;
   updateEvent: (id: string, updates: Partial<CalendarEvent>) => Promise<void>;
   completeSetup: () => void;
-  setMotivation: (level: number) => void;
+  setMotivation: (level: number) => Promise<void>;
   syncCalendarEvents: (newEvents: CalendarEvent[], sourceUrl?: string) => Promise<void>;
   removeExternalEvents: (sourceUrl?: string) => Promise<void>;
   setPendingSuggestions: (suggestions: SuggestedTask[]) => void;
@@ -135,7 +137,14 @@ export const useAppStore = create<AppState>()(
         try {
           const user = await api.fetchUser();
           const tasks = await api.fetchTasks();
-          set({ userProfile: user, events: tasks.map(normalizeCalendarEvent), apiLoaded: true });
+          const motivationFromServer =
+            typeof user.motivation === "number" ? user.motivation : get().lastMotivation;
+          set({
+            userProfile: user,
+            events: tasks.map(normalizeCalendarEvent),
+            lastMotivation: motivationFromServer,
+            apiLoaded: true,
+          });
         } catch (e) {
           console.error("Failed to load app data", e);
         }
@@ -158,11 +167,29 @@ export const useAppStore = create<AppState>()(
         const result = await api.updateUserSetup(profile);
         if (result.user) {
           set({ userProfile: result.user });
+          const merged = get().userProfile;
+          await api.pushAgentProfile({
+            name: merged.name,
+            wakeTime: merged.wakeTime,
+            sleepTime: merged.sleepTime,
+            sideGoals: merged.sideGoals,
+            calendarUrls: merged.calendarUrls,
+            motivation: merged.motivation ?? get().lastMotivation,
+          });
           return;
         }
 
         const user = await api.fetchUser();
         set({ userProfile: user });
+        const merged = get().userProfile;
+        await api.pushAgentProfile({
+          name: merged.name,
+          wakeTime: merged.wakeTime,
+          sleepTime: merged.sleepTime,
+          sideGoals: merged.sideGoals,
+          calendarUrls: merged.calendarUrls,
+          motivation: merged.motivation ?? get().lastMotivation,
+        });
       },
 
       addEvent: async (event) => {
@@ -192,7 +219,45 @@ export const useAppStore = create<AppState>()(
 
       completeSetup: () => set({ isSetupComplete: true }),
 
-      setMotivation: (level) => set({ lastMotivation: level }),
+      setMotivation: async (level) => {
+        const m = Math.max(0, Math.min(100, Math.round(level)));
+        set({ lastMotivation: m });
+        try {
+          await api.patchMotivation(m);
+          const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          const result = await api.rebalanceSchedule({
+            motivation: m,
+            horizonDays: 7,
+            timezone: tz,
+          });
+          if (result.success) {
+            set({
+              events: result.tasks.map(normalizeCalendarEvent),
+              userProfile: {
+                ...get().userProfile,
+                motivation: result.motivation ?? m,
+              },
+            });
+          } else if ("soft" in result && result.soft && result.user) {
+            set({ userProfile: result.user });
+          }
+        } catch (e) {
+          console.error("setMotivation / rebalance:", e);
+        }
+        try {
+          const p = get().userProfile;
+          await api.pushAgentProfile({
+            name: p.name,
+            wakeTime: p.wakeTime,
+            sleepTime: p.sleepTime,
+            sideGoals: p.sideGoals,
+            calendarUrls: p.calendarUrls,
+            motivation: m,
+          });
+        } catch {
+          /* optional */
+        }
+      },
 
       syncCalendarEvents: async (newEvents, sourceUrl) => {
         try {

@@ -10,13 +10,13 @@ import { useAppStore } from "../store/useAppStore";
 import { fetchCalendarEvents, resolveCalendarImportUrl } from "../utils/calendarSync";
 import { Calendar, Clock, Target, Info, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-const AGENT_API_BASE_URL =
-  import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "/agent-api";
+import { supabase } from "../lib/supabase";
+
 const AGENT_USER_ID_KEY = "handall-agent-user-id";
 
 export default function Setup() {
   const navigate = useNavigate();
-  const { setUserProfile, completeSetup, syncCalendarEvents } = useAppStore();
+  const { setUserProfile, completeSetup, syncCalendarEvents, lastMotivation } = useAppStore();
   const [step, setStep] = useState(1);
   const [isSaving, setIsSaving] = useState(false);
   const [formData, setFormData] = useState({
@@ -37,9 +37,6 @@ export default function Setup() {
       try {
         const sideGoals = formData.sideGoals.split("\n").filter((goal) => goal.trim());
         const calendarUrls = resolvedCalendarUrl ? [resolvedCalendarUrl] : [];
-        const userId = localStorage.getItem(AGENT_USER_ID_KEY) ?? crypto.randomUUID();
-
-        localStorage.setItem(AGENT_USER_ID_KEY, userId);
 
         await setUserProfile({
           name: formData.name.trim() || "Student",
@@ -47,46 +44,11 @@ export default function Setup() {
           sleepTime: formData.sleepTime,
           sideGoals,
           calendarUrls,
+          motivation: lastMotivation,
         });
 
-        // Optional: Python FastAPI agent (port 8011). Core app uses Express + SQLite; do not block setup if agent is off.
-        try {
-          const profileSyncResponse = await fetch(`${AGENT_API_BASE_URL}/profile/sync`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              user_id: userId,
-              name: formData.name.trim() || "Student",
-              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-              prefs: {
-                wakeTime: formData.wakeTime,
-                sleepTime: formData.sleepTime,
-                sideGoals,
-                calendarUrls,
-              },
-            }),
-          });
-          const agentPayload = await profileSyncResponse.json().catch(() => null);
-          const agentOk =
-            profileSyncResponse.ok && agentPayload && agentPayload.success !== false;
-          if (!agentOk) {
-            console.warn(
-              "AI profile/sync skipped or failed:",
-              profileSyncResponse.status,
-              agentPayload,
-            );
-            toast.warning(
-              "AI agent is offline or returned an error. Your profile was saved — run `npm run install-all` and dev to enable chat.",
-            );
-          }
-        } catch (agentErr) {
-          console.warn("AI backend unreachable (optional):", agentErr);
-          toast.warning(
-            "Could not reach the AI backend. Your profile was saved — start the agent (port 8011) for chat features.",
-          );
-        }
+        const authId = (await supabase?.auth.getSession())?.data?.session?.user?.id;
+        if (authId) localStorage.setItem(AGENT_USER_ID_KEY, authId);
 
         if (resolvedCalendarUrl) {
           try {
@@ -99,7 +61,7 @@ export default function Setup() {
           }
         }
         completeSetup();
-        toast.success("Setup synced with your AI agent");
+        toast.success("Setup complete");
         navigate("/");
       } catch (error) {
         console.error("Failed to complete setup:", error);

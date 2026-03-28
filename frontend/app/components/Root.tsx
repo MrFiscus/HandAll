@@ -101,6 +101,12 @@ export default function Root() {
   }, [session, apiLoaded, loadAppData]);
 
   useEffect(() => {
+    if (session?.user?.id) {
+      localStorage.setItem(AGENT_USER_ID_KEY, session.user.id);
+    }
+  }, [session?.user?.id]);
+
+  useEffect(() => {
     if (session && apiLoaded && !isSetupComplete && location.pathname !== "/setup") {
       navigate("/setup");
     }
@@ -132,8 +138,9 @@ export default function Root() {
     setIsSending(true);
 
     try {
-      const userId = localStorage.getItem(AGENT_USER_ID_KEY) ?? crypto.randomUUID();
-      localStorage.setItem(AGENT_USER_ID_KEY, userId);
+      const authId = session?.user?.id;
+      const userId = authId ?? localStorage.getItem(AGENT_USER_ID_KEY) ?? crypto.randomUUID();
+      if (authId) localStorage.setItem(AGENT_USER_ID_KEY, authId);
 
       const response = await fetch(`${AGENT_API_BASE_URL}/chat`, {
         method: "POST",
@@ -142,7 +149,7 @@ export default function Root() {
         },
         body: JSON.stringify({
           user_id: userId,
-          auth_user_id: session?.user?.id ?? null,
+          auth_user_id: authId ?? null,
           thread_id: threadIdRef.current,
           message: trimmedMessage,
           motivation: lastMotivation,

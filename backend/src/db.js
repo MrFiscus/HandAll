@@ -75,6 +75,9 @@ export async function initDB() {
   // Ensure only one legacy local user keeps NULL auth_user_id.
   await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_auth_user_id ON users(auth_user_id)');
 
+  await db.exec('ALTER TABLE users ADD COLUMN side_goals_json TEXT').catch(() => {});
+  await db.exec('ALTER TABLE users ADD COLUMN motivation INTEGER DEFAULT 50').catch(() => {});
+
   // Seed initial user if not exists
   const user = await db.get('SELECT * FROM users LIMIT 1');
   if (!user) {

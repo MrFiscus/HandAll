@@ -7,6 +7,7 @@ import { useAppStore, CalendarEvent, SuggestedTask } from "../store/useAppStore"
 import { Check, X, XCircle, Calendar, Clock, Loader2, Sparkles } from "lucide-react";
 import { format, isAfter } from "date-fns";
 import { toast } from "sonner";
+import { supabase } from "../lib/supabase";
 
 interface AssignmentInput {
   id: string;
@@ -108,8 +109,10 @@ export default function WeeklySync() {
     
     setLoading(true);
     try {
-        const userId = localStorage.getItem(AGENT_USER_ID_KEY) ?? crypto.randomUUID();
-        localStorage.setItem(AGENT_USER_ID_KEY, userId);
+        const authId = (await supabase?.auth.getSession())?.data?.session?.user?.id;
+        const userId =
+          authId ?? localStorage.getItem(AGENT_USER_ID_KEY) ?? crypto.randomUUID();
+        if (authId) localStorage.setItem(AGENT_USER_ID_KEY, authId);
 
         const result = await runWeeklySync({
           userId,

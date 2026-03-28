@@ -1,12 +1,13 @@
 import { Outlet, useNavigate, useLocation } from "react-router";
 import { useState, useEffect, useRef } from "react";
-import { CalendarDays, MessageSquare, Settings as SettingsIcon, BarChart3, Send, HelpCircle, CheckSquare } from "lucide-react";
+import { CalendarDays, MessageSquare, Settings as SettingsIcon, BarChart3, Send, HelpCircle, CheckSquare, LogOut, AlertTriangle } from "lucide-react";
 import { Button } from "./ui/button";
 import { useAppStore } from "../store/useAppStore";
 import { ScrollArea } from "./ui/scroll-area";
 import { Input } from "./ui/input";
 import { format } from "date-fns";
 import WelcomeGuide from "./WelcomeGuide";
+import { supabase } from "../lib/supabase";
 
 interface ChatMessage {
   id: string;
@@ -18,7 +19,7 @@ interface ChatMessage {
 export default function Root() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { userProfile, isSetupComplete, addEvent, events } = useAppStore();
+  const { userProfile, isSetupComplete, events, apiLoaded, loadAppData } = useAppStore();
   const [showChat, setShowChat] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
@@ -32,20 +33,95 @@ export default function Root() {
   ]);
   const [inputMessage, setInputMessage] = useState("");
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const [session, setSession] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  // Auth Check
+  useEffect(() => {
+    if (!supabase) {
+      setLoading(false);
+      return;
+    }
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setLoading(false);
+      if (!session) {
+        navigate("/login");
+      }
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      if (!session) {
+        navigate("/login");
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [navigate]);
+
+  // Load app data when session is established
+  useEffect(() => {
+    if (session && !apiLoaded) {
+      loadAppData();
+    }
+  }, [session, apiLoaded, loadAppData]);
 
   // Redirect to setup if not completed
   useEffect(() => {
-    if (!isSetupComplete && location.pathname !== "/setup") {
+    if (session && apiLoaded && !isSetupComplete && location.pathname !== "/setup") {
       navigate("/setup");
     }
-  }, [isSetupComplete, location.pathname, navigate]);
+  }, [session, apiLoaded, isSetupComplete, location.pathname, navigate]);
 
-  // Auto scroll chat to bottom
+  // Auto scroll chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatMessages]);
 
-  // Show setup page without layout
+  const handleLogout = async () => {
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
+    navigate("/login");
+  };
+
+  // Missing Config View
+  if (!supabase && !loading) {
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-background p-4">
+        <div className="max-w-md w-full p-8 border rounded-2xl shadow-xl bg-card text-center space-y-6">
+          <AlertTriangle className="h-16 w-16 text-yellow-500 mx-auto" />
+          <h1 className="text-2xl font-bold">Supabase Not Configured</h1>
+          <p className="text-muted-foreground text-sm leading-relaxed">
+            I couldn't find your Supabase credentials. Please create a <code className="bg-muted px-1 rounded">.env</code> file in the <code className="bg-muted px-1 rounded">frontend/</code> directory with:
+          </p>
+          <pre className="bg-black text-green-400 p-4 rounded-lg text-xs text-left overflow-x-auto border border-white/10">
+            VITE_SUPABASE_URL=your_url_here{"\n"}
+            VITE_SUPABASE_ANON_KEY=your_anon_key_here
+          </pre>
+          <Button onClick={() => window.location.reload()} className="w-full">
+            Retry Connection
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // Loading state
+  if (loading) {
+    return <div className="h-screen w-screen flex items-center justify-center">Loading HandAll...</div>;
+  }
+
+  // If no session, the useEffect will handle navigation to /login
+  if (!session && location.pathname !== "/login") {
+    return null; 
+  }
+
+  // Show setup page without sidebar layout
   if (location.pathname === "/setup") {
     return <Outlet />;
   }
@@ -53,7 +129,6 @@ export default function Root() {
   const handleSendMessage = () => {
     if (!inputMessage.trim()) return;
 
-    // Add user message
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
       role: "user",
@@ -62,7 +137,6 @@ export default function Root() {
     };
     setChatMessages((prev) => [...prev, userMessage]);
 
-    // Mock AI response
     setTimeout(() => {
       const aiResponse = generateAIResponse(inputMessage.toLowerCase());
       setChatMessages((prev) => [
@@ -83,34 +157,15 @@ export default function Root() {
     if (input.includes("add") || input.includes("schedule")) {
       return "I can help you add a task! What would you like to schedule? Please provide the task name, date, and time.";
     } else if (input.includes("free time") || input.includes("available")) {
-      const freeSlots = 5; // Mock calculation
-      return `You have ${freeSlots} free time slots this week. Would you like me to suggest some activities?`;
+      return "You have some free time slots this week. Would you like me to suggest some activities?";
     } else if (input.includes("motivation") || input.includes("tired")) {
-      return "It's okay to feel tired! Would you like me to reduce your workload for today? I can suggest lighter tasks or free time activities.";
+      return "It's okay to feel tired! Would you like me to reduce your workload for today?";
     } else if (input.includes("goal")) {
       return `Your current goals are: ${
         userProfile.sideGoals.join(", ") || "No goals set yet"
       }. Would you like to add or modify them?`;
-    } else if (input.includes("today") || input.includes("schedule")) {
-      const todayEvents = events.filter((e) => {
-        const eventDate = new Date(e.start);
-        const today = new Date();
-        return (
-          eventDate.getDate() === today.getDate() &&
-          eventDate.getMonth() === today.getMonth() &&
-          eventDate.getFullYear() === today.getFullYear()
-        );
-      });
-      return `You have ${todayEvents.length} events scheduled for today. ${
-        todayEvents.length > 0
-          ? `Your next event is "${todayEvents[0].title}" at ${format(
-              new Date(todayEvents[0].start),
-              "h:mm a"
-            )}.`
-          : ""
-      }`;
     } else {
-      return "I'm here to help! You can ask me about your schedule, add tasks, or get suggestions for free time activities. What would you like to do?";
+      return "I'm here to help! You can ask me about your schedule, add tasks, or get suggestions for free time activities.";
     }
   };
 
@@ -167,13 +222,13 @@ export default function Root() {
         </nav>
 
         {/* User Profile & Level */}
-        <div className="p-4 border-t">
-          <div className="flex items-center gap-3 mb-3">
+        <div className="p-4 border-t space-y-4">
+          <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center text-white font-bold">
               {userProfile.level}
             </div>
-            <div className="flex-1">
-              <p className="text-sm font-medium">Level {userProfile.level}</p>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium truncate">Level {userProfile.level}</p>
               <p className="text-xs text-muted-foreground">{userProfile.xp} XP</p>
             </div>
           </div>
@@ -183,6 +238,15 @@ export default function Root() {
               style={{ width: `${(userProfile.xp % 100)}%` }}
             />
           </div>
+          <Button 
+            variant="ghost" 
+            size="sm" 
+            className="w-full justify-start text-red-500 hover:text-red-600 hover:bg-red-50"
+            onClick={handleLogout}
+          >
+            <LogOut className="mr-2 h-4 w-4" />
+            Log Out
+          </Button>
         </div>
       </aside>
 

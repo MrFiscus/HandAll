@@ -6,8 +6,13 @@ import WeeklySync from "./components/WeeklySync";
 import DailyCheckIn from "./components/DailyCheckIn";
 import Settings from "./components/Settings";
 import NotFound from "./components/NotFound";
+import Auth from "./components/Auth";
 
 export const router = createBrowserRouter([
+  {
+    path: "/login",
+    Component: Auth,
+  },
   {
     path: "/",
     Component: Root,

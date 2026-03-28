@@ -2,9 +2,12 @@
   "name": "handall-root",
   "private": true,
   "scripts": {
-    "install-all": "npm install; npm --prefix frontend install; npm --prefix backend install",
-    "dev": "concurrently \"npm --prefix backend start\" \"npm --prefix frontend run dev\"",
-    "start": "npm --prefix backend start",
+    "install-all": "npm install; npm --prefix frontend install; npm --prefix backend install; python -m venv .venv; .\\.venv\\Scripts\\python -m pip install -r backend/requirements.txt",
+    "start:backend": "npm --prefix backend start",
+    "start:frontend": "npm --prefix frontend run dev",
+    "start:ai": ".\\.venv\\Scripts\\uvicorn backend.main:app --reload --port 8000 --env-file .env",
+    "dev": "concurrently -n \"NODE,VITE,AI\" -c \"blue,green,magenta\" \"npm run start:backend\" \"npm run start:frontend\" \"npm run start:ai\"",
+    "start": "npm run dev",
     "build": "npm --prefix frontend run build"
   },
   "devDependencies": {

@@ -1,0 +1,3 @@
+Function: applyFiftyPercentRule(freeTimeBlocks)
+Description: Filters free time so only 50% is used for suggestions, leaving 50% for pure rest.
+Module: Scheduling Engine

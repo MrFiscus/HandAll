@@ -1,0 +1,3 @@
+Function: fetchExternalEvents()
+Description: Pulls data from external calendar sources.
+Module: Calendar Integration Module

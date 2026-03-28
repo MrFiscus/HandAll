@@ -1,0 +1,3 @@
+Function: calculateXP(taskType)
+Description: Assigns experience point values based on task type (Assignment > Goal > Free Time).
+Module: Reward & Progression System

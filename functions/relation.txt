@@ -1,0 +1,40 @@
+# Function Interaction & Data Flow Map
+
+This document outlines how the functions within HandAll communicate and depend on one another throughout the application lifecycle.
+
+## 1. The Setup Pipeline (One-time/Update)
+- `initializeUser()` -> Provides the configuration (Sleep/Wake, Side Goal, URLs) used by all other modules.
+- `syncClassSchedule()` -> Populates the base calendar with fixed recurring blocks, which `calculateFreeTime()` must respect.
+- `updatePreferences()` -> Modifies the state used by `generateGoalSuggestions()`.
+
+## 2. The Weekly Orchestration (Sunday Night Sync)
+The `weeklySync()` function acts as the primary controller:
+1. `fetchExternalEvents()`: Pulls raw data from external providers.
+2. `parseAssignments()`: Scans the raw data for specific academic deadlines.
+3. `decomposeBigTask()` / `estimateEffort()`: For each assignment found, these break them into "Working Time Tasks".
+4. `calculateFreeTime()`: Takes the class schedule and external events to find gaps.
+5. `applyFiftyPercentRule()`: Prunes those gaps to ensure the user isn't overscheduled.
+6. `allocateWorkingBlocks()`: Fits the decomposed assignment chunks into the best available slots.
+7. `generateGoalSuggestions()` / `generateFreeTimeSuggestions()`: Fills the remaining 50% of free slots with suggested activities.
+
+## 3. The Daily Execution & Motivation Loop
+- `dailyCheckIn()`: Captures user motivation level.
+    - If motivation is High: Signals `allocateWorkingBlocks()` to prioritize "Goal Tasks".
+    - If motivation is Low: Signals `allocateWorkingBlocks()` to prioritize "Free Time Tasks".
+    - If motivation is Critical (0-10): Triggers `redlineProtocol()`.
+- `redlineProtocol()`: Communicates with the calendar to identify and postpone non-essential tasks, effectively clearing the schedule.
+
+## 4. User Interaction & Feedback
+- `pushToCalendar()`: Finalizes an "Accepted" task by writing it to the internal and external calendar.
+- `rebalanceSchedule()`: Triggered when a task is "Rejected"; it calls `generateFreeTimeSuggestions()` or `generateGoalSuggestions()` to find a suitable alternative for that specific time slot.
+- `processChat()`: A global listener that can manually trigger `allocateWorkingBlocks()` (to add a task) or `pushToCalendar()` (to remove/modify).
+
+## 5. Progression & Rewards
+- `calculateXP()`: Listens for "Accepted" or "Completed" status from `pushToCalendar()`.
+- `updateUserLevel()`: Updates the persistent user profile based on the output of `calculateXP()`.
+
+## Data Dependencies Summary
+- **Input Data**: `initializeUser`, `fetchExternalEvents`.
+- **Processing**: `parseAssignments`, `decomposeBigTask`, `calculateFreeTime`.
+- **Decision Making**: `dailyCheckIn`, `applyFiftyPercentRule`.
+- **Output/State Change**: `pushToCalendar`, `updateUserLevel`, `rebalanceSchedule`.

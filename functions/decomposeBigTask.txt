@@ -1,0 +1,3 @@
+Function: decomposeBigTask(task, estimatedHours)
+Description: Breaks a major assignment into specific, manageable sub-blocks using AI.
+Module: Task Decomposition & AI Logic

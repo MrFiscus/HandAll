@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HandAll | Student Time Manager</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="dark-theme">
+    <div id="app">
+        <header>
+            <div class="logo">HANDALL</div>
+            <div class="user-stats">
+                <span id="user-level">LVL 0</span>
+                <div class="xp-bar-container">
+                    <div id="xp-bar" style="width: 0%"></div>
+                </div>
+                <span id="user-xp">0 XP</span>
+            </div>
+        </header>
+
+        <main>
+            <!-- Setup Section -->
+            <section id="setup-view" class="view hidden">
+                <h2>Welcome, Student.</h2>
+                <p>Let's configure your schedule.</p>
+                <div class="card">
+                    <label>Wake Time: <input type="time" id="setup-wake" value="07:00"></label>
+                    <label>Sleep Time: <input type="time" id="setup-sleep" value="23:00"></label>
+                    <label>Side Goal: <input type="text" id="setup-goal" placeholder="e.g. Learn Guitar"></label>
+                    <label>Google Calendar Shareable URL: <input type="text" id="setup-cal" placeholder="https://calendar.google.com/calendar/u/0?cid=..."></label>
+                    <button id="save-setup" class="btn-primary">Initialize AI</button>
+                </div>
+            </section>
+
+            <!-- Daily Check-in Section -->
+            <section id="motivation-view" class="view hidden">
+                <h2>Daily Check-In</h2>
+                <div class="card text-center">
+                    <p>How motivated are we feeling today?</p>
+                    <input type="range" id="motivation-meter" min="0" max="100" value="50">
+                    <h3 id="motivation-value">50%</h3>
+                    <button id="submit-motivation" class="btn-primary">Start Day</button>
+                </div>
+            </section>
+
+            <!-- Dashboard Section -->
+            <section id="dashboard-view" class="view">
+                <div class="dashboard-grid">
+                    <div class="task-list">
+                        <h3>Upcoming Tasks</h3>
+                        <div id="pending-tasks" class="task-container">
+                            <!-- Tasks will be injected here -->
+                        </div>
+                    </div>
+                    
+                    <div class="chat-section">
+                        <h3>AI Assistant</h3>
+                        <div id="chat-box" class="chat-box">
+                            <div class="msg bot">Hello! I'm your time management AI. How can I help you today?</div>
+                        </div>
+                        <div class="chat-input">
+                            <input type="text" id="chat-input" placeholder="Type a message...">
+                            <button id="send-chat" class="btn-icon">➔</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="calendar-section card">
+                    <h3>Weekly Calendar</h3>
+                    <div id="calendar-wrapper" class="calendar-wrapper">
+                        <p class="text-muted">Set up your Google Calendar URL in settings to see it here.</p>
+                    </div>
+                </div>
+                
+                <div class="sync-actions">
+                    <button id="run-weekly-sync" class="btn-secondary">Run Sunday Sync</button>
+                </div>
+            </section>
+        </main>
+
+        <!-- Redline Protocol Modal -->
+        <div id="redline-modal" class="modal hidden">
+            <div class="modal-content redline">
+                <h2>!!! REDLINE PROTOCOL !!!</h2>
+                <p>You're redlining. I've identified non-essential tasks I can push to next week.</p>
+                <p>Should I clear your schedule for the next 4 hours?</p>
+                <div class="modal-buttons">
+                    <button id="redline-accept" class="btn-danger">YES, CLEAR IT</button>
+                    <button id="redline-reject" class="btn-outline">I'LL PUSH THROUGH</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script src="main.js"></script>
+</body>
+</html>

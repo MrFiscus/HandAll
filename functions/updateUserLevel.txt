@@ -1,0 +1,3 @@
+Function: updateUserLevel()
+Description: Persistently tracks and increments the user level based on total XP gained.
+Module: Reward & Progression System

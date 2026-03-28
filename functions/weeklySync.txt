@@ -1,0 +1,3 @@
+Function: weeklySync()
+Description: Triggers every Sunday; runs the decomposition and scheduling flow for the upcoming week.
+Module: Interaction & Motivation Module

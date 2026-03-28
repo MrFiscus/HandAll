@@ -1,0 +1,3 @@
+Function: calculateFreeTime(existingEvents, sleepSchedule)
+Description: Identifies gaps in the schedule between events and sleep times.
+Module: Scheduling Engine

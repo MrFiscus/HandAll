@@ -1,0 +1,3 @@
+Function: processChat(message)
+Description: Handles Natural Language Processing (NLP) for adding or subtracting tasks via the chat interface.
+Module: Interaction & Motivation Module

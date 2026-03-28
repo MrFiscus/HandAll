@@ -1,0 +1,3 @@
+Function: estimateEffort(task)
+Description: AI-driven estimation if the user doesn't provide a duration for a task.
+Module: Task Decomposition & AI Logic

@@ -1,0 +1,3 @@
+Function: generateGoalSuggestions(sideGoal, freeTime)
+Description: AI suggests tasks aligned with the user's side goal within specific free time slots.
+Module: Task Decomposition & AI Logic

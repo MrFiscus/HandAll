@@ -1,0 +1,3 @@
+Function: rebalanceSchedule(rejectedTaskId)
+Description: Suggests alternatives or shifts tasks when a user rejects a suggestion.
+Module: Scheduling Engine

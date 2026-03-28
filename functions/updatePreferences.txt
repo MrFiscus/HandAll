@@ -1,0 +1,3 @@
+Function: updatePreferences()
+Description: Updates side goals or sleep schedules.
+Module: Configuration & Setup Module

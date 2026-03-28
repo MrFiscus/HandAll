@@ -1,0 +1,44 @@
+# App Structure: HandAll (Student Time Manager)
+
+## Core Modules & Function Relations
+
+### 1. Configuration & Setup Module
+- `initializeUser()`: Collects sleep/wake times, side goals, and calendar sources (.ical, .cal, URLs).
+- `syncClassSchedule()`: Specifically handles the recurring class blocks.
+- `updatePreferences()`: Updates side goals or sleep schedules.
+
+### 2. Calendar Integration Module
+- `fetchExternalEvents()`: Pulls data from external calendar sources.
+- `parseAssignments()`: Identifies big deadlines and project dates from the calendar.
+- `pushToCalendar()`: Adds "Working Time Tasks", "Goal Tasks", and "Free Time Tasks" back to the user's calendar.
+
+### 3. Task Decomposition & AI Logic (Powered by DeepSeek)
+- `decomposeBigTask(task, estimatedHours)`: Breaks a major assignment into specific, manageable sub-blocks.
+- `estimateEffort(task)`: AI-driven estimation if the user doesn't provide a duration.
+- `generateGoalSuggestions(sideGoal, freeTime)`: AI suggests tasks aligned with the user's side goal.
+- `generateFreeTimeSuggestions(history, freeTime)`: AI learns user preferences to suggest rest/hobby activities.
+
+### 4. Scheduling Engine
+- `calculateFreeTime(existingEvents, sleepSchedule)`: Identifies gaps in the schedule.
+- `applyFiftyPercentRule(freeTimeBlocks)`: Filters free time so only 50% is used for suggestions, leaving 50% for pure rest.
+- `allocateWorkingBlocks()`: Prioritizes assignment sub-tasks into available slots.
+- `rebalanceSchedule(rejectedTaskId)`: Suggests alternatives or shifts tasks when a user rejects a suggestion.
+
+### 5. Interaction & Motivation Module
+- `weeklySync()`: Triggers every Sunday; runs the decomposition and scheduling flow.
+- `dailyCheckIn(motivationScore)`: Adjusts the day's priority. 
+    - High Motivation -> Weight towards "Goal Tasks".
+    - Low Motivation -> Weight towards "Free Time Tasks".
+    - 0-10 (Redlining) -> Triggers `redlineProtocol()`.
+- `redlineProtocol()`: Identifies non-essential tasks and offers to clear 4 hours.
+- `processChat(message)`: Handles NLP for adding/subtracting tasks via chat interface.
+
+### 6. Reward & Progression System
+- `calculateXP(taskType)`: Assigns values (Assignment > Goal > Free Time).
+- `updateUserLevel()`: Persistently tracks and increments user level based on task completion.
+
+## Function Relations Flow
+1. **Setup** -> `initializeUser` -> `syncClassSchedule`.
+2. **Weekly (Sunday)** -> `fetchExternalEvents` -> `parseAssignments` -> `decomposeBigTask` -> `calculateFreeTime` -> `allocateWorkingBlocks` -> `UI Prompt (Accept/Reject)`.
+3. **Daily** -> `dailyCheckIn` -> Adjusts `generateGoalSuggestions` vs `generateFreeTimeSuggestions`.
+4. **Action (Check/Cross)** -> `pushToCalendar` OR `rebalanceSchedule` -> `calculateXP` -> `updateUserLevel`.

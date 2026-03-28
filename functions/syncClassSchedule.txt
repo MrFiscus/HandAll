@@ -1,0 +1,3 @@
+Function: syncClassSchedule()
+Description: Specifically handles the recurring class blocks.
+Module: Configuration & Setup Module

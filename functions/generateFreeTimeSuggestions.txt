@@ -1,0 +1,3 @@
+Function: generateFreeTimeSuggestions(history, freeTime)
+Description: AI learns user preferences to suggest rest/hobby activities based on past behavior.
+Module: Task Decomposition & AI Logic

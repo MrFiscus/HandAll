@@ -1,0 +1,3 @@
+Function: parseAssignments()
+Description: Identifies big deadlines and project dates from the calendar.
+Module: Calendar Integration Module

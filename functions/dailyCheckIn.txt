@@ -1,0 +1,3 @@
+Function: dailyCheckIn(motivationScore)
+Description: Adjusts the day's priority based on user motivation meter (0-100).
+Module: Interaction & Motivation Module

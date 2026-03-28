@@ -1,0 +1,3 @@
+Function: pushToCalendar()
+Description: Adds "Working Time Tasks", "Goal Tasks", and "Free Time Tasks" back to the user's calendar.
+Module: Calendar Integration Module

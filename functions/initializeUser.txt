@@ -1,0 +1,3 @@
+Function: initializeUser()
+Description: Collects sleep/wake times, side goals, and calendar sources (.ical, .cal, URLs).
+Module: Configuration & Setup Module

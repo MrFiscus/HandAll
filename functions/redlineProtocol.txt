@@ -1,0 +1,3 @@
+Function: redlineProtocol()
+Description: Triggered when motivation is 0-10; identifies non-essential tasks to push back and offers to clear the schedule.
+Module: Interaction & Motivation Module

@@ -1,0 +1,73 @@
+# HandAll - Pseudocode
+
+## SETUP PHASE
+FUNCTION initialize_app():
+    input_calendar_links = GET user_input("Provide calendar URLs or file paths")
+    class_schedule = GET user_input("Provide recurring class schedule")
+    side_goal = GET user_input("Define your side goal (e.g., learn guitar)")
+    sleep_wake_times = GET user_input("Wake-up time and sleep time")
+    SAVE user_profile(input_calendar_links, class_schedule, side_goal, sleep_wake_times)
+
+## WEEKLY SYNC (Every Sunday Night)
+FUNCTION weekly_sync():
+    events = FETCH all_calendar_events(user_profile.calendar_links)
+    assignments = FILTER events WHERE type == "Assignment" OR "Project"
+    
+    FOR EACH task IN assignments:
+        duration = ASK_USER OR ASK_AI("How long will this take?")
+        work_blocks = DEEPSEEK_API.break_into_chunks(task, duration)
+        PENDING_TASKS.ADD(work_blocks, type="Working Time Task")
+
+    free_slots = FIND_GAPS(events, user_profile.sleep_wake_times)
+    
+    # 50% Rule: Only use half of available free time for suggestions
+    available_for_suggestions = free_slots.SELECT_RANDOM(0.50)
+    
+    FOR EACH slot IN available_for_suggestions:
+        goal_task = DEEPSEEK_API.suggest_goal(user_profile.side_goal)
+        free_task = DEEPSEEK_API.suggest_fun(user_history)
+        PENDING_TASKS.ADD(goal_task, type="Goal Task")
+        PENDING_TASKS.ADD(free_task, type="Free Time Task")
+
+    SHOW_UI_FOR_CONFIRMATION(PENDING_TASKS)
+
+## DAILY LOGIC (Morning Login)
+FUNCTION daily_checkin():
+    motivation = GET user_input("How motivated are you (0-100)?")
+    
+    IF motivation <= 10:
+        redline_protocol()
+    ELSE:
+        adjust_suggestion_weights(motivation)
+        # Higher motivation increases likelihood of Goal Tasks over Free Time Tasks
+
+FUNCTION redline_protocol():
+    non_essential_tasks = FIND_NON_ESSENTIAL_TASKS(today_schedule)
+    push_to_next_week(non_essential_tasks)
+    PROMPT_USER("You're redlining. I've pushed 3 tasks. Clear next 4 hours?")
+    IF user_accepts:
+        CLEAR_SCHEDULE(NOW, NOW + 4 HOURS)
+
+## TASK INTERACTION
+FUNCTION on_user_action(task, action):
+    IF action == "REJECT" (Cross):
+        IF task.type == "Working Time Task":
+            NOTIFY_USER("This is an important task.")
+        ELSE:
+            new_suggestion = DEEPSEEK_API.get_alternative(task)
+            REPLACE_TASK(task, new_suggestion)
+            
+    IF action == "ACCEPT" (Check):
+        PUSH_TO_CALENDAR(task)
+        level_up_system.ADD_XP(task.type)
+
+## REWARD SYSTEM
+FUNCTION add_xp(task_type):
+    IF task_type == "Assignment": xp = 50
+    ELSE IF task_type == "Goal": xp = 30
+    ELSE IF task_type == "FreeTime": xp = 10
+    
+    user_xp += xp
+    IF user_xp >= level_threshold:
+        level += 1
+        NOTIFY_USER("Level Up! You are now level " + level)

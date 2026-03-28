@@ -1,0 +1,3 @@
+Function: allocateWorkingBlocks()
+Description: Prioritizes assignment sub-tasks into available slots.
+Module: Scheduling Engine

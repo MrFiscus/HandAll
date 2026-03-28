@@ -38,7 +38,7 @@ export function parseICalData(icalData: string): CalendarEvent[] {
     const comp = new ICAL.Component(jcalData);
     const vevents = comp.getAllSubcomponents("vevent");
 
-    const events: CalendarEvent[] = vevents.map((vevent) => {
+    const events: CalendarEvent[] = vevents.map((vevent, idx) => {
       const event = new ICAL.Event(vevent);
       
       // Get start and end times
@@ -46,7 +46,7 @@ export function parseICalData(icalData: string): CalendarEvent[] {
       const end = event.endDate.toJSDate();
       
       // Determine event type based on summary/description
-      const summary = event.summary.toLowerCase();
+      const summary = (event.summary || "").toLowerCase();
       let type: CalendarEvent["type"] = "external";
       
       if (summary.includes("class") || summary.includes("lecture") || summary.includes("lab")) {
@@ -55,9 +55,12 @@ export function parseICalData(icalData: string): CalendarEvent[] {
         type = "assignment";
       }
 
+      // Ensure we have a string ID for the backend
+      const externalId = event.uid || `ical-${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 9)}`;
+
       return {
-        id: `gcal-${event.uid || Date.now()}-${Math.random()}`,
-        title: event.summary,
+        id: externalId,
+        title: event.summary || "Untitled Event",
         start,
         end,
         type,

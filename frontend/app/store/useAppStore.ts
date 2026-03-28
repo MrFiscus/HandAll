@@ -38,8 +38,8 @@ export interface AppState {
   updateEvent: (id: string, updates: Partial<CalendarEvent>) => Promise<void>;
   completeSetup: () => void;
   setMotivation: (level: number) => void;
-  syncCalendarEvents: (newEvents: CalendarEvent[], sourceUrl?: string) => void;
-  removeExternalEvents: () => void;
+  syncCalendarEvents: (newEvents: CalendarEvent[], sourceUrl?: string) => Promise<void>;
+  removeExternalEvents: () => Promise<void>;
   runWeeklySync: (assignments: { title: string, hours: number }[]) => Promise<CalendarEvent[]>;
 }
 
@@ -72,36 +72,36 @@ export const useAppStore = create<AppState>()(
 
       setUserProfile: async (profile) => {
         await api.updateUserSetup(profile);
-        set((state) => ({
-          userProfile: { ...state.userProfile, ...profile },
-        }));
+        const user = await api.fetchUser();
+        set({ userProfile: user });
       },
 
       addEvent: async (event) => {
-        const res = await api.addTask(event);
-        if (res.success) {
-            const tasks = await api.fetchTasks();
-            set({ events: tasks });
+        try {
+          const res = await api.addTask(event);
+          if (res.success) {
+              const tasks = await api.fetchTasks();
+              set({ events: tasks });
+          } else {
+              throw new Error(res.error || "Failed to add task");
+          }
+        } catch (err) {
+          console.error("Add event error:", err);
+          throw err;
         }
       },
 
       removeEvent: async (id) => {
         await api.deleteTask(id);
-        set((state) => ({
-          events: state.events.filter((e) => e.id !== id),
-        }));
+        const tasks = await api.fetchTasks();
+        set({ events: tasks });
       },
 
       updateEvent: async (id, updates) => {
         const res = await api.updateTask(id, updates);
         if (res.success) {
-           // Reload user for XP/Level updates if task was completed
-           if (updates.completed) {
-               const user = await api.fetchUser();
-               set({ userProfile: user });
-           }
-           const tasks = await api.fetchTasks();
-           set({ events: tasks });
+           const [user, tasks] = await Promise.all([api.fetchUser(), api.fetchTasks()]);
+           set({ userProfile: user, events: tasks });
         }
       },
 
@@ -109,17 +109,27 @@ export const useAppStore = create<AppState>()(
 
       setMotivation: (level) => set({ lastMotivation: level }),
 
-      syncCalendarEvents: (newEvents, sourceUrl) => {
-        set((state) => ({
-          events: [...state.events.filter(e => e.type !== 'external'), ...newEvents],
-          lastCalendarSync: new Date(),
-        }));
+      syncCalendarEvents: async (newEvents, sourceUrl) => {
+        try {
+          await api.upsertTasks(newEvents);
+          const tasks = await api.fetchTasks();
+          set({ 
+            events: tasks,
+            lastCalendarSync: new Date()
+          });
+        } catch (err) {
+          console.error("Sync calendar error:", err);
+          throw err;
+        }
       },
 
-      removeExternalEvents: () => {
-        set((state) => ({
-          events: state.events.filter((e) => e.type !== "external"),
-        }));
+      removeExternalEvents: async () => {
+        const state = get();
+        const externalEvents = state.events.filter(e => e.type === 'external');
+        // Delete each external event
+        await Promise.all(externalEvents.map(e => api.deleteTask(e.id)));
+        const tasks = await api.fetchTasks();
+        set({ events: tasks });
       },
 
       runWeeklySync: async (assignments) => {

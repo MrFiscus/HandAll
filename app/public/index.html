@@ -7,7 +7,47 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body class="dark-theme">
-    <div id="app">
+    <section id="auth-view" class="auth-shell">
+        <div class="auth-card">
+            <h1 id="auth-title">Create an account</h1>
+            <p class="auth-switch">
+                <span id="auth-switch-label">Already have an account?</span>
+                <button id="auth-toggle-link" class="auth-link" type="button">Log in</button>
+            </p>
+
+            <div class="auth-row signup-only">
+                <input type="text" id="auth-first-name" placeholder="First name">
+                <input type="text" id="auth-last-name" placeholder="Last name">
+            </div>
+
+            <input type="email" id="auth-email" placeholder="Email">
+            <input type="password" id="auth-password" placeholder="Enter your password">
+
+            <label id="auth-terms-row" class="auth-terms signup-only">
+                <input type="checkbox" id="auth-terms-check">
+                <span>I agree to the <a href="#" class="auth-link">Terms &amp; Conditions</a></span>
+            </label>
+
+            <button id="auth-submit" class="auth-submit" type="button">Create account</button>
+
+            <p id="auth-message" class="auth-status">Not signed in</p>
+
+            <div class="auth-divider"><span>Or register with</span></div>
+
+            <div class="auth-social-row">
+                <button id="auth-google-btn" class="auth-social" type="button">
+                    <span class="brand-dot google">G</span>
+                    <span>Google</span>
+                </button>
+                <button id="auth-facebook-btn" class="auth-social" type="button" disabled>
+                    <span class="brand-dot facebook">f</span>
+                    <span>Facebook</span>
+                </button>
+            </div>
+        </div>
+    </section>
+
+    <div id="app" class="hidden">
         <header>
             <div class="logo">HANDALL</div>
             <div class="user-stats">
@@ -16,6 +56,7 @@
                     <div id="xp-bar" style="width: 0%"></div>
                 </div>
                 <span id="user-xp">0 XP</span>
+                <button id="logout-btn" class="btn-outline">Log Out</button>
             </div>
         </header>
 
@@ -92,6 +133,7 @@
             </div>
         </div>
     </div>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="main.js"></script>
 </body>
 </html>

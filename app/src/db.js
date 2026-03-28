@@ -17,6 +17,7 @@ export async function initDB() {
   await db.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      auth_user_id TEXT UNIQUE,
       username TEXT DEFAULT 'Student',
       sleep_time TEXT DEFAULT '23:00',
       wake_time TEXT DEFAULT '07:00',
@@ -44,6 +45,12 @@ export async function initDB() {
       FOREIGN KEY(user_id) REFERENCES users(id)
     );
   `);
+
+  // Migration for existing databases created before auth_user_id existed.
+  await db.exec('ALTER TABLE users ADD COLUMN auth_user_id TEXT').catch(() => {});
+
+  // Ensure only one legacy local user keeps NULL auth_user_id.
+  await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_auth_user_id ON users(auth_user_id)');
 
   // Seed initial user if not exists
   const user = await db.get('SELECT * FROM users LIMIT 1');

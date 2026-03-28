@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "init-db": "node src/db.js"
+    "init-db": "node src/db.js",
+    "reset-db": "node -e \"import fs from 'fs'; import { fileURLToPath } from 'url'; import { dirname, join } from 'path'; const __dirname = dirname(fileURLToPath(import.meta.url)); const db = join(__dirname, 'handall.db'); if (fs.existsSync(db)) { fs.unlinkSync(db); console.log('Database deleted.'); } else { console.log('Database not found.'); }\""
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.49.8",
@@ -16,6 +17,7 @@
     "express": "^4.18.2",
     "googleapis": "^148.0.0",
     "handall-root": "file:..",
+    "node-fetch": "^3.3.2",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7"
   }

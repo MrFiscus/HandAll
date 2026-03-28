@@ -333,15 +333,18 @@ export default function Root() {
       </Button>
 
       {showChat && (
-        <div className="fixed bottom-24 right-6 w-96 h-[500px] bg-card border rounded-lg shadow-xl flex flex-col">
-          <div className="p-4 border-b flex items-center justify-between">
-            <h3 className="font-semibold">AI Assistant</h3>
-            <Button variant="ghost" size="sm" onClick={() => setShowChat(false)}>
-              x
+        <div className="fixed bottom-24 right-6 w-96 h-[500px] bg-card border rounded-xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-300">
+          <div className="p-4 border-b bg-muted/30 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+              <h3 className="font-bold text-sm">AI Assistant</h3>
+            </div>
+            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => setShowChat(false)}>
+              <span className="text-lg">×</span>
             </Button>
           </div>
-          <ScrollArea className="flex-1 p-4">
-            <div className="space-y-4">
+          <ScrollArea className="flex-1 overflow-y-auto">
+            <div className="p-4 space-y-4">
               {chatMessages.map((message) => (
                 <div
                   key={message.id}
@@ -350,18 +353,18 @@ export default function Root() {
                   }`}
                 >
                   <div
-                    className={`max-w-[80%] p-3 rounded-lg ${
+                    className={`max-w-[85%] p-3 rounded-2xl shadow-sm ${
                       message.role === "user"
-                        ? "bg-blue-500 text-white"
-                        : "bg-secondary"
+                        ? "bg-primary text-primary-foreground rounded-tr-none"
+                        : "bg-muted text-muted-foreground rounded-tl-none"
                     }`}
                   >
-                    <p className="text-sm">{message.content}</p>
+                    <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
                     <p
-                      className={`text-xs mt-1 ${
+                      className={`text-[9px] mt-1.5 font-bold uppercase tracking-widest ${
                         message.role === "user"
-                          ? "text-blue-100"
-                          : "text-muted-foreground"
+                          ? "opacity-60"
+                          : "text-muted-foreground/50"
                       }`}
                     >
                       {format(message.timestamp, "h:mm a")}

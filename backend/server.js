@@ -9,6 +9,11 @@ import { createClient } from '@supabase/supabase-js';
 import { dbPromise } from './src/db.js';
 import * as AI from './src/ai.js';
 import { fetchGoogleCalendarEvents } from './src/googleCalendar.js';
+import nodeFetch from 'node-fetch';
+
+if (!globalThis.fetch) {
+  globalThis.fetch = nodeFetch;
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,7 +49,8 @@ const supabase = SUPABASE_URL && SUPABASE_ANON_KEY
   : null;
 
 app.use(cors());
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
 
 if (hasFrontendBuild) {
   app.use(express.static(frontendDistDir));
@@ -153,11 +159,17 @@ async function requireAuth(req, res, next) {
     }
 
     req.authUser = data.user;
-    req.localUser = await getOrCreateLocalUser(data.user);
-    if (!req.localUser?.id) {
+    const localUser = await getOrCreateLocalUser(data.user);
+    if (!localUser?.id) {
       console.error('No local user row after getOrCreate for auth id:', data.user.id);
       return res.status(500).json({ error: 'Failed to load or create your profile' });
     }
+    
+    // Ensure the ID is a Number (SQLite can return BigInt)
+    req.localUser = {
+      ...localUser,
+      id: typeof localUser.id === 'bigint' ? Number(localUser.id) : Number(localUser.id)
+    };
     next();
   } catch (err) {
     console.error('Server auth error:', err);
@@ -166,7 +178,7 @@ async function requireAuth(req, res, next) {
 }
 
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true });
+  res.json({ ok: true, node: process.version, hasFetch: typeof fetch === 'function' });
 });
 
 app.get('/api/public/config', (req, res) => {
@@ -177,6 +189,50 @@ app.get('/api/public/config', (req, res) => {
 });
 
 app.use('/api', requireAuth);
+
+app.get('/api/proxy/ical', async (req, res) => {
+  const { url } = req.query;
+  if (typeof url !== 'string' || !url.trim()) {
+    return res.status(400).json({ error: 'url parameter is required' });
+  }
+
+  try {
+    const fetchOptions = {};
+    if (typeof AbortController === 'function') {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+        fetchOptions.signal = controller.signal;
+        res.on('finish', () => clearTimeout(timeoutId));
+    }
+
+    const response = await fetch(url, fetchOptions);
+
+    if (!response.ok) {
+      console.warn(`Failed to fetch calendar from ${url}: ${response.status} ${response.statusText}`);
+      return res.status(response.status).json({ 
+        error: `The calendar source returned an error: ${response.status} ${response.statusText}`,
+        details: 'Ensure your private iCal link is correctly copied and accessible.'
+      });
+    }
+
+    const data = await response.text();
+    if (!data || !data.includes('BEGIN:VCALENDAR')) {
+      return res.status(422).json({ 
+        error: 'The source did not return a valid iCal file.',
+        details: 'Check that the URL is a direct link to an .ics file.'
+      });
+    }
+
+    res.type('text/calendar').send(data);
+  } catch (error) {
+    console.error('iCal proxy error:', error);
+    const isTimeout = error instanceof Error && error.name === 'AbortError';
+    res.status(500).json({ 
+      error: isTimeout ? 'Request timed out' : 'Failed to proxy iCal request',
+      details: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
 
 app.get('/api/google-calendar/events', async (req, res) => {
   const start = typeof req.query.start === 'string' ? req.query.start : null;
@@ -278,7 +334,8 @@ app.post('/api/calendar-imports', async (req, res) => {
   } catch (error) {
     console.error('Calendar import persistence error:', error);
     res.status(500).json({
-      error: error instanceof Error ? error.message : 'Failed to persist calendar import',
+      error: 'Failed to persist calendar import',
+      details: error instanceof Error ? error.message : String(error)
     });
   }
 });
@@ -554,10 +611,16 @@ app.get('/api/tasks', async (req, res) => {
 
 app.post('/api/tasks/bulk', async (req, res) => {
   const { events } = req.body;
+  if (!Array.isArray(events)) {
+    return res.status(400).json({ error: 'events array is required' });
+  }
+
   const db = await getDB();
   console.log(`Bulk upserting ${events.length} events for user ${req.localUser.id}`);
   
   try {
+    await db.run('BEGIN IMMEDIATE TRANSACTION');
+
     for (const event of events) {
       // Try matching by external_id first, then fallback to title+start time uniqueness
       const existing = await db.get(
@@ -577,10 +640,17 @@ app.post('/api/tasks/bulk', async (req, res) => {
           );
       }
     }
+
+    await db.run('COMMIT');
     res.json({ success: true });
   } catch (err) {
     console.error('Bulk upsert error:', err);
-    res.status(500).json({ error: 'Failed to bulk sync' });
+    try {
+      await db.run('ROLLBACK');
+    } catch (rollbackErr) {
+      // ignore
+    }
+    res.status(500).json({ error: 'Failed to bulk sync', details: err.message });
   }
 });
 
@@ -630,24 +700,40 @@ app.post('/api/tasks', async (req, res) => {
 
 app.patch('/api/tasks/:id', async (req, res) => {
     const { id } = req.params;
-    const { completed, status } = req.body;
+    const { title, description, start, end, type, completed, status } = req.body;
     const db = await getDB();
     
-    // id might be external_id or internal_id
     const task = await db.get('SELECT * FROM tasks WHERE user_id = ? AND (id = ? OR external_id = ?)', req.localUser.id, id, id);
     
     if (!task) {
         return res.status(404).json({ error: 'Task not found' });
     }
 
+    // Prepare fields for update
+    const nextTitle = title !== undefined ? title : task.title;
+    const nextDesc = description !== undefined ? description : task.description;
+    const nextStart = start !== undefined ? start : task.start_time;
+    const nextEnd = end !== undefined ? end : task.end_time;
+    const nextType = type !== undefined ? type : task.type;
+    
+    let nextStatus = task.status;
     if (completed !== undefined) {
-        const newStatus = completed ? 'Completed' : 'Accepted';
-        await db.run('UPDATE tasks SET status = ? WHERE id = ?', newStatus, task.id);
-        
-        if (completed) {
+        nextStatus = completed ? 'Completed' : 'Accepted';
+    } else if (status !== undefined) {
+        nextStatus = status;
+    }
+
+    try {
+        await db.run(
+            'UPDATE tasks SET title = ?, description = ?, start_time = ?, end_time = ?, type = ?, status = ? WHERE id = ?',
+            nextTitle, nextDesc, nextStart, nextEnd, nextType, nextStatus, task.id
+        );
+
+        if (completed === true && task.status !== 'Completed') {
             let xpGained = 10;
-            if(task.type?.toLowerCase() === 'working') xpGained = 50;
-            if(task.type?.toLowerCase() === 'goal') xpGained = 30;
+            const tlower = String(nextType || '').toLowerCase();
+            if (tlower === 'working') xpGained = 50;
+            else if (tlower === 'goal') xpGained = 30;
 
             const user = await db.get('SELECT * FROM users WHERE id = ?', req.localUser.id);
             const newXp = (user.xp || 0) + xpGained;
@@ -656,11 +742,12 @@ app.patch('/api/tasks/:id', async (req, res) => {
             await db.run('UPDATE users SET xp = ?, level = ? WHERE id = ?', newXp, newLevel, req.localUser.id);
             return res.json({ success: true, xpGained, newLevel, newXp });
         }
-    } else if (status) {
-        await db.run('UPDATE tasks SET status = ? WHERE id = ?', status, task.id);
+
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Update task error:', err);
+        res.status(500).json({ error: 'Failed to update task' });
     }
-    
-    res.json({ success: true });
 });
 
 app.delete('/api/tasks/source', async (req, res) => {

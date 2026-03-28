@@ -1,5 +1,6 @@
 import ICAL from "ical.js";
 import { CalendarEvent } from "../store/useAppStore";
+import { supabase } from "../lib/supabase";
 
 export interface ImportedTaskPreview {
   task_name: string;
@@ -93,21 +94,33 @@ function mapOccurrenceToEvent(
  */
 export async function fetchCalendarEvents(url: string): Promise<CalendarEvent[]> {
   try {
-    // Try direct fetch first
-    let response;
-    try {
-      response = await fetch(url);
-    } catch (corsError) {
-      // If CORS fails, try with a CORS proxy
-      const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-      response = await fetch(proxyUrl);
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    const session = supabase
+      ? (await supabase.auth.getSession()).data.session
+      : null;
+
+    if (session?.access_token) {
+      headers.Authorization = `Bearer ${session.access_token}`;
     }
+
+    const response = await fetch("/api/calendar-url-preview", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ url }),
+    });
 
     if (!response.ok) {
-      throw new Error(`Failed to fetch calendar: ${response.statusText}`);
+      const errorData = await response.json().catch(() => null);
+      throw new Error(errorData?.error || `Failed to fetch calendar: ${response.statusText}`);
     }
 
-    const icalData = await response.text();
+    const payload = await response.json();
+    const icalData = typeof payload?.icalData === "string" ? payload.icalData : "";
+    if (!icalData) {
+      throw new Error("Calendar response was empty.");
+    }
     return parseICalData(icalData);
   } catch (error) {
     console.error("Error fetching calendar:", error);

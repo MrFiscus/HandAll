@@ -47,6 +47,7 @@ export interface UserProfile {
   sleepTime: string;
   sideGoals: string[];
   calendarUrls: string[];
+  googleCalendarConnected: boolean;
 }
 
 export interface AppState {
@@ -123,6 +124,7 @@ export const useAppStore = create<AppState>()(
         sleepTime: "23:00",
         sideGoals: [],
         calendarUrls: [],
+        googleCalendarConnected: false,
       },
       events: [],
       pendingSuggestions: [],

@@ -50,6 +50,50 @@ async function getCalendarClient() {
   return google.calendar({ version: 'v3', auth: authClient });
 }
 
+async function getCalendarClientForAccessToken(accessToken) {
+  if (!accessToken) {
+    throw new Error('Google provider token is required.');
+  }
+
+  const auth = new google.auth.OAuth2();
+  auth.setCredentials({ access_token: accessToken });
+  return google.calendar({ version: 'v3', auth });
+}
+
+function getOAuthClient() {
+  const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_OAUTH_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      'Google OAuth client credentials not configured. Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET.',
+    );
+  }
+
+  return new google.auth.OAuth2(clientId, clientSecret);
+}
+
+export async function refreshGoogleAccessToken(refreshToken) {
+  if (!refreshToken) {
+    throw new Error('Google refresh token is required.');
+  }
+
+  const auth = getOAuthClient();
+  auth.setCredentials({ refresh_token: refreshToken });
+  const { credentials } = await auth.refreshAccessToken();
+
+  if (!credentials?.access_token) {
+    throw new Error('Failed to refresh Google access token.');
+  }
+
+  return {
+    accessToken: credentials.access_token,
+    expiryDate: credentials.expiry_date
+      ? new Date(credentials.expiry_date).toISOString()
+      : null,
+  };
+}
+
 function toIsoString(value, timeZone) {
   if (!value) return null;
   if (typeof value === 'string') return value;
@@ -188,5 +232,60 @@ export async function fetchGoogleCalendarEvents({
     calendarId: selectedCalendarId,
     events: items.map(extractEventFields),
     tasks: items.map(convertEventToTask),
+  };
+}
+
+export async function fetchGoogleCalendarEventsWithAccessToken({
+  accessToken,
+  calendarId,
+  timeMin,
+  timeMax,
+  maxResults = 250,
+  q,
+}) {
+  const calendar = await getCalendarClientForAccessToken(accessToken);
+  const selectedCalendarId = calendarId || 'primary';
+
+  const response = await calendar.events.list({
+    calendarId: selectedCalendarId,
+    timeMin,
+    timeMax,
+    maxResults,
+    singleEvents: true,
+    orderBy: 'startTime',
+    q: q || undefined,
+  });
+
+  const items = response.data.items || [];
+
+  return {
+    calendarId: selectedCalendarId,
+    events: items.map(extractEventFields),
+    tasks: items.map(convertEventToTask),
+  };
+}
+
+export async function fetchGoogleCalendarEventsWithRefreshToken({
+  refreshToken,
+  calendarId,
+  timeMin,
+  timeMax,
+  maxResults = 250,
+  q,
+}) {
+  const { accessToken, expiryDate } = await refreshGoogleAccessToken(refreshToken);
+  const result = await fetchGoogleCalendarEventsWithAccessToken({
+    accessToken,
+    calendarId,
+    timeMin,
+    timeMax,
+    maxResults,
+    q,
+  });
+
+  return {
+    ...result,
+    refreshedAccessToken: accessToken,
+    refreshedAccessTokenExpiry: expiryDate,
   };
 }

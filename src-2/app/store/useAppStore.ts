@@ -13,6 +13,7 @@ export interface CalendarEvent {
 }
 
 export interface UserProfile {
+  userId: string;
   level: number;
   xp: number;
   wakeTime: string;
@@ -41,6 +42,7 @@ export const useAppStore = create<AppState>()(
   persist(
     (set) => ({
       userProfile: {
+        userId: "",
         level: 0,
         xp: 0,
         wakeTime: "07:00",

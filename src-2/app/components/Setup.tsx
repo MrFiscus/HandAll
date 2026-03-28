@@ -7,31 +7,71 @@ import { Textarea } from "./ui/textarea";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "./ui/card";
 import { useAppStore } from "../store/useAppStore";
 import { Calendar, Clock, Target } from "lucide-react";
+import { toast } from "sonner";
+
+const AGENT_API_BASE_URL =
+  import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "http://127.0.0.1:8000";
 
 export default function Setup() {
   const navigate = useNavigate();
   const { setUserProfile, completeSetup } = useAppStore();
   const [step, setStep] = useState(1);
+  const [isSaving, setIsSaving] = useState(false);
   const [formData, setFormData] = useState({
+    name: "",
     wakeTime: "07:00",
     sleepTime: "23:00",
     sideGoals: "",
     calendarUrl: "",
   });
 
-  const handleNext = () => {
+  const handleNext = async () => {
     if (step < 3) {
       setStep(step + 1);
     } else {
-      // Complete setup
-      setUserProfile({
-        wakeTime: formData.wakeTime,
-        sleepTime: formData.sleepTime,
-        sideGoals: formData.sideGoals.split("\n").filter(g => g.trim()),
-        calendarUrls: formData.calendarUrl ? [formData.calendarUrl] : [],
-      });
-      completeSetup();
-      navigate("/");
+      const userId = crypto.randomUUID();
+      const sideGoals = formData.sideGoals.split("\n").filter((goal) => goal.trim());
+      const calendarUrls = formData.calendarUrl ? [formData.calendarUrl] : [];
+
+      setIsSaving(true);
+      try {
+        const response = await fetch(`${AGENT_API_BASE_URL}/profile/sync`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            user_id: userId,
+            name: formData.name.trim() || "Student",
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+            prefs: {
+              wakeTime: formData.wakeTime,
+              sleepTime: formData.sleepTime,
+              sideGoals,
+              calendarUrls,
+            },
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Backend returned ${response.status}`);
+        }
+
+        setUserProfile({
+          userId,
+          wakeTime: formData.wakeTime,
+          sleepTime: formData.sleepTime,
+          sideGoals,
+          calendarUrls,
+        });
+        completeSetup();
+        toast.success("Setup synced with your AI agent");
+        navigate("/");
+      } catch {
+        toast.error("Could not reach the backend. Make sure FastAPI is running on port 8000.");
+      } finally {
+        setIsSaving(false);
+      }
     }
   };
 
@@ -56,6 +96,16 @@ export default function Setup() {
                     Connect your calendar or add events manually
                   </p>
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="name">Your Name</Label>
+                <Input
+                  id="name"
+                  placeholder="Student"
+                  value={formData.name}
+                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                />
               </div>
 
               <div className="space-y-2">
@@ -141,7 +191,7 @@ export default function Setup() {
               Back
             </Button>
           )}
-          <Button className="ml-auto" onClick={handleNext}>
+          <Button className="ml-auto" onClick={handleNext} disabled={isSaving}>
             {step === 3 ? "Complete Setup" : "Next"}
           </Button>
         </CardFooter>

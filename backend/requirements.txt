@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+langchain
+langgraph
+langchain-google-genai
+supabase
+google-api-python-client
+google-auth
+pydantic

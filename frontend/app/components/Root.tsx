@@ -15,10 +15,20 @@ interface ChatMessage {
   timestamp: Date;
 }
 
+interface ChatApiResponse {
+  response: string;
+  user_id: string;
+  thread_id: string;
+}
+
+const AGENT_API_BASE_URL =
+  import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "http://127.0.0.1:8000";
+const AGENT_USER_ID_KEY = "handall-agent-user-id";
+
 export default function Root() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { userProfile, isSetupComplete, addEvent, events } = useAppStore();
+  const { userProfile, isSetupComplete } = useAppStore();
   const [showChat, setShowChat] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
@@ -31,7 +41,9 @@ export default function Root() {
     },
   ]);
   const [inputMessage, setInputMessage] = useState("");
+  const [isSending, setIsSending] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const threadIdRef = useRef<string>(crypto.randomUUID());
 
   // Redirect to setup if not completed
   useEffect(() => {
@@ -50,67 +62,69 @@ export default function Root() {
     return <Outlet />;
   }
 
-  const handleSendMessage = () => {
-    if (!inputMessage.trim()) return;
+  const handleSendMessage = async () => {
+    const trimmedMessage = inputMessage.trim();
+    if (!trimmedMessage || isSending) return;
 
-    // Add user message
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
       role: "user",
-      content: inputMessage,
+      content: trimmedMessage,
       timestamp: new Date(),
     };
     setChatMessages((prev) => [...prev, userMessage]);
+    setInputMessage("");
+    setIsSending(true);
 
-    // Mock AI response
-    setTimeout(() => {
-      const aiResponse = generateAIResponse(inputMessage.toLowerCase());
+    try {
+      const userId = localStorage.getItem(AGENT_USER_ID_KEY) ?? crypto.randomUUID();
+      localStorage.setItem(AGENT_USER_ID_KEY, userId);
+
+      const response = await fetch(`${AGENT_API_BASE_URL}/chat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          user_id: userId,
+          thread_id: threadIdRef.current,
+          message: trimmedMessage,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Backend returned ${response.status}`);
+      }
+
+      const data: ChatApiResponse = await response.json();
       setChatMessages((prev) => [
         ...prev,
         {
           id: (Date.now() + 1).toString(),
           role: "assistant",
-          content: aiResponse,
+          content: data.response || "I couldn't generate a reply just now.",
           timestamp: new Date(),
         },
       ]);
-    }, 500);
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Unable to reach the AI backend right now.";
 
-    setInputMessage("");
-  };
-
-  const generateAIResponse = (input: string): string => {
-    if (input.includes("add") || input.includes("schedule")) {
-      return "I can help you add a task! What would you like to schedule? Please provide the task name, date, and time.";
-    } else if (input.includes("free time") || input.includes("available")) {
-      const freeSlots = 5; // Mock calculation
-      return `You have ${freeSlots} free time slots this week. Would you like me to suggest some activities?`;
-    } else if (input.includes("motivation") || input.includes("tired")) {
-      return "It's okay to feel tired! Would you like me to reduce your workload for today? I can suggest lighter tasks or free time activities.";
-    } else if (input.includes("goal")) {
-      return `Your current goals are: ${
-        userProfile.sideGoals.join(", ") || "No goals set yet"
-      }. Would you like to add or modify them?`;
-    } else if (input.includes("today") || input.includes("schedule")) {
-      const todayEvents = events.filter((e) => {
-        const eventDate = new Date(e.start);
-        const today = new Date();
-        return (
-          eventDate.getDate() === today.getDate() &&
-          eventDate.getMonth() === today.getMonth() &&
-          eventDate.getFullYear() === today.getFullYear()
-        );
-      });
-      return `You have ${todayEvents.length} events scheduled for today. ${
-        todayEvents.length > 0
-          ? `Your next event is "${todayEvents[0].title}" at ${format(
-              new Date(todayEvents[0].start),
-              "h:mm a"
-            )}.`
-          : ""
-      }`;
-    } else {
-      return "I'm here to help! You can ask me about your schedule, add tasks, or get suggestions for free time activities. What would you like to do?";
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content:
+            `I couldn't reach the backend just now (${message}). ` +
+            "Make sure the FastAPI server is running on port 8000 and setup completed successfully.",
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
+      setIsSending(false);
     }
   };
 
@@ -251,11 +265,15 @@ export default function Root() {
                 onChange={(e) => setInputMessage(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
                 className="flex-1"
+                disabled={isSending}
               />
-              <Button onClick={handleSendMessage} size="icon">
+              <Button onClick={handleSendMessage} size="icon" disabled={isSending}>
                 <Send className="h-4 w-4" />
               </Button>
             </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Connected to {AGENT_API_BASE_URL}
+            </p>
           </div>
         </div>
       )}

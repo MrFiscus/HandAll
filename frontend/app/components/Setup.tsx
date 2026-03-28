@@ -10,12 +10,17 @@ import { useAppStore } from "../store/useAppStore";
 import { fetchCalendarEvents, getGoogleCalendarICalUrl } from "../utils/calendarSync";
 import { Calendar, Clock, Target, Info, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+const AGENT_API_BASE_URL =
+  import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "http://127.0.0.1:8000";
+const AGENT_USER_ID_KEY = "handall-agent-user-id";
 
 export default function Setup() {
   const navigate = useNavigate();
   const { setUserProfile, completeSetup, syncCalendarEvents } = useAppStore();
   const [step, setStep] = useState(1);
+  const [isSaving, setIsSaving] = useState(false);
   const [formData, setFormData] = useState({
+    name: "",
     wakeTime: "07:00",
     sleepTime: "23:00",
     sideGoals: "",
@@ -29,39 +34,66 @@ export default function Setup() {
     } else {
       setIsSubmitting(true);
       try {
-          // Complete setup
-          await setUserProfile({
-            wakeTime: formData.wakeTime,
-            sleepTime: formData.sleepTime,
-            sideGoals: formData.sideGoals.split("\n").filter(g => g.trim()),
-            calendarUrls: formData.calendarUrl ? [formData.calendarUrl] : [],
-          });
+        const sideGoals = formData.sideGoals.split("\n").filter((goal) => goal.trim());
+        const calendarUrls = formData.calendarUrl ? [formData.calendarUrl] : [];
+        const userId = localStorage.getItem(AGENT_USER_ID_KEY) ?? crypto.randomUUID();
 
-          // Sync calendar events if URL is provided
-          if (formData.calendarUrl) {
-            try {
-              let icalUrl = formData.calendarUrl;
-              if (formData.calendarUrl.includes("google.com/calendar")) {
-                const converted = getGoogleCalendarICalUrl(formData.calendarUrl);
-                if (converted) {
-                  icalUrl = converted;
-                }
+        localStorage.setItem(AGENT_USER_ID_KEY, userId);
+
+        await setUserProfile({
+          wakeTime: formData.wakeTime,
+          sleepTime: formData.sleepTime,
+          sideGoals,
+          calendarUrls,
+        });
+
+        const profileSyncResponse = await fetch(`${AGENT_API_BASE_URL}/profile/sync`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            user_id: userId,
+            name: formData.name.trim() || "Student",
+            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+            prefs: {
+              wakeTime: formData.wakeTime,
+              sleepTime: formData.sleepTime,
+              sideGoals,
+              calendarUrls,
+            },
+          }),
+        });
+
+        if (!profileSyncResponse.ok) {
+          throw new Error(`AI backend returned ${profileSyncResponse.status}`);
+        }
+
+        if (formData.calendarUrl) {
+          try {
+            let icalUrl = formData.calendarUrl;
+            if (formData.calendarUrl.includes("google.com/calendar")) {
+              const converted = getGoogleCalendarICalUrl(formData.calendarUrl);
+              if (converted) {
+                icalUrl = converted;
               }
-              const events = await fetchCalendarEvents(icalUrl);
-              syncCalendarEvents(events);
-              toast.success(`Synced ${events.length} events from your calendar!`);
-            } catch (error) {
-              console.error("Failed to sync calendar during setup:", error);
-              toast.error("Calendar sync failed. You can try again from the dashboard.");
             }
+            const events = await fetchCalendarEvents(icalUrl);
+            syncCalendarEvents(events);
+            toast.success(`Synced ${events.length} events from your calendar!`);
+          } catch (error) {
+            console.error("Failed to sync calendar during setup:", error);
+            toast.error("Calendar sync failed. You can try again from the dashboard.");
           }
-
-          completeSetup();
-          navigate("/");
-      } catch (e) {
-          toast.error("Failed to save profile");
+        }
+        completeSetup();
+        toast.success("Setup synced with your AI agent");
+        navigate("/");
+      } catch (error) {
+        console.error("Failed to complete setup:", error);
+        toast.error("Failed to save profile or sync the AI backend.");
       } finally {
-          setIsSubmitting(false);
+        setIsSubmitting(false);
       }
     }
   };
@@ -92,6 +124,16 @@ export default function Setup() {
                     Connect your calendar or add events manually
                   </p>
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="name">Your Name</Label>
+                <Input
+                  id="name"
+                  placeholder="Student"
+                  value={formData.name}
+                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                />
               </div>
 
               <div className="space-y-2">

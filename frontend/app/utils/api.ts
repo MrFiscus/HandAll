@@ -38,6 +38,14 @@ function mapUserProfile(data: any): UserProfile {
       : (data.google_calendar_url ? [data.google_calendar_url] : []),
     motivation,
     googleCalendarConnected: !!data.google_calendar_connected,
+    activeCalendarSourceUrl:
+      typeof data.active_calendar_source_url === "string"
+        ? data.active_calendar_source_url
+        : undefined,
+    activeCalendarResolution:
+      typeof data.active_calendar_resolution === "string"
+        ? data.active_calendar_resolution
+        : undefined,
   };
 }
 
@@ -118,6 +126,28 @@ export const api = {
       const msg =
         typeof data.error === 'string' ? data.error : `Failed to save profile (${res.status})`;
       throw new Error(msg);
+    }
+    return {
+      success: !!data.success,
+      user: data.user ? mapUserProfile(data.user) : undefined,
+    };
+  },
+
+  async patchActiveCalendarSource(activeCalendarSourceUrl: string): Promise<{ success: boolean; user?: UserProfile }> {
+    const headers = await getAuthHeaders();
+    if (!headers.Authorization) {
+      throw new Error(supabase ? "Not signed in." : "Supabase is not configured.");
+    }
+    const res = await fetch("/api/user/active-calendar", {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ active_calendar_source_url: activeCalendarSourceUrl }),
+    });
+    const data = (await res.json().catch(() => null)) ?? {};
+    if (!res.ok) {
+      throw new Error(
+        typeof data.error === "string" ? data.error : "Failed to set active calendar",
+      );
     }
     return {
       success: !!data.success,

@@ -8,6 +8,11 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
 import { dbPromise } from './src/db.js';
+import {
+  googleOAuthSourceUrl,
+  taskMatchesActiveCalendar,
+  resolveActiveCalendarSource,
+} from './src/calendarSource.js';
 import * as AI from './src/ai.js';
 import {
   fetchGoogleCalendarEvents,
@@ -230,6 +235,18 @@ async function classifyEventsAndPersist(db, uid, bodyEvents) {
   };
   if (!Array.isArray(bodyEvents) || bodyEvents.length === 0) return out;
 
+  const { activeUrl } = await resolveActiveCalendarSource(db, uid);
+  console.log(
+    '[handall:calendar] classifyEvents user=%s active_source=%s events=%s',
+    uid,
+    activeUrl || '(none)',
+    bodyEvents.length,
+  );
+  if (!activeUrl) {
+    out.error = 'No active calendar source — connect Google or import an .ics calendar in Settings.';
+    return out;
+  }
+
   const needLlm = [];
 
   for (const ev of bodyEvents) {
@@ -237,6 +254,9 @@ async function classifyEventsAndPersist(db, uid, bodyEvents) {
     if (!ext) continue;
     const row = await db.get('SELECT * FROM tasks WHERE user_id = ? AND external_id = ?', uid, ext);
     if (!row) continue;
+    if (!taskMatchesActiveCalendar(row, activeUrl)) {
+      continue;
+    }
     const ch = contentHashForTaskRow(row);
     const cached = await db.get(
       'SELECT * FROM ai_cache_event_class WHERE user_id = ? AND external_key = ?',
@@ -287,6 +307,9 @@ async function classifyEventsAndPersist(db, uid, bodyEvents) {
       if (!r || r.id == null) continue;
       const row = await db.get('SELECT * FROM tasks WHERE user_id = ? AND external_id = ?', uid, String(r.id));
       if (!row) continue;
+      if (!taskMatchesActiveCalendar(row, activeUrl)) {
+        continue;
+      }
       const ch = contentHashForTaskRow(row);
       const mapped = r.mapped_task_type || mapClassificationToTaskType(r.classification);
       const meta = {
@@ -498,13 +521,20 @@ async function maybeRegenerateGoalTasksWithCache(db, uid, motivation) {
 }
 
 async function runUnifiedCalendarPipeline(db, uid, bodyEvents, timezone, motivation) {
+  const { activeUrl } = await resolveActiveCalendarSource(db, uid);
+  console.log(
+    '[handall:calendar] unifiedPipeline user=%s active_source=%s',
+    uid,
+    activeUrl || '(none)',
+  );
+
   const classification =
     Array.isArray(bodyEvents) && bodyEvents.length > 0
       ? await classifyEventsAndPersist(db, uid, bodyEvents)
       : { updated: 0, cache_hits: 0, llm_batches: 0, error: null, samples: [] };
 
   const assignmentRows = [];
-  if (Array.isArray(bodyEvents) && bodyEvents.length > 0) {
+  if (Array.isArray(bodyEvents) && bodyEvents.length > 0 && activeUrl) {
     const ids = bodyEvents.filter((e) => e && e.id != null).map((e) => String(e.id));
     if (ids.length > 0) {
       const ph = ids.map(() => '?').join(',');
@@ -516,7 +546,7 @@ async function runUnifiedCalendarPipeline(db, uid, bodyEvents, timezone, motivat
       for (const row of rows) {
         const t = String(row.type || '').toLowerCase();
         const st = String(row.status || '').toLowerCase();
-        if (t === 'assignment' && st !== 'completed') {
+        if (t === 'assignment' && st !== 'completed' && taskMatchesActiveCalendar(row, activeUrl)) {
           assignmentRows.push(row);
         }
       }
@@ -578,6 +608,26 @@ async function runScheduleRebalanceCore(db, uid, options = {}) {
     return { ok: false, status: 404, error: 'User not found' };
   }
 
+  const resolved = await resolveActiveCalendarSource(db, uid);
+  const activeUrl = resolved.activeUrl;
+  console.log(
+    '[handall:calendar] rebalance user=%s active_source=%s resolution=%s',
+    uid,
+    activeUrl || '(none)',
+    resolved.source,
+  );
+  if (!activeUrl) {
+    const fresh = await getUserWithCalendarSources(uid);
+    return {
+      ok: false,
+      status: 400,
+      error:
+        'No active calendar source. Import an .ics file in Settings or connect Google Calendar, then select which calendar to use.',
+      user: fresh,
+      detail: 'Set active_calendar_source_url or add a calendar source.',
+    };
+  }
+
   let motivation = Number.isFinite(Number(user.motivation)) ? Number(user.motivation) : 50;
   if (options.motivation !== undefined && options.motivation !== null) {
     const n = Number(options.motivation);
@@ -596,11 +646,17 @@ async function runScheduleRebalanceCore(db, uid, options = {}) {
   const nowIso = now.toISOString();
   const horizonIso = horizon.toISOString();
 
-  const allRows = await db.all(
+  const allRowsRaw = await db.all(
     `SELECT * FROM tasks WHERE user_id = ? AND end_time >= ? AND start_time <= ? ORDER BY start_time ASC`,
     uid,
     nowIso,
     horizonIso,
+  );
+  const allRows = allRowsRaw.filter((row) => taskMatchesActiveCalendar(row, activeUrl));
+  console.log(
+    '[handall:calendar] rebalance filtered_tasks horizon=%s/%s',
+    allRows.length,
+    allRowsRaw.length,
   );
   const assignmentSourceUrlById = new Map();
   for (const row of allRows) {
@@ -684,10 +740,13 @@ async function runScheduleRebalanceCore(db, uid, options = {}) {
        AND start_time >= ?
        AND start_time <= ?
        AND lower(type) IN ('working', 'goal', 'freetime', 'free')
-       AND lower(COALESCE(status, '')) != 'completed'`,
+       AND lower(COALESCE(status, '')) != 'completed'
+       AND (COALESCE(source_url, '') = ? OR COALESCE(planner_source_url, '') = ?)`,
     uid,
     nowIso,
     horizonIso,
+    activeUrl,
+    activeUrl,
   );
 
   const suggested = planData.suggested_tasks || [];
@@ -700,6 +759,9 @@ async function runScheduleRebalanceCore(db, uid, options = {}) {
       if (assignmentId && assignmentSourceUrlById.has(assignmentId)) {
         plannerSourceUrl = assignmentSourceUrlById.get(assignmentId);
       }
+    }
+    if (!plannerSourceUrl) {
+      plannerSourceUrl = activeUrl;
     }
     await db.run(
       `INSERT INTO tasks (user_id, external_id, title, description, start_time, end_time, type, planner_source_url, status)
@@ -715,7 +777,8 @@ async function runScheduleRebalanceCore(db, uid, options = {}) {
     );
   }
 
-  const tasks = await db.all('SELECT * FROM tasks WHERE user_id = ? ORDER BY start_time ASC', uid);
+  const tasksAll = await db.all('SELECT * FROM tasks WHERE user_id = ? ORDER BY start_time ASC', uid);
+  const tasks = tasksAll.filter((t) => taskMatchesActiveCalendar(t, activeUrl));
   return {
     ok: true,
     data: {
@@ -765,11 +828,19 @@ async function getUserWithCalendarSources(localUserId) {
     'SELECT url FROM calendar_sources WHERE user_id = ? ORDER BY id ASC',
     localUserId
   );
+  const resolved = await resolveActiveCalendarSource(db, localUserId);
+  const stored = String(user?.active_calendar_source_url || '').trim();
+  if (!stored && resolved.activeUrl) {
+    await db.run('UPDATE users SET active_calendar_source_url = ? WHERE id = ?', resolved.activeUrl, localUserId);
+    user.active_calendar_source_url = resolved.activeUrl;
+  }
   const shapedUser = shapeUserForApi(user, calendarSources.map((source) => source.url));
   return shapedUser
     ? {
         ...shapedUser,
         google_calendar_connected: !!user?.google_calendar_connected,
+        active_calendar_source_url: resolved.activeUrl || '',
+        active_calendar_resolution: resolved.source,
       }
     : shapedUser;
 }
@@ -1351,6 +1422,12 @@ app.post('/api/google-calendar/connect', async (req, res) => {
       req.localUser.id,
       sourceUrl,
     );
+    await db.run('UPDATE users SET active_calendar_source_url = ? WHERE id = ?', sourceUrl, req.localUser.id);
+    console.log(
+      '[handall:calendar] google connect set active_source=%s user=%s',
+      sourceUrl,
+      req.localUser.id,
+    );
 
     res.json({
       success: true,
@@ -1458,7 +1535,18 @@ app.delete('/api/google-calendar/connection', async (req, res) => {
     sourceUrl,
   );
 
-  res.json({ success: true, sourceUrl });
+  await db.run('UPDATE users SET active_calendar_source_url = ? WHERE id = ?', '', req.localUser.id);
+  const after = await resolveActiveCalendarSource(db, req.localUser.id);
+  if (after.activeUrl) {
+    await db.run('UPDATE users SET active_calendar_source_url = ? WHERE id = ?', after.activeUrl, req.localUser.id);
+  }
+  console.log(
+    '[handall:calendar] google disconnect user=%s new_active=%s',
+    req.localUser.id,
+    after.activeUrl || '(none)',
+  );
+
+  res.json({ success: true, sourceUrl, active_calendar_source_url: after.activeUrl || '' });
 });
 
 app.post('/api/calendar-url-preview', async (req, res) => {
@@ -1553,10 +1641,20 @@ app.post('/api/calendar-imports', async (req, res) => {
       JSON.stringify(payload)
     );
 
+    const trimmed = sourceUrl.trim();
+    await db.run('INSERT OR IGNORE INTO calendar_sources (user_id, url) VALUES (?, ?)', req.localUser.id, trimmed);
+    await db.run('UPDATE users SET active_calendar_source_url = ? WHERE id = ?', trimmed, req.localUser.id);
+    console.log(
+      '[handall:calendar] calendar-import set active_source=%s user=%s',
+      trimmed,
+      req.localUser.id,
+    );
+
     res.json({
       success: true,
       importId: result.lastID,
       filePath: relativePath,
+      active_calendar_source_url: trimmed,
     });
   } catch (error) {
     console.error('Calendar import persistence error:', error);
@@ -1574,8 +1672,17 @@ app.get('/api/user', async (req, res) => {
 });
 
 app.post('/api/user/setup', async (req, res) => {
-  const { username, wake_time, sleep_time, side_goal, side_goals, motivation, google_calendar_url, calendar_urls } =
-    req.body;
+  const {
+    username,
+    wake_time,
+    sleep_time,
+    side_goal,
+    side_goals,
+    motivation,
+    google_calendar_url,
+    calendar_urls,
+    active_calendar_source_url,
+  } = req.body;
   const db = await getDB();
   const uid = req.localUser.id;
   const current = await db.get('SELECT * FROM users WHERE id = ?', uid);
@@ -1643,8 +1750,60 @@ app.post('/api/user/setup', async (req, res) => {
     }
   }
 
+  let nextActive =
+    typeof active_calendar_source_url === 'string' ? active_calendar_source_url.trim() : '';
+  if (nextActive) {
+    const sources = await db.all('SELECT url FROM calendar_sources WHERE user_id = ?', uid);
+    const ok = sources.some((s) => s.url === nextActive);
+    const userRow = await db.get('SELECT * FROM users WHERE id = ?', uid);
+    const gOk =
+      nextActive.startsWith('google-oauth:') &&
+      userRow?.google_calendar_connected &&
+      nextActive === googleOAuthSourceUrl(userRow);
+    if (!ok && !gOk) {
+      return res.status(400).json({
+        error: 'active_calendar_source_url must match a row in calendar_sources or your connected Google calendar.',
+      });
+    }
+    await db.run('UPDATE users SET active_calendar_source_url = ? WHERE id = ?', nextActive, uid);
+  } else if (calendarUrls && calendarUrls.length > 0) {
+    const pick = calendarUrls[calendarUrls.length - 1];
+    await db.run('UPDATE users SET active_calendar_source_url = ? WHERE id = ?', pick, uid);
+  }
+
   const user = await getUserWithCalendarSources(uid);
   res.json({ success: true, user });
+});
+
+app.patch('/api/user/active-calendar', async (req, res) => {
+  try {
+    const raw = req.body?.active_calendar_source_url;
+    if (typeof raw !== 'string' || !raw.trim()) {
+      return res.status(400).json({ error: 'active_calendar_source_url is required' });
+    }
+    const nextActive = raw.trim();
+    const db = await getDB();
+    const uid = req.localUser.id;
+    const userRow = await db.get('SELECT * FROM users WHERE id = ?', uid);
+    const sources = await db.all('SELECT url FROM calendar_sources WHERE user_id = ?', uid);
+    const ok = sources.some((s) => s.url === nextActive);
+    const gOk =
+      nextActive.startsWith('google-oauth:') &&
+      userRow?.google_calendar_connected &&
+      nextActive === googleOAuthSourceUrl(userRow);
+    if (!ok && !gOk) {
+      return res.status(400).json({
+        error: 'Unknown calendar source. Import the calendar or connect Google first.',
+      });
+    }
+    await db.run('UPDATE users SET active_calendar_source_url = ? WHERE id = ?', nextActive, uid);
+    console.log('[handall:calendar] PATCH active-calendar user=%s url=%s', uid, nextActive);
+    const user = await getUserWithCalendarSources(uid);
+    res.json({ success: true, user });
+  } catch (err) {
+    console.error('active-calendar patch:', err);
+    res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update active calendar' });
+  }
 });
 
 app.patch('/api/user/motivation', async (req, res) => {
@@ -1712,11 +1871,30 @@ app.post('/api/schedule/clear-generated', async (req, res) => {
 // --- Task Management Endpoints ---
 app.get('/api/tasks', async (req, res) => {
   const db = await getDB();
-  const tasks = await db.all(
-    'SELECT * FROM tasks WHERE user_id = ? ORDER BY start_time ASC',
-    req.localUser.id
+  const uid = req.localUser.id;
+  const resolved = await resolveActiveCalendarSource(db, uid);
+  const activeUrl = resolved.activeUrl;
+  console.log(
+    '[handall:calendar] GET /api/tasks user=%s active_source=%s',
+    uid,
+    activeUrl || '(none)',
   );
-  
+  const all = await db.all(
+    'SELECT * FROM tasks WHERE user_id = ? ORDER BY start_time ASC',
+    uid
+  );
+  const tasks = activeUrl
+    ? all.filter((t) => taskMatchesActiveCalendar(t, activeUrl))
+    : [];
+  if (!activeUrl) {
+    console.log('[handall:calendar] GET /api/tasks returning 0 rows (no active source)');
+  } else {
+    console.log(
+      '[handall:calendar] GET /api/tasks filtered %s/%s',
+      tasks.length,
+      all.length,
+    );
+  }
   res.json(tasks.map((t) => taskRowToApiPayload(t)));
 });
 

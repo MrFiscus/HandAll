@@ -89,6 +89,9 @@ export async function initDB() {
 
   await db.exec('ALTER TABLE users ADD COLUMN side_goals_json TEXT').catch(() => {});
   await db.exec('ALTER TABLE users ADD COLUMN motivation INTEGER DEFAULT 50').catch(() => {});
+  await db.exec(
+    "ALTER TABLE users ADD COLUMN active_calendar_source_url TEXT DEFAULT ''",
+  ).catch(() => {});
 
   await db.exec(`
     CREATE TABLE IF NOT EXISTS ai_planning_items (

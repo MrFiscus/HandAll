@@ -7,7 +7,7 @@ from contextvars import ContextVar
 from datetime import date, datetime, time, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Annotated, Any, Dict, List, Optional, Tuple, TypedDict
+from typing import Annotated, Any, Dict, List, Literal, NamedTuple, Optional, Tuple, TypedDict
 from zoneinfo import ZoneInfo
 
 try:
@@ -142,6 +142,74 @@ def _parse_iso_datetime(value: str) -> datetime:
     return parsed
 
 
+def _google_oauth_source_url_from_user_row(ud: Dict[str, Any]) -> str:
+    cid = str(ud.get("google_calendar_calendar_id") or "primary").strip() or "primary"
+    return f"google-oauth:{cid}"
+
+
+def _resolve_active_calendar_url(local_user_id: int) -> Tuple[Optional[str], str]:
+    """
+    Single source of truth for which calendar feeds AI + SQLite task queries.
+    Mirrors backend/src/calendarSource.js resolveActiveCalendarSource.
+    """
+    with _open_app_db() as connection:
+        u = connection.execute("SELECT * FROM users WHERE id = ?", (local_user_id,)).fetchone()
+        if not u:
+            return None, "no_user"
+        ud = dict(u)
+        src_rows = connection.execute(
+            "SELECT url FROM calendar_sources WHERE user_id = ? ORDER BY id ASC",
+            (local_user_id,),
+        ).fetchall()
+    urls: List[str] = []
+    for r in src_rows:
+        rd = dict(r)
+        uu = rd.get("url")
+        if uu:
+            urls.append(str(uu))
+    stored = (ud.get("active_calendar_source_url") or "").strip()
+    active: Optional[str] = None
+    reason = "none"
+
+    def gurl() -> str:
+        return _google_oauth_source_url_from_user_row(ud)
+
+    if stored:
+        if stored.startswith("google-oauth:"):
+            if ud.get("google_calendar_connected") and stored == gurl():
+                active = stored
+                reason = "stored"
+        elif stored in urls:
+            active = stored
+            reason = "stored"
+    if not active and ud.get("google_calendar_connected"):
+        active = gurl()
+        reason = "default_google"
+    elif not active and urls:
+        active = urls[-1]
+        reason = "default_last_ics"
+
+    if active:
+        logger.info(
+            "agent.calendar: active_source=%s resolution=%s user_id=%s",
+            active,
+            reason,
+            local_user_id,
+        )
+    else:
+        logger.info("agent.calendar: no active calendar user_id=%s", local_user_id)
+    return active, reason
+
+
+def _task_row_matches_active_calendar(row: Dict[str, Any], active_url: Optional[str]) -> bool:
+    if not active_url:
+        return False
+    a = str(active_url).strip()
+    s = str(row.get("source_url") or "").strip()
+    p = str(row.get("planner_source_url") or "").strip()
+    return s == a or p == a
+
+
 def _resolve_local_user(auth_user_id: Optional[str], user_metadata: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     if not auth_user_id:
         return None
@@ -265,14 +333,18 @@ def _fetch_tasks_starting_on_local_calendar_day(
     utc_lo, utc_hi = _local_calendar_day_utc_bounds(d, tz_name)
     lo_iso = utc_lo.isoformat()
     hi_iso = utc_hi.isoformat()
+    active, _ = _resolve_active_calendar_url(local_user_id)
     logger.info(
-        "tasks_for_local_day: user_id=%s local_date=%s tz=%s utc_window=[%s, %s)",
+        "tasks_for_local_day: user_id=%s local_date=%s tz=%s utc_window=[%s, %s) active=%s",
         local_user_id,
         d.isoformat(),
         tz_name,
         lo_iso,
         hi_iso,
+        active or "(none)",
     )
+    if not active:
+        return []
     with _open_app_db() as connection:
         rows = connection.execute(
             """
@@ -281,9 +353,10 @@ def _fetch_tasks_starting_on_local_calendar_day(
             WHERE user_id = ?
               AND start_time >= ?
               AND start_time < ?
+              AND (COALESCE(source_url, '') = ? OR COALESCE(planner_source_url, '') = ?)
             ORDER BY start_time ASC
             """,
-            (local_user_id, lo_iso, hi_iso),
+            (local_user_id, lo_iso, hi_iso, active, active),
         ).fetchall()
     return [_serialize_task_row(row) for row in rows]
 
@@ -338,6 +411,9 @@ def _match_tasks_for_local_time(
 
 
 def _get_upcoming_tasks(local_user_id: int, days: int) -> List[Dict[str, Any]]:
+    active, _ = _resolve_active_calendar_url(local_user_id)
+    if not active:
+        return []
     now_iso = datetime.now(timezone.utc).isoformat()
     horizon_iso = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
     with _open_app_db() as connection:
@@ -348,9 +424,10 @@ def _get_upcoming_tasks(local_user_id: int, days: int) -> List[Dict[str, Any]]:
             WHERE user_id = ?
               AND end_time >= ?
               AND start_time <= ?
+              AND (COALESCE(source_url, '') = ? OR COALESCE(planner_source_url, '') = ?)
             ORDER BY start_time ASC
             """,
-            (local_user_id, now_iso, horizon_iso),
+            (local_user_id, now_iso, horizon_iso, active, active),
         ).fetchall()
     return [_serialize_task_row(row) for row in rows]
 
@@ -365,13 +442,20 @@ def _find_assignment_task(
     if not token:
         return None, [], "assignment_identifier is required."
 
+    active, _ = _resolve_active_calendar_url(local_user_id)
+    if not active:
+        return None, [], "No active calendar source — import an .ics or connect Google Calendar in Settings."
+
     horizon_days = max(1, min(int(days or 60), 180))
     now_iso = datetime.now(timezone.utc).isoformat()
     horizon_iso = (datetime.now(timezone.utc) + timedelta(days=horizon_days)).isoformat()
 
+    src_clause = " AND (COALESCE(source_url, '') = ? OR COALESCE(planner_source_url, '') = ?) "
+    sp = (active, active)
+
     with _open_app_db() as connection:
         direct = connection.execute(
-            """
+            f"""
             SELECT *
             FROM tasks
             WHERE user_id = ?
@@ -379,9 +463,10 @@ def _find_assignment_task(
               AND end_time >= ?
               AND start_time <= ?
               AND (CAST(id AS TEXT) = ? OR external_id = ?)
+              {src_clause}
             ORDER BY start_time ASC
             """,
-            (local_user_id, now_iso, horizon_iso, token, token),
+            (local_user_id, now_iso, horizon_iso, token, token) + sp,
         ).fetchall()
         if direct:
             row = direct[0]
@@ -389,7 +474,7 @@ def _find_assignment_task(
 
         like = f"%{token.lower()}%"
         matches = connection.execute(
-            """
+            f"""
             SELECT *
             FROM tasks
             WHERE user_id = ?
@@ -397,9 +482,10 @@ def _find_assignment_task(
               AND end_time >= ?
               AND start_time <= ?
               AND LOWER(title) LIKE ?
+              {src_clause}
             ORDER BY start_time ASC
             """,
-            (local_user_id, now_iso, horizon_iso, like),
+            (local_user_id, now_iso, horizon_iso, like) + sp,
         ).fetchall()
 
     if not matches:
@@ -488,6 +574,9 @@ def _assignment_external_key(row: Dict[str, Any]) -> str:
 
 
 def _fetch_user_assignment_tasks(local_user_id: int) -> List[Dict[str, Any]]:
+    active, _ = _resolve_active_calendar_url(local_user_id)
+    if not active:
+        return []
     with _open_app_db() as connection:
         rows = connection.execute(
             """
@@ -496,10 +585,11 @@ def _fetch_user_assignment_tasks(local_user_id: int) -> List[Dict[str, Any]]:
             WHERE user_id = ?
               AND lower(COALESCE(type, '')) = 'assignment'
               AND lower(COALESCE(status, '')) NOT IN ('completed', 'cancelled')
+              AND (COALESCE(source_url, '') = ? OR COALESCE(planner_source_url, '') = ?)
             ORDER BY start_time ASC
             LIMIT 80
             """,
-            (local_user_id,),
+            (local_user_id, active, active),
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -509,66 +599,326 @@ def _due_weekday_local(row: Dict[str, Any], tz_name: str) -> int:
     return st.astimezone(_safe_zone(tz_name)).weekday()
 
 
-def _score_assignment_match(user_text: str, row: Dict[str, Any], tz_name: str) -> float:
-    ut = user_text.lower()
+# Strict assignment matching: avoid breaking down the wrong task.
+# Weak overlap alone (e.g. "paper", "due") must not unlock a match without strong title similarity.
+_MIN_WINNER_SCORE = 0.58  # combined rank score — must clear this for a unique winner
+_TIE_SCORE_EPSILON = 0.04  # if multiple candidates within this band of the top → ask user
+# Strong single-token match: user token is distinctive (not weak-only) + title similarity floor
+_STRONG_SINGLE_SIM_FLOOR = 0.46
+_WEAK_MULTI_SIM_FLOOR = 0.60  # ≥2 weak tokens only
+_WEAK_SINGLE_SIM_FLOOR = 0.72  # exactly one weak token
+_NO_TOKEN_SIM_FLOOR = 0.80  # similarity-only (near-duplicate title in message)
+
+# Generic school/task words — overlap on these alone is not enough (must pair with similarity).
+_WEAK_SEMANTIC_TOKENS = frozenset(
+    {
+        "paper",
+        "papers",
+        "essay",
+        "essays",
+        "homework",
+        "assignment",
+        "assignments",
+        "due",
+        "deadline",
+        "week",
+        "class",
+        "course",
+        "project",
+        "projects",
+        "report",
+        "reports",
+        "test",
+        "tests",
+        "exam",
+        "exams",
+        "final",
+        "midterm",
+        "study",
+        "studies",
+        "work",
+        "works",
+        "write",
+        "read",
+        "reading",
+        "break",
+        "down",
+        "plan",
+        "plans",
+        "schedule",
+        "calendar",
+        "outline",
+        "research",
+        "complete",
+        "finish",
+        "tackle",
+        "submit",
+        "submission",
+        "lab",
+        "lecture",
+        "quiz",
+    }
+)
+
+
+def _assignment_text_tokens(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]{3,}", (text or "").lower()))
+
+
+def _strict_assignment_gate(
+    user_text: str, row: Dict[str, Any]
+) -> Tuple[bool, float, int, str]:
+    """
+    Pass only with distinctive token overlap and/or high title↔message similarity.
+    Uses **title-only** sequence similarity for gates (not description) to avoid
+    false passes from boilerplate in long descriptions.
+    Returns (passes, sm_title, len(intersection), gate_reason_tag).
+    """
+    ut = (user_text or "").lower()
     title = (row.get("title") or "").lower()
-    desc = (row.get("description") or "").lower()
+    desc = ((row.get("description") or "")[:1200]).lower()
+    utoks = _assignment_text_tokens(ut)
+    ttoks = _assignment_text_tokens(title) | _assignment_text_tokens(desc)
+    inter = utoks & ttoks
+    strong = inter - _WEAK_SEMANTIC_TOKENS
+    sm_title = SequenceMatcher(None, ut, title).ratio()
+
+    if len(strong) >= 2:
+        return True, sm_title, len(inter), f"strong_tokens>={len(strong)}"
+    if len(strong) >= 1 and sm_title >= _STRONG_SINGLE_SIM_FLOOR:
+        return True, sm_title, len(inter), "strong_token+sim"
+    if len(strong) == 0 and len(inter) >= 2 and sm_title >= _WEAK_MULTI_SIM_FLOOR:
+        return True, sm_title, len(inter), "weak_multi+sim"
+    if len(strong) == 0 and len(inter) == 1 and sm_title >= _WEAK_SINGLE_SIM_FLOOR:
+        return True, sm_title, len(inter), "weak_single+high_sim"
+    if len(inter) == 0 and sm_title >= _NO_TOKEN_SIM_FLOOR:
+        return True, sm_title, 0, "title_near_duplicate"
+
+    return False, sm_title, len(inter), "reject_weak_or_low_sim"
+
+
+def _rank_score_assignment(
+    user_text: str,
+    row: Dict[str, Any],
+    tz_name: str,
+    *,
+    weekday_pool_filtered: bool,
+) -> float:
+    """Combined score for ordering candidates that already passed the strict gate."""
+    ut = (user_text or "").lower()
+    title = (row.get("title") or "").lower()
+    desc = ((row.get("description") or "")[:800]).lower()
     sm = SequenceMatcher(None, ut, title).ratio()
-    utoks = set(re.findall(r"[a-z0-9]{3,}", ut))
-    ttoks = set(re.findall(r"[a-z0-9]{3,}", title))
+    utoks = _assignment_text_tokens(ut)
+    ttoks = _assignment_text_tokens(title) | _assignment_text_tokens(desc)
     union = utoks | ttoks
-    overlap = len(utoks & ttoks) / max(1, len(union))
-    score = 0.42 * sm + 0.38 * overlap
-    hints = _weekday_hints_from_message(ut)
-    if hints:
-        try:
-            dw = _due_weekday_local(row, tz_name)
-            if dw in hints:
-                score += 0.22
-        except Exception:
-            pass
-    # Light boost if user words appear in title
+    jacc = len(utoks & ttoks) / len(union) if union else 0.0
+    score = 0.62 * sm + 0.38 * jacc
+    # Weekday alignment only when we did NOT already restrict the pool to that weekday.
+    if not weekday_pool_filtered:
+        hints = _weekday_hints_from_message(user_text)
+        if hints:
+            try:
+                if _due_weekday_local(row, tz_name) in hints:
+                    score += 0.14
+            except Exception:
+                pass
     for w in utoks:
         if len(w) > 3 and w in title:
-            score += 0.04
+            score += 0.025
     return min(1.0, score)
 
 
-def _pick_assignment_for_breakdown(
+def _assignment_pool_for_breakdown(
     user_text: str,
     rows: List[Dict[str, Any]],
     tz_name: str,
-) -> Optional[Dict[str, Any]]:
-    if not rows:
-        return None
-    if len(rows) == 1:
-        logger.info(
-            "agent.assignment_match: single assignment row id=%s title=%r",
-            rows[0].get("id"),
-            (rows[0].get("title") or "")[:80],
-        )
-        return rows[0]
-    best: Optional[Dict[str, Any]] = None
-    best_s = -1.0
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """
+    If the user names weekday(s), only consider assignments due on that day in the user's TZ.
+    If none exist, fall back to all rows (user may have mistyped the day).
+    Returns (pool, weekday_pool_filtered).
+    """
+    hints = _weekday_hints_from_message(user_text)
+    if not hints:
+        return rows, False
+    matched: List[Dict[str, Any]] = []
     for r in rows:
-        s = _score_assignment_match(user_text, r, tz_name)
-        if s > best_s:
-            best_s = s
-            best = r
-    if best is not None and best_s >= 0.26:
-        logger.info(
-            "agent.assignment_match: best match id=%s score=%.3f title=%r",
-            best.get("id"),
-            best_s,
-            (best.get("title") or "")[:80],
-        )
-        return best
-    logger.info(
-        "agent.assignment_match: no confident match (best_score=%.3f, n=%s)",
-        best_s,
-        len(rows),
+        try:
+            if _due_weekday_local(r, tz_name) in hints:
+                matched.append(r)
+        except Exception:
+            continue
+    if matched:
+        return matched, True
+    return rows, False
+
+
+class AssignmentBreakdownPick(NamedTuple):
+    outcome: Literal["matched", "ambiguous", "none"]
+    task: Optional[Dict[str, Any]]
+    ambiguous: Tuple[Tuple[Dict[str, Any], float, str], ...]
+    reason: str
+
+
+def _resolve_assignment_for_breakdown(
+    user_text: str,
+    rows: List[Dict[str, Any]],
+    tz_name: str,
+) -> AssignmentBreakdownPick:
+    """
+    Resolve which assignment to break down. Never guess when ambiguous or weak match.
+    """
+    if not rows:
+        return AssignmentBreakdownPick("none", None, (), "no_assignment_rows")
+
+    pool, weekday_pool_filtered = _assignment_pool_for_breakdown(user_text, rows, tz_name)
+    pool_reason = (
+        f"weekday_restricted_pool size={len(pool)}"
+        if weekday_pool_filtered
+        else f"full_pool size={len(pool)}"
     )
-    return None
+
+    wk_hints = sorted(_weekday_hints_from_message(user_text))
+    logger.info(
+        "agent.assignment_match: trace weekday_hints=%s tz=%s %s user_snip=%r",
+        wk_hints,
+        tz_name,
+        pool_reason,
+        (user_text or "")[:280],
+    )
+
+    scored: List[Tuple[Dict[str, Any], float, bool, float, int, str]] = []
+    for r in pool:
+        gate_ok, sm_title, tok_ov, gate_tag = _strict_assignment_gate(user_text, r)
+        rs = _rank_score_assignment(
+            user_text, r, tz_name, weekday_pool_filtered=weekday_pool_filtered
+        )
+        scored.append((r, rs, gate_ok, sm_title, tok_ov, gate_tag))
+
+    for r, rs, gok, smt, tok, gtag in sorted(scored, key=lambda x: -x[1]):
+        logger.info(
+            "agent.assignment_match: cand id=%s gate_pass=%s rank=%.3f title_sim=%.3f "
+            "overlap_n=%s gate=%s title=%r",
+            r.get("id"),
+            gok,
+            rs,
+            smt,
+            tok,
+            gtag,
+            (r.get("title") or "")[:80],
+        )
+
+    eligible = [x for x in scored if x[2]]
+    if not eligible:
+        best_any = max(scored, key=lambda x: x[1])
+        logger.info(
+            "agent.assignment_match: outcome=none reason=no_gate_match %s best_id=%s "
+            "rank_score=%.3f title_sim=%.3f overlap_n=%s gate_tag=%s",
+            pool_reason,
+            best_any[0].get("id"),
+            best_any[1],
+            best_any[3],
+            best_any[4],
+            best_any[5],
+        )
+        return AssignmentBreakdownPick(
+            "none",
+            None,
+            (),
+            f"no_gate_match; {pool_reason}; best_rank=%.3f" % best_any[1],
+        )
+
+    eligible.sort(key=lambda x: x[1], reverse=True)
+    top_row, top_score, _, top_seq, top_tok, top_gtag = eligible[0]
+
+    if top_score < _MIN_WINNER_SCORE:
+        logger.info(
+            "agent.assignment_match: outcome=none reason=below_threshold %s task_id=%s "
+            "rank_score=%.3f title_sim=%.3f overlap_n=%s gate=%s",
+            pool_reason,
+            top_row.get("id"),
+            top_score,
+            top_seq,
+            top_tok,
+            top_gtag,
+        )
+        return AssignmentBreakdownPick(
+            "none",
+            None,
+            (),
+            f"below_min_score; {pool_reason}; score=%.3f" % top_score,
+        )
+
+    close = [e for e in eligible if e[1] >= top_score - _TIE_SCORE_EPSILON]
+    if len(close) >= 2:
+        amb: List[Tuple[Dict[str, Any], float, str]] = []
+        for r, rs, _, seq, tok, gtag in close[:12]:
+            amb.append(
+                (
+                    r,
+                    rs,
+                    f"rank={rs:.3f} title_sim={seq:.3f} overlap_n={tok} gate={gtag}",
+                )
+            )
+        logger.info(
+            "agent.assignment_match: outcome=ambiguous reason=tied_scores %s "
+            "top_rank=%.3f n_in_tie_band=%s task_ids=%s",
+            pool_reason,
+            top_score,
+            len(close),
+            [c[0].get("id") for c in close],
+        )
+        return AssignmentBreakdownPick("ambiguous", None, tuple(amb), f"tied; {pool_reason}")
+
+    win_reason = (
+        f"unique_winner; {pool_reason}; rank={top_score:.3f} title_sim={top_seq:.3f} "
+        f"overlap_n={top_tok}; gate={top_gtag}"
+    )
+    logger.info(
+        "agent.assignment_match: outcome=matched task_id=%s rank_score=%.3f title_sim=%.3f "
+        "overlap_n=%s gate=%s reason=%s",
+        top_row.get("id"),
+        top_score,
+        top_seq,
+        top_tok,
+        top_gtag,
+        win_reason,
+    )
+    return AssignmentBreakdownPick("matched", top_row, (), win_reason)
+
+
+def _format_assignment_disambiguation_message(
+    candidates: Tuple[Tuple[Dict[str, Any], float, str], ...],
+    tz_name: str,
+) -> str:
+    lines = [
+        "### Which assignment?",
+        "",
+        "More than one assignment matched closely. Reply with the **number** or the **exact title**:",
+        "",
+    ]
+    for i, (row, _score, _why) in enumerate(candidates, 1):
+        due = ""
+        try:
+            st = _parse_iso_datetime(row["start_time"])
+            loc = st.astimezone(_safe_zone(tz_name))
+            due = f" — due **{loc.strftime('%a %Y-%m-%d %H:%M')}** ({tz_name})"
+        except Exception:
+            pass
+        lines.append(
+            f"{i}. **{row.get('title') or 'Untitled'}** (id `{row.get('id')}`){due}"
+        )
+    lines.append("")
+    lines.append("_Example: reply `1` or paste the assignment title._")
+    return "\n".join(lines)
+
+
+def _format_assignment_no_match_message() -> str:
+    return (
+        "I couldn't find a matching assignment in your current tasks.\n\n"
+        "Name the **course or exact title** (or paste it from your schedule), then ask again."
+    )
 
 
 def _replace_assignment_subtasks_sqlite(
@@ -697,6 +1047,20 @@ def assignment_intent_handler(state: AgentState) -> Dict[str, Any]:
             "bypass_llm": True,
         }
 
+    active_cal, _ = _resolve_active_calendar_url(int(local_user["id"]))
+    if not active_cal:
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        "No **active calendar** is set. In **Settings**, import an .ics file or connect "
+                        "Google Calendar, then choose which calendar HandAll should use for planning and chat."
+                    )
+                )
+            ],
+            "bypass_llm": True,
+        }
+
     motivation = max(0, min(100, int(state.get("motivation") or 50)))
     tz_name = state.get("user_metadata", {}).get("timezone") or "UTC"
 
@@ -757,17 +1121,33 @@ def assignment_intent_handler(state: AgentState) -> Dict[str, Any]:
                 "bypass_llm": True,
             }
 
-        matched = _pick_assignment_for_breakdown(text, rows, tz_name)
-        if not matched:
+        pick = _resolve_assignment_for_breakdown(text, rows, tz_name)
+        if pick.outcome == "ambiguous":
             logger.info(
-                "agent.fast_path: could not match message to an assignment — using LLM chat"
+                "agent.fast_path: assignment ambiguous — asking user (n=%s)",
+                len(pick.ambiguous),
             )
-            return {"bypass_llm": False}
+            body = _format_assignment_disambiguation_message(pick.ambiguous, tz_name)
+            return {
+                "messages": [AIMessage(content=body)],
+                "bypass_llm": True,
+            }
+        if pick.outcome != "matched" or not pick.task:
+            logger.info(
+                "agent.fast_path: no confident assignment match — skip breakdown (%s)",
+                pick.reason,
+            )
+            return {
+                "messages": [AIMessage(content=_format_assignment_no_match_message())],
+                "bypass_llm": True,
+            }
 
+        matched = pick.task
         logger.info(
-            "agent.fast_path: TRIGGER assignment breakdown pipeline task_id=%s key=%s",
+            "agent.fast_path: TRIGGER assignment breakdown pipeline task_id=%s key=%s (%s)",
             matched.get("id"),
             _assignment_external_key(matched),
+            pick.reason,
         )
 
         subtasks = generate_assignment_subtasks(
@@ -795,6 +1175,22 @@ def _route_after_assignment_intent(state: AgentState) -> str:
 @tool
 def list_events() -> List[Dict[str, Any]]:
     """Fetch Google Calendar events scheduled in the next 24 hours."""
+    ctx = _get_agent_context()
+    auth = ctx.get("auth_user_id")
+    if auth:
+        lu = _resolve_local_user(auth, ctx.get("user_metadata"))
+        if lu:
+            active, _ = _resolve_active_calendar_url(int(lu["id"]))
+            if not active:
+                logger.info("agent.calendar: list_events skipped (no active calendar)")
+                return []
+            if not str(active).startswith("google-oauth:"):
+                logger.info(
+                    "agent.calendar: list_events skipped — active source is local ICS, not Google (%s)",
+                    active,
+                )
+                return []
+
     service = get_calendar_service()
     calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "primary")
 
@@ -837,6 +1233,20 @@ def manage_event(
     event_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create or update a Google Calendar event. Use action='create' or action='update'."""
+    ctx = _get_agent_context()
+    auth = ctx.get("auth_user_id")
+    if auth:
+        lu = _resolve_local_user(auth, ctx.get("user_metadata"))
+        if lu:
+            active, _ = _resolve_active_calendar_url(int(lu["id"]))
+            if not active:
+                return {"status": "error", "message": "No active calendar — connect Google in Settings first."}
+            if not str(active).startswith("google-oauth:"):
+                return {
+                    "status": "error",
+                    "message": "Google Calendar changes are disabled while your active source is a local .ics import.",
+                }
+
     service = get_calendar_service()
     calendar_id = os.environ.get("GOOGLE_CALENDAR_ID", "primary")
 
@@ -969,10 +1379,19 @@ def list_assignment_plans(
             "assignments": [],
         }
 
+    active, _ = _resolve_active_calendar_url(int(local_user["id"]))
+    if not active:
+        return {
+            "success": False,
+            "message": "No active calendar source. Import an .ics file or connect Google Calendar in Settings, then sync.",
+            "assignments": [],
+        }
+
     safe_days = max(1, min(int(days or 30), 90))
     now_iso = datetime.now(timezone.utc).isoformat()
     horizon_iso = (datetime.now(timezone.utc) + timedelta(days=safe_days)).isoformat()
     title_filter = f"%{(assignment_title_contains or '').strip().lower()}%"
+    src_x = (active, active)
 
     with _open_app_db() as connection:
         if (assignment_title_contains or "").strip():
@@ -985,9 +1404,10 @@ def list_assignment_plans(
                   AND end_time >= ?
                   AND start_time <= ?
                   AND LOWER(title) LIKE ?
+                  AND (COALESCE(source_url, '') = ? OR COALESCE(planner_source_url, '') = ?)
                 ORDER BY start_time ASC
                 """,
-                (local_user["id"], now_iso, horizon_iso, title_filter),
+                (local_user["id"], now_iso, horizon_iso, title_filter) + src_x,
             ).fetchall()
         else:
             assignment_rows = connection.execute(
@@ -998,10 +1418,15 @@ def list_assignment_plans(
                   AND type = 'assignment'
                   AND end_time >= ?
                   AND start_time <= ?
+                  AND (COALESCE(source_url, '') = ? OR COALESCE(planner_source_url, '') = ?)
                 ORDER BY start_time ASC
                 """,
-                (local_user["id"], now_iso, horizon_iso),
+                (local_user["id"], now_iso, horizon_iso) + src_x,
             ).fetchall()
+
+        allowed_keys = {
+            _assignment_external_key(dict(r)) for r in assignment_rows
+        }
 
         planning_rows = connection.execute(
             """
@@ -1017,6 +1442,8 @@ def list_assignment_plans(
     planning_by_assignment: Dict[str, List[Dict[str, Any]]] = {}
     for row in planning_rows:
         assignment_key = row["assignment_external_id"] or ""
+        if assignment_key not in allowed_keys:
+            continue
         item = {
             "id": str(row["id"]),
             "title": row["title"],
@@ -1398,6 +1825,13 @@ def remove_app_task(task_identifier: str) -> Dict[str, Any]:
     if not identifier:
         raise ValueError("task_identifier is required")
 
+    active, _ = _resolve_active_calendar_url(int(local_user["id"]))
+    if not active:
+        return {
+            "success": False,
+            "message": "No active calendar — set one in Settings before removing tasks.",
+        }
+
     with _open_app_db() as connection:
         row = connection.execute(
             """
@@ -1458,6 +1892,12 @@ def remove_app_task(task_identifier: str) -> Dict[str, Any]:
                 "message": f"I couldn't find a HandAll task matching '{identifier}'.",
             }
 
+        if not _task_row_matches_active_calendar(dict(row), active):
+            return {
+                "success": False,
+                "message": "That task is not from your active calendar. Switch the active calendar in Settings to manage it.",
+            }
+
         deleted = _serialize_task_row(row)
         connection.execute(
             "DELETE FROM tasks WHERE id = ?",
@@ -1483,6 +1923,13 @@ def rebalance_app_plan(days: int = 7) -> Dict[str, Any]:
             "message": "Sign in to HandAll in this browser so I can read or change your saved tasks.",
         }
 
+    active, _ = _resolve_active_calendar_url(int(local_user["id"]))
+    if not active:
+        return {
+            "success": False,
+            "message": "No active calendar source. Import an .ics or connect Google Calendar in Settings first.",
+        }
+
     from backend.planner import generate_weekly_plan
 
     safe_days = max(3, min(int(days or 7), 14))
@@ -1490,9 +1937,10 @@ def rebalance_app_plan(days: int = 7) -> Dict[str, Any]:
     horizon_iso = (datetime.now(timezone.utc) + timedelta(days=safe_days)).isoformat()
     motivation = max(0, min(int(context.get("motivation") or 50), 100))
     timezone_name = context.get("user_metadata", {}).get("timezone") or "UTC"
+    ax = (active, active)
 
     with _open_app_db() as connection:
-        all_rows = connection.execute(
+        all_rows_raw = connection.execute(
             """
             SELECT *
             FROM tasks
@@ -1503,6 +1951,13 @@ def rebalance_app_plan(days: int = 7) -> Dict[str, Any]:
             """,
             (local_user["id"], now_iso, horizon_iso),
         ).fetchall()
+        all_rows = [r for r in all_rows_raw if _task_row_matches_active_calendar(dict(r), active)]
+        logger.info(
+            "agent.calendar: rebalance_app_plan filtered_rows=%s/%s active=%s",
+            len(all_rows),
+            len(all_rows_raw),
+            active,
+        )
 
         current_events = []
         for row in all_rows:
@@ -1532,9 +1987,10 @@ def rebalance_app_plan(days: int = 7) -> Dict[str, Any]:
               AND start_time <= ?
               AND lower(type) IN ('working', 'goal', 'freetime', 'free')
               AND lower(status) != 'completed'
+              AND (COALESCE(source_url, '') = ? OR COALESCE(planner_source_url, '') = ?)
             ORDER BY start_time ASC
             """,
-            (local_user["id"], now_iso, horizon_iso),
+            (local_user["id"], now_iso, horizon_iso) + ax,
         ).fetchall()
         deleted_count = len(deleted_rows)
 
@@ -1546,9 +2002,23 @@ def rebalance_app_plan(days: int = 7) -> Dict[str, Any]:
               AND start_time <= ?
               AND lower(type) IN ('working', 'goal', 'freetime', 'free')
               AND lower(status) != 'completed'
+              AND (COALESCE(source_url, '') = ? OR COALESCE(planner_source_url, '') = ?)
             """,
-            (local_user["id"], now_iso, horizon_iso),
+            (local_user["id"], now_iso, horizon_iso) + ax,
         )
+
+        ak_rows = connection.execute(
+            """
+            SELECT id, external_id FROM tasks
+            WHERE user_id = ? AND lower(COALESCE(type,'')) = 'assignment'
+              AND (COALESCE(source_url, '') = ? OR COALESCE(planner_source_url, '') = ?)
+            """,
+            (local_user["id"],) + ax,
+        ).fetchall()
+        allowed_assignment_keys = set()
+        for ar in ak_rows:
+            d = dict(ar)
+            allowed_assignment_keys.add(_assignment_external_key(d))
 
         planning_rows = connection.execute(
             """
@@ -1563,6 +2033,9 @@ def rebalance_app_plan(days: int = 7) -> Dict[str, Any]:
         for row in planning_rows:
             r = dict(row)
             if r.get("item_type") == "assignment_subtask":
+                ak = r.get("assignment_external_id") or ""
+                if allowed_assignment_keys and ak not in allowed_assignment_keys:
+                    continue
                 assignment_work_units.append(
                     {
                         "id": str(r.get("id")),
@@ -1608,8 +2081,8 @@ def rebalance_app_plan(days: int = 7) -> Dict[str, Any]:
         for task in plan.get("suggested_tasks", []):
             cursor = connection.execute(
                 """
-                INSERT INTO tasks (user_id, external_id, title, description, start_time, end_time, type, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'Accepted')
+                INSERT INTO tasks (user_id, external_id, title, description, start_time, end_time, type, planner_source_url, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Accepted')
                 """,
                 (
                     local_user["id"],
@@ -1619,6 +2092,7 @@ def rebalance_app_plan(days: int = 7) -> Dict[str, Any]:
                     task.get("start"),
                     task.get("end"),
                     _normalize_task_type(str(task.get("type") or "working")),
+                    active,
                 ),
             )
             created = connection.execute(
@@ -1699,7 +2173,8 @@ def fetch_user_data(state: AgentState) -> Dict[str, Any]:
             with _open_app_db() as connection:
                 row = connection.execute(
                     """
-                    SELECT username, side_goals_json, side_goal, motivation, wake_time, sleep_time
+                    SELECT username, side_goals_json, side_goal, motivation, wake_time, sleep_time,
+                           active_calendar_source_url, google_calendar_connected, google_calendar_calendar_id, id
                     FROM users
                     WHERE auth_user_id = ?
                     LIMIT 1
@@ -1708,6 +2183,13 @@ def fetch_user_data(state: AgentState) -> Dict[str, Any]:
                 ).fetchone()
             if row:
                 row_d = dict(row)
+                try:
+                    act_u, act_r = _resolve_active_calendar_url(int(row_d["id"]))
+                    user_metadata["active_calendar_source_url"] = act_u or ""
+                    user_metadata["active_calendar_resolution"] = act_r
+                except Exception:
+                    user_metadata["active_calendar_source_url"] = ""
+                    user_metadata["active_calendar_resolution"] = "error"
                 prefs = dict(user_metadata["prefs"])
                 goals = _side_goals_from_user_record(row_d)
                 prefs["side_goals"] = goals
@@ -1768,13 +2250,16 @@ def build_system_prompt(user_metadata: Dict[str, Any]) -> str:
     goals_line = json.dumps(goals) if goals else "[]"
     today_local = user_metadata.get("today_local", "")
     schedule_snapshot = user_metadata.get("schedule_snapshot", "(not loaded)")
+    active_cal = user_metadata.get("active_calendar_source_url") or "(none)"
     return (
         f"You are HandAll's execution-focused planning engine for {name}, not a generic tutor or essay coach. "
         f"Timezone: {timezone_name}. Today (local): {today_local}. "
         f"Motivation/energy: {motivation}/100. Side goals: {goals_line}. "
+        f"**Active calendar source (only this feed is used for tasks/assignments):** `{active_cal}`. "
+        f"If none is set, tell the user to choose a calendar in Settings.\n"
         f"Other prefs: {json.dumps({k: v for k, v in prefs.items() if k not in {'side_goals', 'sideGoals'}})}.\n\n"
         "**Data you already have (do not ask the user to repeat it):**\n"
-        f"- Upcoming HandAll tasks (local times, next ~14 days):\n{schedule_snapshot}\n\n"
+        f"- Upcoming HandAll tasks from the **active** calendar only (local times, next ~14 days):\n{schedule_snapshot}\n\n"
         "**Rules:**\n"
         "1. Prefer **tools** over prose. Call `list_schedule`, `search_app_tasks`, `list_assignment_plans`, "
         "`generate_assignment_plan`, `rebalance_app_plan`, "

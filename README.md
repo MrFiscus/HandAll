@@ -8,6 +8,7 @@ HandAll is an AI-supported student planner built to keep classes, assignments, r
 - Uses AI-assisted planning to break work into manageable blocks and support schedule decisions.
 - Lets students connect calendars, import `.ics` feeds, and preview converted events before syncing.
 - Adds a visual layer for motivation, energy windows, side goals, and assistant-guided planning.
+- Lets users change a motivation slider that resyncs the day's calendar, so the AI can rebalance tasks around how locked in, tired, or flexible the user feels in that moment.
 
 ## Visual Product Tour
 

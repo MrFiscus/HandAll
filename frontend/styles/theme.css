@@ -5,7 +5,7 @@
   /* Deep Forest Palette */
   --background: transparent;
   --foreground: #DAF1DE;
-  --card: #28623A; 
+  --card: rgba(40, 98, 58, 0.2); 
   --card-foreground: #DAF1DE;
   --popover: #0F2027;
   --popover-foreground: #DAF1DE;
@@ -110,5 +110,28 @@
 
   .sheet {
     @apply border border-white/10 shadow-[0_40px_80px_rgba(0,0,0,0.3)] backdrop-blur-3xl;
+  }
+
+  .custom-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(218, 241, 222, 0.2) transparent;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(218, 241, 222, 0.2);
+    border-radius: 10px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(218, 241, 222, 0.4);
   }
 }

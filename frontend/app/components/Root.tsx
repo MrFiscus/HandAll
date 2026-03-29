@@ -16,7 +16,7 @@ import Auth from "./Auth";
 export default function Root() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { loadAppData, resetAppState } = useAppStore();
+  const { loadAppData, resetAppState, isFullScreen } = useAppStore();
   const [showHelp, setShowHelp] = useState(false);
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -72,48 +72,50 @@ export default function Root() {
   return (
     <div className="flex h-screen bg-transparent text-foreground font-sans selection:bg-primary selection:text-primary-foreground">
       {/* Step 1: Minimalist Navigation Edge - Fully Transparent */}
-      <aside className="w-20 lg:w-24 flex flex-col items-center py-12 border-r border-white/5 bg-transparent relative z-50">
-        <div className="mb-12">
-          <div className="h-10 w-10 rounded-2xl bg-primary flex items-center justify-center shadow-[0_0_30px_rgba(221,251,92,0.2)]">
-            <span className="font-black text-primary-foreground text-xl">H</span>
+      {!isFullScreen && (
+        <aside className="w-20 lg:w-24 flex flex-col items-center py-12 border-r border-white/5 bg-transparent relative z-50 animate-in fade-in slide-in-from-left-8 duration-700">
+          <div className="mb-12">
+            <div className="h-10 w-10 rounded-2xl bg-primary flex items-center justify-center shadow-[0_0_30px_rgba(221,251,92,0.2)]">
+              <span className="font-black text-primary-foreground text-xl">H</span>
+            </div>
           </div>
-        </div>
 
-        <nav className="flex-1 flex flex-col gap-8">
-          <NavButton 
-            icon={<CalendarDays />} 
-            active={location.pathname === "/"} 
-            onClick={() => navigate("/")} 
-          />
-          <NavButton 
-            icon={<Target />} 
-            active={location.pathname === "/goals"} 
-            onClick={() => navigate("/goals")} 
-          />
-          <NavButton 
-            icon={<SettingsIcon />} 
-            active={location.pathname === "/settings"} 
-            onClick={() => navigate("/settings")} 
-          />
-        </nav>
+          <nav className="flex-1 flex flex-col gap-8">
+            <NavButton 
+              icon={<CalendarDays />} 
+              active={location.pathname === "/"} 
+              onClick={() => navigate("/")} 
+            />
+            <NavButton 
+              icon={<Target />} 
+              active={location.pathname === "/goals"} 
+              onClick={() => navigate("/goals")} 
+            />
+            <NavButton 
+              icon={<SettingsIcon />} 
+              active={location.pathname === "/settings"} 
+              onClick={() => navigate("/settings")} 
+            />
+          </nav>
 
-        <div className="mt-auto flex flex-col gap-8">
-          <NavButton 
-            icon={<HelpCircle />} 
-            onClick={() => setShowHelp(true)} 
-          />
-          <button 
-            onClick={async () => {
-              resetAppState();
-              await supabase?.auth.signOut();
-              navigate("/login");
-            }}
-            className="p-3 rounded-2xl text-muted-foreground/40 hover:text-destructive transition-all hover:bg-destructive/10"
-          >
-            <LogOut className="h-6 w-6" />
-          </button>
-        </div>
-      </aside>
+          <div className="mt-auto flex flex-col gap-8">
+            <NavButton 
+              icon={<HelpCircle />} 
+              onClick={() => setShowHelp(true)} 
+            />
+            <button 
+              onClick={async () => {
+                resetAppState();
+                await supabase?.auth.signOut();
+                navigate("/login");
+              }}
+              className="p-3 rounded-2xl text-muted-foreground/40 hover:text-destructive transition-all hover:bg-destructive/10"
+            >
+              <LogOut className="h-6 w-6" />
+            </button>
+          </div>
+        </aside>
+      )}
 
       {/* Main Workspace */}
       <main className="flex-1 overflow-hidden relative">

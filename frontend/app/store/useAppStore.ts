@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { api } from "../utils/api";
+import { toast } from "sonner";
 
 export interface CalendarAiMeta {
   classification?: string;
@@ -94,6 +95,7 @@ export interface AppState {
   lastMotivation: number;
   lastCalendarSync: Date | null;
   apiLoaded: boolean;
+  isFullScreen: boolean;
   resetAppState: () => void;
 
   loadAppData: () => Promise<void>;
@@ -113,6 +115,7 @@ export interface AppState {
   clearPendingSuggestions: () => void;
   confirmAllSuggestions: () => Promise<void>;
   refreshSuggestion: (id: string) => Promise<void>;
+  setIsFullScreen: (val: boolean) => void;
   runWeeklySync: (payload: {
     userId: string;
     name: string;
@@ -174,6 +177,7 @@ export const useAppStore = create<AppState>()(
       lastMotivation: 50,
       lastCalendarSync: null,
       apiLoaded: false,
+      isFullScreen: false,
       resetAppState: () =>
         set({
           userProfile: {
@@ -193,6 +197,7 @@ export const useAppStore = create<AppState>()(
           lastMotivation: 50,
           lastCalendarSync: null,
           apiLoaded: false,
+          isFullScreen: false,
         }),
 
       loadAppData: async () => {
@@ -502,6 +507,8 @@ export const useAppStore = create<AppState>()(
         // Triggering rebalance by re-setting motivation
         await setMotivation(lastMotivation);
       },
+
+      setIsFullScreen: (val) => set({ isFullScreen: val }),
 
       runWeeklySync: async (payload) => {
         return await api.runWeeklySync(payload);

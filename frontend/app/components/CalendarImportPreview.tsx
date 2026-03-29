@@ -16,6 +16,7 @@ import {
 } from "../utils/calendarSync";
 import { Button } from "./ui/button";
 import { Card, CardContent } from "./ui/card";
+import { cn } from "./ui/utils";
 
 export default function CalendarImportPreview() {
   const navigate = useNavigate();
@@ -123,26 +124,26 @@ export default function CalendarImportPreview() {
   };
 
   return (
-    <div className="h-screen overflow-hidden bg-background px-4 py-5 sm:px-6 lg:px-8">
-      <div className="mx-auto flex h-[calc(100vh-2.5rem)] max-w-5xl flex-col gap-5">
-        <div className="flex items-center justify-between">
-          <Button variant="outline" onClick={handleBack} className="rounded-xl">
+    <div className="h-screen overflow-hidden bg-transparent px-4 py-10 sm:px-6 lg:px-8">
+      <div className="mx-auto flex h-full max-w-5xl flex-col gap-8">
+        <div className="flex items-center justify-between animate-in fade-in slide-in-from-top-4 duration-700">
+          <Button variant="ghost" onClick={handleBack} className="rounded-xl hover:bg-white/5 font-bold">
             <ArrowLeft className="mr-2 h-4 w-4" />
             Back
           </Button>
           <div className="flex items-center gap-3">
             <Button
-              variant="outline"
+              variant="ghost"
               onClick={handleClear}
               disabled={isSubmitting}
-              className="rounded-xl"
+              className="rounded-xl text-muted-foreground/40 hover:text-foreground"
             >
-              Clear Preview
+              Clear
             </Button>
             <Button
               onClick={handleImport}
               disabled={isSubmitting}
-              className="rounded-xl"
+              className="h-12 px-8 rounded-xl font-black uppercase tracking-widest bg-primary text-primary-foreground shadow-2xl transition-all hover:scale-105"
             >
               {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               Import {summary.total} Events
@@ -150,99 +151,104 @@ export default function CalendarImportPreview() {
           </div>
         </div>
 
-        <Card className="flex-1 overflow-hidden rounded-[2rem] border border-border/60 bg-card/88 shadow-[0_18px_40px_rgba(15,23,42,0.12)]">
-          <CardContent className="flex h-full flex-col gap-6 p-6 sm:p-8">
-            <div className="flex items-start gap-4">
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
-                <Calendar className="h-5 w-5" />
+        <div className="flex-1 overflow-hidden rounded-[2.5rem] bg-white/[0.01] border border-white/[0.03] backdrop-blur-md flex flex-col p-8 sm:p-10 space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-700">
+          <div className="flex items-start gap-6">
+            <div className="flex h-16 w-16 items-center justify-center rounded-[1.5rem] bg-primary/10 text-primary shadow-inner">
+              <Calendar className="h-8 w-8" />
+            </div>
+            <div className="space-y-2">
+              <h1 className="text-4xl font-black tracking-tighter text-foreground mb-0">
+                Import Preview.
+              </h1>
+              <p className="text-sm font-medium text-muted-foreground">
+                Review the {summary.total} events discovered in your calendar source.
+              </p>
+              <div className="inline-flex items-center gap-2 rounded-full border border-white/5 bg-white/[0.03] px-4 py-1.5 font-mono text-[10px] tracking-tight text-foreground/60">
+                <div className="h-1 w-1 rounded-full bg-primary/40" />
+                {previewState.source.startsWith("file://")
+                  ? previewState.source.replace("file://", "")
+                  : previewState.source}
               </div>
-              <div className="space-y-2">
-                <h1
-                  className="text-3xl font-semibold tracking-tight text-foreground"
-                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+            </div>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className="rounded-[1.5rem] border border-white/5 bg-white/[0.02] p-6 text-center space-y-1">
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground/40">
+                Classes
+              </p>
+              <p className="text-4xl font-black text-primary">
+                {summary.classes}
+              </p>
+            </div>
+            <div className="rounded-[1.5rem] border border-white/5 bg-white/[0.02] p-6 text-center space-y-1">
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground/40">
+                Assignments
+              </p>
+              <p className="text-4xl font-black text-primary">
+                {summary.assignments}
+              </p>
+            </div>
+            <div className="rounded-[1.5rem] border border-white/5 bg-white/[0.02] p-6 text-center space-y-1">
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground/40">
+                Other
+              </p>
+              <p className="text-4xl font-black text-primary">
+                {summary.external}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex min-h-0 flex-1 flex-col space-y-6">
+            <div className="flex items-end justify-between border-b border-white/5 pb-4">
+              <p className="text-sm font-black uppercase tracking-widest text-muted-foreground/60">
+                Converted Tasks
+              </p>
+              <p className="text-[9px] font-black uppercase tracking-widest text-muted-foreground/30">
+                Smart Processing Applied
+              </p>
+            </div>
+            <div className="custom-scrollbar grid min-h-0 flex-1 gap-4 overflow-y-auto pr-2">
+              {previewTasks.map((task, idx) => (
+                <div
+                  key={task.source_event_id}
+                  className="rounded-2xl border border-white/5 bg-white/[0.01] p-6 transition-all hover:bg-white/[0.03] animate-in fade-in slide-in-from-bottom-2"
+                  style={{ animationDelay: `${idx * 50}ms`, animationFillMode: 'both' }}
                 >
-                  Import preview
-                </h1>
-                <p className="text-sm leading-6 text-muted-foreground">
-                  Review the events and converted tasks before adding them to
-                  HandAll.
-                </p>
-                <p className="inline-flex w-fit rounded-full border border-white/10 bg-[#1b4c2f] px-3 py-1.5 font-mono text-xs tracking-[0.03em] text-foreground/85">
-                  {previewState.source.startsWith("file://")
-                    ? previewState.source.replace("file://", "")
-                    : previewState.source}
-                </p>
-              </div>
-            </div>
-
-            <div className="grid gap-3 sm:grid-cols-3">
-              <div className="rounded-2xl border border-white/8 bg-[#1f5634] p-4 text-center">
-                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                  Classes
-                </p>
-                <p className="mt-2 text-3xl font-semibold text-foreground">
-                  {summary.classes}
-                </p>
-              </div>
-              <div className="rounded-2xl border border-white/8 bg-[#1f5634] p-4 text-center">
-                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                  Assignments
-                </p>
-                <p className="mt-2 text-3xl font-semibold text-foreground">
-                  {summary.assignments}
-                </p>
-              </div>
-              <div className="rounded-2xl border border-white/8 bg-[#1f5634] p-4 text-center">
-                <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
-                  Other events
-                </p>
-                <p className="mt-2 text-3xl font-semibold text-foreground">
-                  {summary.external}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex min-h-0 flex-1 flex-col space-y-3">
-              <div className="flex items-end justify-between gap-3">
-                <p className="text-lg font-semibold text-foreground">
-                  Converted task preview
-                </p>
-                <p className="pr-10 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                  Difficulty
-                </p>
-              </div>
-              <div className="handall-scrollbar grid min-h-0 flex-1 gap-3 overflow-y-auto pr-1">
-                {previewTasks.map((task) => (
-                  <div
-                    key={task.source_event_id}
-                    className="rounded-2xl border border-white/8 bg-[#1f5634] p-4"
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <p className="font-semibold text-foreground">
-                              {task.task_name}
-                            </p>
-                            <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">
-                              {task.category}
-                            </p>
-                          </div>
-                          <span className="text-xs font-semibold uppercase text-muted-foreground">
-                            {task.priority}
-                          </span>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-3 flex-1">
+                      <div className="flex items-center gap-3">
+                        <p className="text-lg font-bold text-foreground leading-tight">
+                          {task.task_name}
+                        </p>
+                        <div className="px-2 py-0.5 rounded-md bg-white/5 border border-white/5 text-[8px] font-black uppercase tracking-widest text-muted-foreground/60">
+                          {task.category}
                         </div>
-                    <p className="mt-2 text-sm text-muted-foreground">
-                      {task.details || "No details provided."}
-                    </p>
-                    <p className="mt-3 text-xs text-muted-foreground">
-                      {format(new Date(task.due_start), "PPp")} -{" "}
-                      {format(new Date(task.due_end), "PPp")}
-                    </p>
+                      </div>
+                      <p className="text-sm text-muted-foreground font-medium leading-relaxed max-w-2xl">
+                        {task.details || "No details provided."}
+                      </p>
+                      <div className="flex items-center gap-4 pt-1">
+                        <div className="flex items-center gap-2 text-[10px] font-bold text-primary/60">
+                          <div className="h-1 w-1 rounded-full bg-primary" />
+                          {format(new Date(task.due_start), "MMM d, h:mm a")}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex flex-col items-end gap-2">
+                      <span className={cn(
+                        "text-[9px] font-black uppercase tracking-widest px-3 py-1 rounded-full",
+                        task.priority === "high" ? "bg-destructive/10 text-destructive" : "bg-primary/10 text-primary"
+                      )}>
+                        {task.priority}
+                      </span>
+                    </div>
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       </div>
     </div>
   );

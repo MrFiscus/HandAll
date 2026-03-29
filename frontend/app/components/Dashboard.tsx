@@ -18,6 +18,7 @@ import WeeklyCalendar from "./WeeklyCalendar";
 import { supabase } from "../lib/supabase";
 import { getAuthHeaders } from "../utils/api";
 import { normalizeChatResponseContent } from "../utils/chatResponse";
+import { TimePickerField } from "./ui/time-picker";
 
 const AGENT_API_BASE_URL = import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "/agent-api";
 const AGENT_USER_ID_KEY = "handall-agent-user-id";
@@ -95,9 +96,18 @@ export default function Dashboard() {
         xpValue: 10,
       });
       toast.success("Added to your path.");
+      setNewEvent({
+        title: "",
+        date: format(new Date(), "yyyy-MM-dd"),
+        startTime: "09:00",
+        endTime: "10:00",
+        type: "assignment" as const,
+      });
       setShowAddEvent(false);
-    } catch {
-      toast.error("Flow interrupted.");
+    } catch (error) {
+      console.error("handleAddEvent failed:", error);
+      const message = error instanceof Error ? error.message : "Flow interrupted.";
+      toast.error(message);
     }
   };
 
@@ -178,7 +188,7 @@ export default function Dashboard() {
   return (
     <div
       className={cn(
-        "h-screen transition-all duration-1000 ease-in-out mx-auto flex flex-col overflow-hidden",
+        "h-full min-h-0 transition-all duration-1000 ease-in-out mx-auto flex flex-col overflow-hidden",
         isFullScreen ? "p-0 max-w-full" : "p-8 lg:p-12 max-w-[1800px] gap-10",
       )}
     >
@@ -211,7 +221,7 @@ export default function Dashboard() {
                 className="h-14 px-8 rounded-full bg-white/[0.03] hover:bg-white/[0.06] border border-white/5 text-base font-bold transition-all hover:scale-105 active:scale-95 flex items-center gap-3"
               >
                 <Plus className="h-5 w-5 text-primary" />
-                <span>Add to Day</span>
+                <span>Add Event</span>
               </button>
             </DialogTrigger>
             <DialogContent className="rounded-[3rem] border-none p-10 bg-[#1a3a2a] shadow-4xl sm:max-w-[500px]">
@@ -226,27 +236,31 @@ export default function Dashboard() {
                     onChange={(e) => setNewEvent({ ...newEvent, title: e.target.value })}
                     placeholder="What's next?"
                     className="h-14 bg-white/[0.02] border-none rounded-2xl text-lg px-6"
+                    autoFocus
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Date</Label>
+                  <Input
+                    type="date"
+                    value={newEvent.date}
+                    onChange={(e) => setNewEvent({ ...newEvent, date: e.target.value })}
+                    className="h-14 bg-white/[0.02] border-none rounded-2xl px-6 font-bold [color-scheme:dark]"
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-6">
-                  <div className="space-y-2">
-                    <Label>Start</Label>
-                    <Input
-                      type="time"
-                      value={newEvent.startTime}
-                      onChange={(e) => setNewEvent({ ...newEvent, startTime: e.target.value })}
-                      className="h-14 bg-white/[0.02] border-none rounded-2xl px-6 font-bold"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>End</Label>
-                    <Input
-                      type="time"
-                      value={newEvent.endTime}
-                      onChange={(e) => setNewEvent({ ...newEvent, endTime: e.target.value })}
-                      className="h-14 bg-white/[0.02] border-none rounded-2xl px-6 font-bold"
-                    />
-                  </div>
+                  <TimePickerField
+                    id="startTime"
+                    label="Start Time"
+                    value={newEvent.startTime}
+                    onChange={(next) => setNewEvent({ ...newEvent, startTime: next })}
+                  />
+                  <TimePickerField
+                    id="endTime"
+                    label="End Time"
+                    value={newEvent.endTime}
+                    onChange={(next) => setNewEvent({ ...newEvent, endTime: next })}
+                  />
                 </div>
                 <Button
                   type="button"
@@ -330,27 +344,32 @@ export default function Dashboard() {
                   <span className="font-black uppercase tracking-widest text-[9px]">Assistant</span>
                 </button>
               </DialogTrigger>
-              <DialogContent className="sm:max-w-[500px] h-[600px] border-none rounded-[3rem] bg-card/98 backdrop-blur-3xl shadow-4xl flex flex-col p-0 overflow-hidden">
+              <DialogContent 
+                overlayClassName="bg-transparent"
+                className="sm:max-w-[500px] h-[600px] border-none rounded-[3rem] bg-card/60 backdrop-blur-xl shadow-4xl flex flex-col p-0 overflow-hidden"
+              >
                 <div className="p-10 border-b border-white/5 bg-white/2">
                   <h2 className="text-3xl font-black tracking-tighter">Let&apos;s Chat.</h2>
                   <p className="opacity-40 font-medium text-sm">Refine your experience.</p>
                 </div>
-                <ScrollArea className="flex-1 p-10 space-y-6 custom-scrollbar">
-                  {chatMessages.map((m) => (
-                    <div key={m.id} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
-                      <div
-                        className={cn(
-                          "max-w-[85%] p-5 rounded-[1.5rem] text-base font-medium leading-relaxed",
-                          m.role === "user"
-                            ? "bg-primary text-primary-foreground rounded-tr-none"
-                            : "bg-white/[0.03] border border-white/5 rounded-tl-none",
-                        )}
-                      >
-                        {m.content}
+                <ScrollArea className="flex-1" type="always">
+                  <div className="p-10 space-y-6">
+                    {chatMessages.map((m) => (
+                      <div key={m.id} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+                        <div
+                          className={cn(
+                            "max-w-[85%] p-5 rounded-[1.5rem] text-base font-medium leading-relaxed break-words",
+                            m.role === "user"
+                              ? "bg-primary text-primary-foreground rounded-tr-none"
+                              : "bg-white/[0.03] border border-white/5 rounded-tl-none",
+                          )}
+                        >
+                          {m.content}
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                  <div ref={chatEndRef} />
+                    ))}
+                    <div ref={chatEndRef} />
+                  </div>
                 </ScrollArea>
                 <div className="p-12 pt-0">
                   <div className="flex gap-4 p-3 rounded-[2rem] bg-white/[0.03] border border-white/5 focus-within:border-primary/20 transition-all">

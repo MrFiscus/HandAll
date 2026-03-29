@@ -134,4 +134,13 @@
   .custom-scrollbar::-webkit-scrollbar-thumb:hover, .handall-scrollbar::-webkit-scrollbar-thumb:hover {
     background: rgba(218, 241, 222, 0.4);
   }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
 }

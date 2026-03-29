@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Label } from "./label";
+import { cn } from "./utils";
 
 const HOUR_OPTIONS = Array.from({ length: 12 }, (_, index) => index + 1);
 const MINUTE_OPTIONS = Array.from({ length: 60 }, (_, index) => index);
@@ -75,7 +76,7 @@ export function TimePickerField({
   };
 
   const selectionClass =
-    "absolute inset-x-0 top-1/2 h-16 -translate-y-1/2 rounded-[1.35rem] border border-white/15 bg-white/80 shadow-[0_10px_40px_rgba(15,23,42,0.12)]";
+    "absolute inset-x-0 top-1/2 h-16 -translate-y-1/2 rounded-2xl border border-white/10 bg-white/5";
 
   const renderColumn = <T extends number | string>({
     options,
@@ -102,7 +103,7 @@ export function TimePickerField({
 
     return (
       <div
-        className="relative h-52 overflow-hidden"
+        className="relative h-52 overflow-hidden cursor-ns-resize"
         onWheel={(event) => {
           event.preventDefault();
           onSelect(
@@ -125,13 +126,14 @@ export function TimePickerField({
                 key={`${id}-${formatter(option)}-${index}`}
                 type="button"
                 onClick={() => onSelect(option)}
-                className={`flex h-16 w-full items-center justify-center text-center font-semibold transition-all ${
+                className={cn(
+                  "flex h-16 w-full items-center justify-center text-center font-bold transition-all duration-300",
                   isSelected
-                    ? "text-[2rem] text-slate-900"
+                    ? "text-3xl text-primary scale-110"
                     : distance === 1
-                      ? "text-[1.7rem] text-slate-400"
-                      : "text-[1.55rem] text-slate-300"
-                }`}
+                      ? "text-xl text-foreground/40"
+                      : "text-lg text-foreground/10"
+                )}
               >
                 {formatter(option)}
               </button>
@@ -146,7 +148,7 @@ export function TimePickerField({
     <div className="space-y-3">
       <Label
         htmlFor={id}
-        className="text-xs font-black uppercase tracking-[0.22em] text-foreground/80"
+        className="text-[10px] font-black uppercase tracking-widest text-muted-foreground/40"
       >
         {label}
       </Label>
@@ -154,35 +156,29 @@ export function TimePickerField({
         id={id}
         type="button"
         onClick={openPicker}
-        className="flex h-14 w-full items-center justify-between rounded-[1.1rem] border-2 border-foreground/10 bg-black/10 px-4 text-left text-foreground transition-colors hover:border-primary/35 hover:bg-black/14"
+        className="flex h-14 w-full items-center justify-between rounded-2xl bg-white/[0.02] border border-white/5 px-6 text-left text-foreground transition-all hover:bg-white/[0.04] hover:border-white/10"
         aria-haspopup="dialog"
         aria-expanded={isOpen}
       >
-        <span className="text-base font-semibold text-foreground">
+        <span className="text-base font-bold text-foreground">
           {`${String(hour12).padStart(2, "0")}:${String(minute).padStart(2, "0")} ${period}`}
         </span>
-        <span className="text-sm text-muted-foreground">Select time</span>
+        <span className="text-[10px] font-black uppercase tracking-widest text-primary/40">Change</span>
       </button>
-      <p className="text-sm text-muted-foreground">Tap to open a compact time picker.</p>
 
       {isOpen ? (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/35 px-4 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm animate-in fade-in duration-300">
           <div
             role="dialog"
             aria-modal="true"
             aria-label={`Select ${label.toLowerCase()}`}
-            className="w-full max-w-[420px] rounded-[2rem] border border-white/10 bg-white px-5 py-6 text-slate-900 shadow-[0_28px_80px_rgba(15,23,42,0.35)] sm:px-7"
+            className="w-full max-w-[420px] rounded-[2.5rem] border border-white/10 bg-[#1a3a2a] p-10 text-foreground shadow-4xl animate-in zoom-in-95 duration-300"
           >
-            <div className="mb-5 text-center">
-              <p
-                className="text-[2rem] font-semibold tracking-tight"
-                style={{
-                  fontFamily: "'Space Grotesk', sans-serif",
-                  color: "#2c7a4b",
-                }}
-              >
-                Select time
+            <div className="mb-8">
+              <p className="text-3xl font-black tracking-tighter">
+                {label}.
               </p>
+              <p className="text-sm font-medium text-muted-foreground/40 mt-1">Scroll to adjust the time.</p>
             </div>
 
             <div className="mx-auto grid max-w-[360px] grid-cols-[1fr_24px_1fr_96px] items-center gap-2">
@@ -192,7 +188,7 @@ export function TimePickerField({
                 onSelect: (next) => updateDraft("hour12", next),
                 formatter: (next) => String(next).padStart(2, "0"),
               })}
-              <div className="flex h-full items-center justify-center text-[2rem] font-semibold text-slate-400">
+              <div className="flex h-full items-center justify-center text-3xl font-black text-foreground/20">
                 :
               </div>
               {renderColumn({
@@ -210,20 +206,20 @@ export function TimePickerField({
               })}
             </div>
 
-            <div className="mt-6 flex items-center justify-between px-2">
+            <div className="mt-10 flex items-center gap-4">
               <button
                 type="button"
                 onClick={() => setIsOpen(false)}
-                className="text-lg font-medium text-slate-700 transition-colors hover:text-slate-900"
+                className="flex-1 h-14 rounded-2xl font-bold text-muted-foreground/40 hover:text-foreground transition-colors"
               >
                 Cancel
               </button>
               <button
                 type="button"
                 onClick={commitDraft}
-                className="text-lg font-semibold text-slate-900 transition-colors hover:text-slate-700"
+                className="flex-1 h-14 rounded-2xl bg-primary text-primary-foreground font-black uppercase tracking-widest shadow-2xl transition-all hover:scale-105 active:scale-95"
               >
-                Save
+                Confirm
               </button>
             </div>
           </div>

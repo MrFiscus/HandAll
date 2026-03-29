@@ -6,6 +6,7 @@ import Goals from "./components/Goals";
 import Settings from "./components/Settings";
 import NotFound from "./components/NotFound";
 import SignInForm from "./components/SignInForm";
+import CalendarImportPreview from "./components/CalendarImportPreview";
 
 export const router = createBrowserRouter([
   {
@@ -22,6 +23,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, Component: Dashboard },
       { path: "setup", Component: Setup },
+      { path: "calendar-import-preview", Component: CalendarImportPreview },
       { path: "goals", Component: Goals },
       { path: "settings", Component: Settings },
       { path: "*", Component: NotFound },

@@ -16,10 +16,13 @@ import Auth from "./Auth";
 export default function Root() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { loadAppData, resetAppState } = useAppStore();
+  const { loadAppData, resetAppState, isSetupComplete, apiLoaded } = useAppStore();
   const [showHelp, setShowHelp] = useState(false);
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const isSetupRoute =
+    location.pathname === "/setup" ||
+    location.pathname === "/calendar-import-preview";
 
   useEffect(() => {
     if (!supabase) {
@@ -57,6 +60,17 @@ export default function Root() {
     }
   }, [session, location.pathname, navigate]);
 
+  useEffect(() => {
+    if (!session || !apiLoaded) return;
+    if (!isSetupComplete && location.pathname !== "/setup" && location.pathname !== "/calendar-import-preview") {
+      navigate("/setup");
+      return;
+    }
+    if (isSetupComplete && location.pathname === "/setup") {
+      navigate("/");
+    }
+  }, [session, apiLoaded, isSetupComplete, location.pathname, navigate]);
+
   if (loading) return (
     <div className="h-screen w-screen flex items-center justify-center bg-background">
       <div className="text-2xl font-black tracking-tighter opacity-20 animate-pulse">HandAll.</div>
@@ -68,6 +82,14 @@ export default function Root() {
   }
 
   if (!session && location.pathname !== "/login" && location.pathname !== "/signin") return null;
+
+  if (isSetupRoute) {
+    return (
+      <div className="h-screen w-screen overflow-hidden bg-background">
+        <Outlet />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-transparent text-foreground font-sans selection:bg-primary selection:text-primary-foreground">

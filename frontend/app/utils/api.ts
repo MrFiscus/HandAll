@@ -38,6 +38,7 @@ function mapUserProfile(data: any): UserProfile {
       : (data.google_calendar_url ? [data.google_calendar_url] : []),
     motivation,
     googleCalendarConnected: !!data.google_calendar_connected,
+    setupComplete: !!data.setup_completed,
   };
 }
 

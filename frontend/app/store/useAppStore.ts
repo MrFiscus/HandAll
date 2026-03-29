@@ -82,6 +82,7 @@ export interface UserProfile {
   calendarUrls: string[];
   motivation?: number;
   googleCalendarConnected: boolean;
+  setupComplete?: boolean;
   id?: string;
 }
 
@@ -166,6 +167,7 @@ export const useAppStore = create<AppState>()(
         sideGoals: [],
         calendarUrls: [],
         googleCalendarConnected: false,
+        setupComplete: false,
       },
       events: [],
       planningItems: [],
@@ -185,6 +187,7 @@ export const useAppStore = create<AppState>()(
             sideGoals: [],
             calendarUrls: [],
             googleCalendarConnected: false,
+            setupComplete: false,
           },
           events: [],
           planningItems: [],
@@ -209,6 +212,7 @@ export const useAppStore = create<AppState>()(
             events: tasks.map(normalizeCalendarEvent),
             planningItems,
             lastMotivation: motivationFromServer,
+            isSetupComplete: !!user.setupComplete,
             apiLoaded: true,
           });
         } catch (e) {
@@ -356,7 +360,14 @@ export const useAppStore = create<AppState>()(
         }
       },
 
-      completeSetup: () => set({ isSetupComplete: true }),
+      completeSetup: () =>
+        set((state) => ({
+          isSetupComplete: true,
+          userProfile: {
+            ...state.userProfile,
+            setupComplete: true,
+          },
+        })),
 
       setMotivation: async (level) => {
         const m = Math.max(0, Math.min(100, Math.round(level)));

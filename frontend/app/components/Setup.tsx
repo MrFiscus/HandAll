@@ -7,72 +7,119 @@ import { Textarea } from "./ui/textarea";
 import { Card, CardContent } from "./ui/card";
 import { Badge } from "./ui/badge";
 import { Progress } from "./ui/progress";
+import { TimePickerField } from "./ui/time-picker";
 import { useAppStore } from "../store/useAppStore";
-import { Calendar, CheckCircle2, ChevronLeft, ChevronRight, Clock3, Loader2, Sparkles, Target } from "lucide-react";
+import {
+  Calendar,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Clock3,
+  Loader2,
+  Sparkles,
+} from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "../lib/supabase";
 import CalendarSync from "./CalendarSync";
+import {
+  clearSetupDraft,
+  readSetupDraft,
+  saveSetupDraft,
+} from "../utils/setupDraft";
 
 const AGENT_USER_ID_KEY = "handall-agent-user-id";
+const DEFAULT_WAKE_TIME = "07:00";
+const DEFAULT_SLEEP_TIME = "23:00";
 
 const STEPS = [
   {
     id: 1,
     eyebrow: "Step 1",
-    title: "Make HandAll feel like yours",
-    description: "Start with your name and the study goals you actually care about this term.",
+    title: "Your profile",
+    description: "Add your name and a few side goals.",
     icon: Sparkles,
   },
   {
     id: 2,
     eyebrow: "Step 2",
-    title: "Shape your daily rhythm",
-    description: "Tell us when your day usually starts and ends so planning suggestions fit real life.",
+    title: "Your routine",
+    description: "Choose when your day starts and ends.",
     icon: Clock3,
   },
   {
     id: 3,
     eyebrow: "Step 3",
-    title: "Bring your calendar in",
-    description: "Connect Google Calendar, upload an .ical file, or paste an iCal link to pull in your schedule.",
+    title: "Your calendar",
+    description: "Connect or import your calendar.",
     icon: Calendar,
   },
 ];
 
 export default function Setup() {
   const navigate = useNavigate();
-  const { setUserProfile, completeSetup, lastMotivation, userProfile } = useAppStore();
+  const { setUserProfile, completeSetup, lastMotivation, userProfile } =
+    useAppStore();
+  const initialDraft = readSetupDraft();
   const [step, setStep] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formData, setFormData] = useState({
-    name: userProfile.name === "Student" ? "" : userProfile.name,
-    wakeTime: userProfile.wakeTime || "07:00",
-    sleepTime: userProfile.sleepTime || "23:00",
-    sideGoals: userProfile.sideGoals.join("\n"),
+    name: initialDraft?.name ?? (userProfile.name === "Student" ? "" : userProfile.name),
+    wakeTime: initialDraft?.wakeTime ?? (userProfile.wakeTime || DEFAULT_WAKE_TIME),
+    sleepTime: initialDraft?.sleepTime ?? (userProfile.sleepTime || DEFAULT_SLEEP_TIME),
+    sideGoals: initialDraft?.sideGoals ?? userProfile.sideGoals.join("\n"),
   });
 
   const activeStep = STEPS[step - 1];
-  const completion = useMemo(() => Math.round((step / STEPS.length) * 100), [step]);
-  const sideGoalCount = formData.sideGoals
-    .split("\n")
-    .map((goal) => goal.trim())
-    .filter(Boolean).length;
-
+  const completion = useMemo(
+    () => Math.round((step / STEPS.length) * 100),
+    [step],
+  );
+  const stepLabel = `Step ${step}/${STEPS.length}`;
   const handleNext = async () => {
+    const trimmedName = formData.name.trim();
+    const sideGoals = formData.sideGoals
+      .split("\n")
+      .map((goal) => goal.trim())
+      .filter(Boolean);
+
+    if (step === 1) {
+      if (!trimmedName) {
+        toast.error("Add your name before continuing.");
+        return;
+      }
+      if (sideGoals.length === 0) {
+        toast.error("Add at least one side goal before continuing.");
+        return;
+      }
+    }
+
+    if (step === 2) {
+      if (formData.wakeTime === DEFAULT_WAKE_TIME) {
+        toast.error("Customize your wake time before continuing.");
+        return;
+      }
+      if (formData.sleepTime === DEFAULT_SLEEP_TIME) {
+        toast.error("Customize your sleep time before continuing.");
+        return;
+      }
+    }
+
     if (step < STEPS.length) {
+      saveSetupDraft({
+        name: trimmedName,
+        wakeTime: formData.wakeTime,
+        sleepTime: formData.sleepTime,
+        sideGoals: formData.sideGoals,
+        motivation: lastMotivation,
+      });
       setStep((current) => current + 1);
       return;
     }
 
     setIsSubmitting(true);
     try {
-      const sideGoals = formData.sideGoals
-        .split("\n")
-        .map((goal) => goal.trim())
-        .filter(Boolean);
-
       await setUserProfile({
-        name: formData.name.trim() || "Student",
+        name: trimmedName || "Student",
         wakeTime: formData.wakeTime,
         sleepTime: formData.sleepTime,
         sideGoals,
@@ -85,33 +132,48 @@ export default function Setup() {
       }
 
       completeSetup();
+      clearSetupDraft();
       toast.success("Setup complete");
       navigate("/");
     } catch (error) {
       console.error("Failed to complete setup:", error);
-      toast.error(error instanceof Error ? error.message : "Failed to complete setup.");
+      toast.error(
+        error instanceof Error ? error.message : "Failed to complete setup.",
+      );
     } finally {
       setIsSubmitting(false);
     }
   };
 
   return (
-    <div className="min-h-screen overflow-hidden bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.18),_transparent_28%),radial-gradient(circle_at_bottom_right,_rgba(16,185,129,0.16),_transparent_30%),linear-gradient(180deg,_#f8fbff_0%,_#eef5ff_100%)] px-4 py-6 sm:px-6 lg:px-8">
-      <div className="mx-auto grid min-h-[calc(100vh-3rem)] max-w-6xl gap-6 lg:grid-cols-[1.02fr_1.18fr]">
-        <Card className="relative overflow-hidden border-white/70 bg-slate-950 text-white shadow-[0_28px_80px_rgba(15,23,42,0.28)]">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.16),transparent_28%),radial-gradient(circle_at_bottom_right,rgba(59,130,246,0.22),transparent_36%)]" />
+    <div className="fixed inset-0 z-[60] overflow-hidden bg-background px-4 py-6 sm:px-6 lg:px-8">
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,var(--color-primary),transparent_34%),radial-gradient(circle_at_bottom_right,rgba(255,255,255,0.06),transparent_28%)] opacity-20" />
+      <div className="absolute inset-0 bg-black/30 backdrop-blur-md" />
+      <div className="pointer-events-none absolute inset-0 overflow-hidden opacity-20">
+        <div className="absolute -left-20 top-10 h-96 w-96 rounded-full bg-primary/20 blur-[120px]" />
+        <div className="absolute right-0 top-0 h-[500px] w-[500px] rounded-full bg-primary/10 blur-[150px]" />
+        <div className="absolute bottom-0 left-1/3 h-80 w-80 rounded-full bg-primary/15 blur-[100px]" />
+      </div>
+
+      <div className="relative z-10 mx-auto grid h-[calc(100vh-3rem)] max-w-6xl gap-6 lg:grid-cols-[1.02fr_1.18fr]">
+        <Card className="relative overflow-hidden rounded-[2rem] border border-border/60 bg-muted text-foreground shadow-[0_28px_80px_rgba(15,23,42,0.22)]">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,var(--color-primary),transparent_38%)] opacity-10" />
           <CardContent className="relative flex h-full flex-col justify-between gap-8 p-6 sm:p-8">
             <div className="space-y-8">
               <div className="space-y-4">
-                <Badge className="w-fit border-white/10 bg-white/10 text-blue-50 hover:bg-white/10">
+                <Badge className="w-fit border-border/60 bg-background/75 text-foreground hover:bg-background/75">
                   HandAll onboarding
                 </Badge>
                 <div className="space-y-3">
-                  <h1 className="max-w-md text-3xl font-semibold leading-tight sm:text-4xl">
-                    Set up a planner that actually respects your real schedule.
+                  <h1
+                    className="max-w-md text-3xl font-semibold leading-tight sm:text-4xl"
+                    style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                  >
+                    Finish setup in three quick steps.
                   </h1>
-                  <p className="max-w-lg text-sm leading-6 text-blue-100/85 sm:text-base">
-                    We’ll save your routine, your goals, and your calendar sources so HandAll can build useful study blocks instead of generic reminders.
+                  <p className="max-w-lg text-sm leading-6 text-muted-foreground sm:text-base">
+                    Keep it simple now. You can change everything later in
+                    Settings.
                   </p>
                 </div>
               </div>
@@ -127,24 +189,36 @@ export default function Setup() {
                       key={item.id}
                       className={`rounded-2xl border px-4 py-4 transition-all ${
                         isCurrent
-                          ? "border-cyan-300/40 bg-white/12 shadow-[0_0_0_1px_rgba(125,211,252,0.18)]"
-                          : "border-white/10 bg-white/5"
+                          ? "border-primary/30 bg-background/70 shadow-[0_0_0_1px_rgba(221,251,92,0.12)]"
+                          : "border-border/50 bg-background/40"
                       }`}
                     >
                       <div className="flex items-start gap-3">
-                        <div className={`mt-0.5 flex h-10 w-10 items-center justify-center rounded-2xl ${
-                          isDone
-                            ? "bg-emerald-400/20 text-emerald-200"
-                            : isCurrent
-                              ? "bg-cyan-300/18 text-cyan-100"
-                              : "bg-white/10 text-blue-100"
-                        }`}>
-                          {isDone ? <CheckCircle2 className="h-5 w-5" /> : <Icon className="h-5 w-5" />}
+                        <div
+                          className={`mt-0.5 flex h-10 w-10 items-center justify-center rounded-2xl ${
+                            isDone
+                              ? "bg-primary/18 text-primary"
+                              : isCurrent
+                                ? "bg-primary/16 text-primary"
+                                : "bg-background/80 text-foreground/70"
+                          }`}
+                        >
+                          {isDone ? (
+                            <CheckCircle2 className="h-5 w-5" />
+                          ) : (
+                            <Icon className="h-5 w-5" />
+                          )}
                         </div>
                         <div className="space-y-1">
-                          <p className="text-xs uppercase tracking-[0.18em] text-blue-100/60">{item.eyebrow}</p>
-                          <p className="font-medium text-white">{item.title}</p>
-                          <p className="text-sm leading-5 text-blue-100/72">{item.description}</p>
+                          <p className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                            {item.eyebrow}
+                          </p>
+                          <p className="font-medium text-foreground">
+                            {item.title}
+                          </p>
+                          <p className="text-sm leading-5 text-muted-foreground">
+                            {item.description}
+                          </p>
                         </div>
                       </div>
                     </div>
@@ -155,188 +229,181 @@ export default function Setup() {
 
             <div className="space-y-4">
               <div className="space-y-2">
-                <div className="flex items-center justify-between text-xs uppercase tracking-[0.18em] text-blue-100/65">
+                <div className="flex items-center justify-between text-xs uppercase tracking-[0.18em] text-muted-foreground">
                   <span>Progress</span>
-                  <span>{completion}%</span>
+                  <span>{stepLabel}</span>
                 </div>
-                <Progress value={completion} className="h-2 bg-white/10" />
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div className="rounded-2xl border border-white/10 bg-white/6 p-4">
-                  <p className="text-xs uppercase tracking-[0.16em] text-blue-100/60">Profile</p>
-                  <p className="mt-2 text-lg font-semibold">{formData.name.trim() || "Student"}</p>
-                </div>
-                <div className="rounded-2xl border border-white/10 bg-white/6 p-4">
-                  <p className="text-xs uppercase tracking-[0.16em] text-blue-100/60">Routine</p>
-                  <p className="mt-2 text-lg font-semibold">{formData.wakeTime} - {formData.sleepTime}</p>
-                </div>
-                <div className="rounded-2xl border border-white/10 bg-white/6 p-4">
-                  <p className="text-xs uppercase tracking-[0.16em] text-blue-100/60">Goals</p>
-                  <p className="mt-2 text-lg font-semibold">{sideGoalCount}</p>
-                </div>
+                <Progress value={completion} className="h-2 bg-background/70" />
               </div>
             </div>
           </CardContent>
         </Card>
 
-        <Card className="border-white/70 bg-white/88 shadow-[0_28px_70px_rgba(148,163,184,0.18)] backdrop-blur">
-          <CardContent className="flex h-full flex-col p-6 sm:p-8">
+        <Card className="rounded-[2rem] border border-border/60 bg-card/72 shadow-[0_28px_70px_rgba(15,23,42,0.14)] backdrop-blur">
+          <CardContent className="flex h-full min-h-0 flex-col p-6 sm:p-8">
             <div className="mb-6 space-y-3">
-              <Badge variant="secondary" className="w-fit">
+              <Badge
+                variant="secondary"
+                className="w-fit border-primary/10 bg-primary/10 text-primary"
+              >
                 {activeStep.eyebrow}
               </Badge>
               <div className="space-y-2">
-                <h2 className="text-3xl font-semibold tracking-tight text-slate-950">{activeStep.title}</h2>
-                <p className="max-w-2xl text-sm leading-6 text-slate-600">{activeStep.description}</p>
+                <h2
+                  className="text-3xl font-black tracking-tight text-foreground sm:text-4xl"
+                  style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                >
+                  {activeStep.title}
+                </h2>
+                <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+                  {activeStep.description}
+                </p>
               </div>
             </div>
 
-            <div className="flex-1 space-y-6">
+            <div className="flex-1 min-h-0 space-y-6 overflow-hidden">
               {step === 1 && (
                 <div className="space-y-6">
-                  <div className="grid gap-5 md:grid-cols-[1.05fr_0.95fr]">
-                    <div className="space-y-4 rounded-3xl border bg-slate-50/90 p-5">
-                      <div className="space-y-1">
-                        <p className="text-sm font-medium text-slate-900">Display name</p>
-                        <p className="text-sm text-slate-500">This is what HandAll will show across your dashboard and profile area.</p>
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="name">Name</Label>
-                        <Input
-                          id="name"
-                          placeholder="Student"
-                          value={formData.name}
-                          onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                          className="h-11"
-                        />
-                      </div>
+                  <div className="space-y-7 rounded-[2rem] border border-border/60 bg-card/80 p-7 shadow-[0_18px_40px_rgba(15,23,42,0.12)] sm:p-8">
+                    <div className="space-y-2">
+                      <p
+                        className="text-lg font-semibold tracking-tight text-foreground"
+                        style={{ fontFamily: "'Space Grotesk', sans-serif" }}
+                      >
+                        Your profile
+                      </p>
+                      <p className="text-sm leading-6 text-muted-foreground">
+                        Add the basics so HandAll can personalize your planner.
+                      </p>
+                    </div>
+                    <div className="space-y-3">
+                      <Label
+                        htmlFor="name"
+                        className="text-xs font-black uppercase tracking-[0.22em] text-foreground/80"
+                      >
+                        Display name
+                      </Label>
+                      <Input
+                        id="name"
+                        placeholder="Student"
+                        value={formData.name}
+                        onChange={(e) =>
+                          setFormData({ ...formData, name: e.target.value })
+                        }
+                        className="h-12 rounded-xl border-2 border-foreground/10 bg-black/10 text-foreground placeholder:text-foreground/45 focus-visible:border-primary/60 focus-visible:ring-primary/20"
+                      />
                     </div>
 
-                    <div className="rounded-3xl border bg-gradient-to-br from-blue-50 via-white to-emerald-50 p-5">
-                      <div className="mb-4 flex items-center gap-3">
-                        <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-600 text-white">
-                          <Sparkles className="h-5 w-5" />
-                        </div>
-                        <div>
-                          <p className="font-medium text-slate-900">What to expect</p>
-                          <p className="text-sm text-slate-600">A quick setup that shapes every suggestion later.</p>
-                        </div>
-                      </div>
-                      <div className="space-y-3 text-sm text-slate-600">
-                        <p>HandAll uses your routine, your side goals, and your calendar to create more realistic study blocks.</p>
-                        <p>You can change everything later from Settings, so this first pass just needs to be directionally right.</p>
-                      </div>
+                    <div className="space-y-3">
+                      <Label
+                        htmlFor="sideGoals"
+                        className="text-xs font-black uppercase tracking-[0.22em] text-foreground/80"
+                      >
+                        Side goals
+                      </Label>
+                      <Textarea
+                        id="sideGoals"
+                        placeholder={
+                          "Bench press 135 pounds\nRead more consistently\nBuild a stronger coding portfolio"
+                        }
+                        rows={6}
+                        value={formData.sideGoals}
+                        onChange={(e) =>
+                          setFormData({ ...formData, sideGoals: e.target.value })
+                        }
+                        className="min-h-[152px] rounded-[1.75rem] border-2 border-foreground/10 bg-black/10 px-4 py-3 text-foreground placeholder:text-foreground/45 focus-visible:border-primary/60 focus-visible:ring-primary/20"
+                      />
+                      <p className="text-sm text-muted-foreground">
+                        One goal per line.
+                      </p>
                     </div>
-                  </div>
-
-                  <div className="space-y-3 rounded-3xl border bg-white p-5">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-emerald-100 text-emerald-700">
-                        <Target className="h-5 w-5" />
-                      </div>
-                      <div>
-                        <p className="font-medium text-slate-900">Side goals</p>
-                        <p className="text-sm text-slate-500">One per line. These help HandAll suggest goal tasks and events that matter to you.</p>
-                      </div>
-                    </div>
-                    <Textarea
-                      id="sideGoals"
-                      placeholder={"Bench press 135 pounds\nRead more consistently\nBuild a stronger coding portfolio"}
-                      rows={6}
-                      value={formData.sideGoals}
-                      onChange={(e) => setFormData({ ...formData, sideGoals: e.target.value })}
-                    />
                   </div>
                 </div>
               )}
 
               {step === 2 && (
                 <div className="space-y-6">
-                  <div className="grid gap-5 md:grid-cols-2">
-                    <div className="rounded-3xl border bg-slate-50/90 p-5 space-y-4">
+                  <div className="space-y-5">
+                    <div className="space-y-4 rounded-3xl border border-border/60 bg-background/55 p-5 sm:p-6">
                       <div className="space-y-1">
-                        <p className="font-medium text-slate-900">Wake time</p>
-                        <p className="text-sm text-slate-500">When should HandAll assume your day can start?</p>
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="wakeTime">Wake Time</Label>
-                        <Input
-                          id="wakeTime"
-                          type="time"
-                          value={formData.wakeTime}
-                          onChange={(e) => setFormData({ ...formData, wakeTime: e.target.value })}
-                          className="h-11"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="rounded-3xl border bg-slate-50/90 p-5 space-y-4">
-                      <div className="space-y-1">
-                        <p className="font-medium text-slate-900">Sleep time</p>
-                        <p className="text-sm text-slate-500">When should the planner stop suggesting work for the night?</p>
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="sleepTime">Sleep Time</Label>
-                        <Input
-                          id="sleepTime"
-                          type="time"
-                          value={formData.sleepTime}
-                          onChange={(e) => setFormData({ ...formData, sleepTime: e.target.value })}
-                          className="h-11"
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-3xl border bg-gradient-to-br from-slate-950 via-slate-900 to-blue-950 p-5 text-white">
-                    <div className="flex items-start gap-3">
-                      <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white/10">
-                        <Clock3 className="h-5 w-5 text-cyan-200" />
-                      </div>
-                      <div className="space-y-2">
-                        <p className="font-medium">Why this matters</p>
-                        <p className="text-sm leading-6 text-blue-100/80">
-                          HandAll uses this window to avoid placing focus blocks at unrealistic times and to protect free time outside your normal day.
+                        <p className="font-medium text-foreground">
+                          Wake time
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          When should HandAll assume your day can start?
                         </p>
                       </div>
+                      <TimePickerField
+                          id="wakeTime"
+                          label="Wake time"
+                          value={formData.wakeTime}
+                          onChange={(next) =>
+                            setFormData({
+                              ...formData,
+                              wakeTime: next,
+                            })
+                          }
+                        />
+                    </div>
+
+                    <div className="space-y-4 rounded-3xl border border-border/60 bg-background/55 p-5 sm:p-6">
+                      <div className="space-y-1">
+                        <p className="font-medium text-foreground">
+                          Sleep time
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          When should the planner stop suggesting work for the
+                          night?
+                        </p>
+                      </div>
+                      <TimePickerField
+                          id="sleepTime"
+                          label="Sleep time"
+                          value={formData.sleepTime}
+                          onChange={(next) =>
+                            setFormData({
+                              ...formData,
+                              sleepTime: next,
+                            })
+                          }
+                        />
                     </div>
                   </div>
                 </div>
               )}
 
               {step === 3 && (
-                <div className="space-y-6">
-                  <div className="rounded-3xl border bg-slate-50/80 p-5">
-                    <div className="mb-3 flex items-center gap-3">
-                      <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-600 text-white">
-                        <Calendar className="h-5 w-5" />
-                      </div>
-                      <div>
-                        <p className="font-medium text-slate-900">Calendar import options</p>
-                        <p className="text-sm text-slate-500">Use whichever setup path is easiest right now. You can add or remove sources later.</p>
-                      </div>
-                    </div>
-                    <CalendarSync redirectPath="/setup" />
+                <div className="h-full min-h-0">
+                  <div className="h-full overflow-y-auto rounded-[2rem] border border-border/60 bg-card/80 p-6 shadow-[0_18px_40px_rgba(15,23,42,0.12)] sm:p-7">
+                    <CalendarSync redirectPath="/setup" compact />
                   </div>
                 </div>
               )}
             </div>
 
-            <div className="mt-8 flex items-center justify-between gap-3 border-t pt-6">
+            <div className="mt-8 flex items-center justify-between gap-3 border-t border-border/60 pt-6">
               <Button
                 variant="outline"
                 onClick={() => setStep((current) => Math.max(1, current - 1))}
                 disabled={step === 1 || isSubmitting}
+                className="rounded-xl"
               >
                 <ChevronLeft className="mr-2 h-4 w-4" />
                 Back
               </Button>
 
-              <Button className="min-w-[180px]" onClick={handleNext} disabled={isSubmitting}>
-                {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              <Button
+                className="min-w-[180px] rounded-xl"
+                onClick={handleNext}
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
                 {step === STEPS.length ? "Finish setup" : "Continue"}
-                {step !== STEPS.length ? <ChevronRight className="ml-2 h-4 w-4" /> : null}
+                {step !== STEPS.length ? (
+                  <ChevronRight className="ml-2 h-4 w-4" />
+                ) : null}
               </Button>
             </div>
           </CardContent>

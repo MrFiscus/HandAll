@@ -28,6 +28,19 @@ if (-not $venvDir) {
 }
 
 $pythonExe = Join-Path $venvDir "Scripts\python.exe"
+
+# Reject venvs with Python 3.13+ (no ps inline -c: avoids [:2] / quote parsing issues in PowerShell).
+$verProbe = Join-Path $PSScriptRoot "ai_venv_supported.py"
+& $pythonExe $verProbe 2>$null
+if ($LASTEXITCODE -ne 0) {
+  Write-Host ""
+  Write-Host "ERROR: This .venv was created with an unsupported Python (use 3.10-3.12)." -ForegroundColor Red
+  Write-Host "  Remove-Item -Recurse -Force $venvRepo" -ForegroundColor Gray
+  Write-Host "  Then:  npm run install-all" -ForegroundColor Yellow
+  Write-Host ""
+  exit 1
+}
+
 $uvicornExe = Join-Path $venvDir "Scripts\uvicorn.exe"
 $envFile = Join-Path $repoRoot ".env"
 
@@ -58,7 +71,7 @@ if (-not (Test-Path $uvicornExe)) {
   & $pythonExe -m pip install -r "backend/requirements.txt"
 }
 else {
-  # Avoid PowerShell mangling python -c strings (stripped quotes → NameError: uvicorn).
+  # Use probe script so PowerShell does not strip/mangle python -c quotes.
   $probeScript = Join-Path $repoRoot "scripts\ai_import_probe.py"
   & $pythonExe $probeScript
   if ($LASTEXITCODE -ne 0) {

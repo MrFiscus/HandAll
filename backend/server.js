@@ -147,6 +147,75 @@ function intervalOverlapsIso(startIso, endIso, rangeStartIso, rangeEndIso) {
   return startIso < rangeEndIso && endIso > rangeStartIso;
 }
 
+function parseIsoToMs(iso) {
+  if (iso == null) return null;
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) ? t : null;
+}
+
+/** Build sorted busy intervals (ms) for overlap checks — same calendar filter as planning. */
+function buildBusyIntervalsMs(rows, activeUrl) {
+  const list = [];
+  for (const row of rows) {
+    if (!taskMatchesActiveCalendar(row, activeUrl)) continue;
+    const st = (row.status || '').toLowerCase();
+    if (st === 'completed') continue;
+    const s = parseIsoToMs(row.start_time);
+    const e = parseIsoToMs(row.end_time);
+    if (s == null || e == null || e <= s) continue;
+    list.push({ start: s, end: e });
+  }
+  list.sort((a, b) => a.start - b.start);
+  return list;
+}
+
+/**
+ * Shift each suggested block forward until it does not overlap any busy interval or
+ * prior packed block. Drops tasks that cannot fit before horizonEndMs.
+ */
+function packSuggestedTasksWithoutOverlap(suggested, busyRows, activeUrl, horizonEndMs) {
+  const busy = buildBusyIntervalsMs(busyRows, activeUrl);
+  const seenExternal = new Set();
+  const sorted = Array.isArray(suggested)
+    ? [...suggested].sort((a, b) => String(a?.start || '').localeCompare(String(b?.start || '')))
+    : [];
+  const out = [];
+  const horizon = Number.isFinite(horizonEndMs) ? horizonEndMs : Date.now() + 14 * 86400000;
+
+  for (const task of sorted) {
+    if (!task || typeof task.start !== 'string' || typeof task.end !== 'string') continue;
+    const ext = task.id != null && String(task.id).trim() ? String(task.id).trim() : '';
+    if (ext && seenExternal.has(ext)) continue;
+    if (ext) seenExternal.add(ext);
+
+    let s = parseIsoToMs(task.start);
+    let e = parseIsoToMs(task.end);
+    if (s == null || e == null || e <= s) continue;
+    const dur = e - s;
+
+    for (let guard = 0; guard < 400; guard++) {
+      const conflict = busy.find((b) => s < b.end && e > b.start);
+      if (!conflict) break;
+      s = conflict.end;
+      e = s + dur;
+      if (e > horizon) {
+        s = null;
+        break;
+      }
+    }
+    if (s == null || e > horizon) continue;
+
+    busy.push({ start: s, end: e });
+    busy.sort((a, b) => a.start - b.start);
+    out.push({
+      ...task,
+      start: new Date(s).toISOString(),
+      end: new Date(e).toISOString(),
+    });
+  }
+  return out;
+}
+
 /**
  * Planner-created flexible blocks that motivation rebalance may remove and recreate.
  * Preserves: locked, non-pushable, manual/imported-tagged flex rows.
@@ -825,13 +894,33 @@ async function runScheduleRebalanceCoreImpl(db, uid, options = {}) {
 
   let suggested = planData.suggested_tasks || [];
   if (useDayScope) {
+    const wStart = parseIsoToMs(deleteStartIso);
+    const wEnd = parseIsoToMs(deleteEndIso);
     suggested = suggested.filter((t) => {
-      const s = t && t.start;
-      const e = t && t.end;
-      if (typeof s !== 'string' || typeof e !== 'string') return false;
-      return intervalOverlapsIso(s, e, deleteStartIso, deleteEndIso);
+      if (!t || typeof t.start !== 'string' || typeof t.end !== 'string') return false;
+      if (wStart != null && wEnd != null) {
+        const s = parseIsoToMs(t.start);
+        const e = parseIsoToMs(t.end);
+        if (s == null || e == null) return false;
+        return s < wEnd && e > wStart;
+      }
+      return intervalOverlapsIso(t.start, t.end, deleteStartIso, deleteEndIso);
     });
   }
+
+  const rowsAfterDelete = await db.all(
+    `SELECT * FROM tasks WHERE user_id = ? AND end_time >= ? AND start_time <= ? ORDER BY start_time ASC`,
+    uid,
+    nowIso,
+    horizonIso,
+  );
+  const horizonEndMs = parseIsoToMs(horizonIso) || Date.now() + horizonDays * 86400000;
+  const packedSuggested = packSuggestedTasksWithoutOverlap(
+    suggested,
+    rowsAfterDelete,
+    activeUrl,
+    horizonEndMs,
+  );
 
   const aiMetaJson = JSON.stringify({
     source: 'ai_generated',
@@ -839,7 +928,7 @@ async function runScheduleRebalanceCoreImpl(db, uid, options = {}) {
     locked: false,
   });
 
-  for (const task of suggested) {
+  for (const task of packedSuggested) {
     const ttype = normalizePlannerTaskType(task.type);
     let plannerSourceUrl = null;
     if (ttype === 'working' && typeof task.id === 'string') {
@@ -874,12 +963,14 @@ async function runScheduleRebalanceCoreImpl(db, uid, options = {}) {
     data: {
       success: true,
       motivation,
-      inserted: suggested.length,
+      inserted: packedSuggested.length,
       assignments: planData.assignments || [],
       meta: {
         ...(planData.meta || {}),
         rebalance_deleted_ids: idsToDelete.length,
         rebalance_scope: useDayScope ? 'day' : 'full',
+        planner_suggested_raw: suggested.length,
+        planner_suggested_packed: packedSuggested.length,
       },
       tasks: tasks.map(mapTaskRowToApi),
     },

@@ -61,6 +61,18 @@ interface DragState {
   isSuggestion?: boolean;
 }
 
+/** Cursor-following drag preview (Google Calendar–style ghost). */
+interface DragGhostFrame {
+  clientX: number;
+  clientY: number;
+  width: number;
+  height: number;
+  offsetX: number;
+  offsetY: number;
+  title: string;
+  type: CalendarEvent["type"];
+}
+
 export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode: externalSetViewMode }: { viewMode?: "week" | "day", setViewMode?: (mode: "week" | "day") => void }) {
   const { 
     events, 
@@ -115,8 +127,9 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
     }
     return { startHour: start, hoursData: data };
   }, [userProfile.wakeTime, userProfile.sleepTime, isFullScreen]);
-// Fixed Height for consistency
-const HOUR_HEIGHT = 100;
+
+  // Fixed height for consistency (must stay inside component scope)
+  const HOUR_HEIGHT = 100;
   const contentHeight = hoursData.length * HOUR_HEIGHT;
 
   useEffect(() => {
@@ -139,6 +152,7 @@ const HOUR_HEIGHT = 100;
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragPreview, setDragPreview] = useState<DragState | null>(null);
+  const [dragGhost, setDragGhost] = useState<DragGhostFrame | null>(null);
   const [showDialog, setShowDialog] = useState(false);
   const [showSuggestionDialog, setShowSuggestionDialog] = useState(false);
   const [dialogMode, setDialogMode] = useState<"create" | "edit">("create");
@@ -180,6 +194,22 @@ const HOUR_HEIGHT = 100;
     observer.observe(el);
     return () => observer.disconnect();
   }, [contentHeight, viewMode, isFullScreen]);
+
+  useEffect(() => {
+    if (!draggingId) return;
+    const onDragOverDoc = (ev: DragEvent) => {
+      ev.preventDefault();
+      setDragGhost((g) => (g ? { ...g, clientX: ev.clientX, clientY: ev.clientY } : g));
+    };
+    document.addEventListener("dragover", onDragOverDoc);
+    return () => document.removeEventListener("dragover", onDragOverDoc);
+  }, [draggingId]);
+
+  const endCalendarDrag = () => {
+    setDraggingId(null);
+    setDragPreview(null);
+    setDragGhost(null);
+  };
 
   const navigate = (dir: "prev" | "next" | "today") => {
     if (dir === "today") {
@@ -259,10 +289,28 @@ const HOUR_HEIGHT = 100;
     setShowDialog(true);
   };
 
-  const onDragStart = (e: React.DragEvent, id: string) => {
-    setDraggingId(id);
+  const onDragStart = (e: React.DragEvent, item: PositionedItem) => {
+    if (item.completed) {
+      e.preventDefault();
+      return;
+    }
+    const el = e.currentTarget as HTMLElement;
+    const rect = el.getBoundingClientRect();
+    setDraggingId(item.id);
+    setDragGhost({
+      clientX: e.clientX,
+      clientY: e.clientY,
+      width: rect.width,
+      height: rect.height,
+      offsetX: e.clientX - rect.left,
+      offsetY: e.clientY - rect.top,
+      title: item.title,
+      type: item.type,
+    });
     e.dataTransfer.effectAllowed = "move";
-    const img = new Image(); img.src = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+    e.dataTransfer.setData("text/plain", item.id);
+    const img = new Image();
+    img.src = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
     e.dataTransfer.setDragImage(img, 0, 0);
   };
 
@@ -286,7 +334,7 @@ const HOUR_HEIGHT = 100;
       else await updateEvent(draggingId, { start: dragPreview.start, end: dragPreview.end });
       toast.success("Event updated.");
     }
-    setDraggingId(null); setDragPreview(null);
+    endCalendarDrag();
   };
 
   const saveEvent = async () => {
@@ -414,7 +462,12 @@ const HOUR_HEIGHT = 100;
     return (scrollMetrics.top / maxScroll) * maxTrackTravel;
   }, [scrollMetrics.top, scrollMetrics.clientHeight, contentHeight, scrollbarThumbHeight]);
 
+  const dragGhostVisuals = dragGhost
+    ? getTaskVisuals(dragGhost.type, new Date(), false)
+    : null;
+
   return (
+    <>
     <div className={cn(
       "flex flex-col h-full bg-transparent transition-all duration-1000 ease-in-out font-sans",
       isFullScreen ? "p-4 lg:p-6" : ""
@@ -541,9 +594,20 @@ const HOUR_HEIGHT = 100;
                           const style = getEventStyle(item, day);
                           const visuals = getTaskVisuals(item.type, item.start, item.completed);
                           return (
-                            <div key={item.id} draggable onDragStart={(e) => onDragStart(e, item.id)} onDragEnd={() => {setDraggingId(null); setDragPreview(null);}}
-                                className={cn("event-block absolute rounded-[4px] px-2 py-1 text-[11px] leading-tight cursor-pointer overflow-hidden group select-none transition-all", visuals.className, item.isSuggestion && "border-2 border-dashed border-white/30 bg-transparent! text-white/60")}
-                                style={{ ...style, ...visuals.style }} onClick={(e) => onEventClick(e, item)}>
+                            <div
+                                key={item.id}
+                                draggable={!item.completed}
+                                onDragStart={(e) => onDragStart(e, item)}
+                                onDragEnd={endCalendarDrag}
+                                className={cn(
+                                  "event-block absolute rounded-[4px] px-2 py-1 text-[11px] leading-tight cursor-grab overflow-hidden group select-none active:cursor-grabbing",
+                                  visuals.className,
+                                  item.isSuggestion && "border-2 border-dashed border-white/30 bg-transparent! text-white/60",
+                                  draggingId === item.id && "opacity-[0.42] ring-1 ring-white/20",
+                                )}
+                                style={{ ...style, ...visuals.style }}
+                                onClick={(e) => onEventClick(e, item)}
+                            >
                               {showText && (
                                 <>
                                   <div className={cn("font-medium truncate mb-0.5", item.completed && "line-through")}>{item.title}</div>
@@ -645,6 +709,31 @@ const HOUR_HEIGHT = 100;
         </DialogContent>
       </Dialog>
     </div>
+
+    {dragGhost && dragGhostVisuals && (
+      <div
+        aria-hidden
+        className={cn(
+          "fixed z-[10050] pointer-events-none rounded-[4px] px-2 py-1 text-[11px] leading-tight overflow-hidden border border-black/15",
+          dragGhostVisuals.className,
+        )}
+        style={{
+          left: dragGhost.clientX - dragGhost.offsetX,
+          top: dragGhost.clientY - dragGhost.offsetY,
+          width: dragGhost.width,
+          minHeight: dragGhost.height,
+          ...dragGhostVisuals.style,
+          opacity: 0.74,
+          boxShadow: "0 12px 32px rgba(0,0,0,0.28)",
+        }}
+      >
+        <div className="font-medium truncate">{dragGhost.title}</div>
+        <div className="text-[10px] font-normal opacity-75 truncate">
+          {isFullScreen ? "Drop on calendar" : "Drop to reschedule"}
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 

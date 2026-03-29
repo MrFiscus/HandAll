@@ -449,11 +449,18 @@ export const useAppStore = create<AppState>()(
                 motivation: result.motivation ?? m,
               },
             });
+            toast.success("Schedule adjusted for your motivation.");
           } else if ("soft" in result && result.soft && result.user) {
             set({ userProfile: result.user });
+            toast.error(
+              result.error || "Planner unavailable — motivation saved; try again when AI is running.",
+            );
           }
         } catch (e) {
           console.error("setMotivation / rebalance:", e);
+          toast.error(
+            e instanceof Error ? e.message : "Could not rebalance schedule. Check planner and network.",
+          );
         } finally {
           set({ motivationRebalancePending: false });
         }

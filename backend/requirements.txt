@@ -1,4 +1,5 @@
-fastapi
+# Install with Python 3.10–3.12 (see scripts/setup-ai.ps1). Python 3.13+ may lack pydantic-core wheels.
+fastapi>=0.100
 uvicorn[standard]
 langchain
 langgraph
@@ -7,5 +8,5 @@ openai
 supabase
 google-api-python-client
 google-auth
-pydantic
+pydantic>=2.7,<3
 tzdata

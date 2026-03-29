@@ -109,6 +109,10 @@ The general settings page gives users a place to manage profile presence, XP, cu
 
 ![General settings](images/settings-general.png)
 
+HandAll also gives immediate progress feedback when tasks are completed, so XP becomes part of the day-to-day planning loop rather than a separate hidden system.
+
+![Task complete XP reward](images/xp-task-complete.png)
+
 The advanced settings view also shows active sync sources so users can see what is currently connected.
 
 ![Advanced settings and integrations](images/settings-advanced.png)
@@ -150,10 +154,6 @@ The broader settings flow supports the planner's routine-first behavior, while t
 - Includes an XP system that rewards completed tasks.
 - Uses task completion as a way to make progress visible and reinforce consistency.
 - Tracks user progress directly inside the product through the profile and planner experience.
-
-When a task is completed, HandAll gives immediate XP feedback so users can see progress as part of the scheduling loop rather than as a separate dashboard-only system.
-
-![Task complete XP reward](images/xp-task-complete.png)
 
 ## Tech Stack
 

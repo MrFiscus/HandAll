@@ -339,6 +339,21 @@ def _usable_gap_fraction(motivation: int) -> float:
     return 0.64
 
 
+def _normalize_scheduling_prefs(raw: Any) -> Dict[str, str]:
+    """Subset of keys: earliest_work_time, latest_work_time, sunday_earliest_work_time (HH:MM)."""
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, str] = {}
+    for k in ("earliest_work_time", "latest_work_time", "sunday_earliest_work_time"):
+        v = raw.get(k)
+        if isinstance(v, str) and re.match(r"^\d{1,2}:\d{2}$", v.strip()):
+            parts = v.strip().split(":")
+            h, m = int(parts[0]), int(parts[1])
+            if 0 <= h <= 23 and 0 <= m <= 59:
+                out[k] = f"{h:02d}:{m:02d}"
+    return out
+
+
 def _calculate_usable_slots(
     busy_intervals: List[Dict[str, datetime]],
     tz: ZoneInfo,
@@ -347,9 +362,11 @@ def _calculate_usable_slots(
     plan_start: datetime,
     horizon_days: int,
     motivation: int = 50,
+    scheduling_prefs: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     wake = _parse_time(wake_time, "07:00")
     sleep = _parse_time(sleep_time, "23:00")
+    sp = _normalize_scheduling_prefs(scheduling_prefs)
     slots: List[Dict[str, Any]] = []
     frac = _usable_gap_fraction(motivation)
 
@@ -359,8 +376,19 @@ def _calculate_usable_slots(
 
     for day_offset in range(horizon_days):
         day = (plan_start + timedelta(days=day_offset)).date()
-        day_start = datetime.combine(day, wake, tzinfo=tz)
+        day_weekday = day.weekday()  # Mon=0 .. Sun=6
+        effective_wake = wake
+        if sp.get("earliest_work_time"):
+            effective_wake = max(effective_wake, _parse_time(sp["earliest_work_time"], "07:00"))
+        if day_weekday == 6 and sp.get("sunday_earliest_work_time"):
+            effective_wake = max(effective_wake, _parse_time(sp["sunday_earliest_work_time"], "07:00"))
+
+        day_start = datetime.combine(day, effective_wake, tzinfo=tz)
         day_end = datetime.combine(day, sleep, tzinfo=tz)
+        if sp.get("latest_work_time"):
+            latest_t = _parse_time(sp["latest_work_time"], "23:00")
+            latest_dt = datetime.combine(day, latest_t, tzinfo=tz)
+            day_end = min(day_end, latest_dt)
 
         if day_offset == 0 and plan_start > day_start:
             day_start = plan_start
@@ -680,6 +708,7 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     busy_intervals = _build_busy_intervals(events, tz, plan_start, plan_end)
+    scheduling_prefs = _normalize_scheduling_prefs(payload.get("scheduling_prefs"))
     usable_slots = _calculate_usable_slots(
         busy_intervals,
         tz,
@@ -688,6 +717,7 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
         plan_start,
         horizon_days,
         motivation,
+        scheduling_prefs if scheduling_prefs else None,
     )
 
     suggestions: List[Dict[str, Any]] = []
@@ -1011,5 +1041,6 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
             "planner_recovery_gaps_skipped_no_slot": int(pacing_state.get("recovery_gaps_skipped_no_slot", 0)),
             "planner_recovery_gap_minutes_total": int(pacing_state.get("recovery_gap_minutes_total", 0)),
             "heavy_minutes_before_recovery_gap_rule": _heavy_work_minutes_before_recovery_gap(motivation),
+            "scheduling_prefs": scheduling_prefs,
         },
     }

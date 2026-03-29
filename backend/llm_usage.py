@@ -57,6 +57,7 @@ def invoke_openai_chat(model: Any, messages: List[BaseMessage], site: str) -> An
     Single entry for OpenAI chat invokes: START / RESPONSE / DONE + token usage logs.
     """
     mn = _resolve_openai_model_name(model)
+    # Explicit markers for grep / log aggregation (every chat completion goes through here).
     logger.info("OPENAI CALL START site=%s model=%s", site, mn)
     response = model.invoke(messages)
     logger.info("OPENAI CALL RESPONSE RECEIVED site=%s model=%s", site, mn)
@@ -119,4 +120,4 @@ def log_llm_chat_completion(response: Any, site: str) -> None:
 
 def log_llm_fallback(site: str, reason: str) -> None:
     """Call when OpenAI is not invoked (missing key, parse/heuristic fallback, etc.)."""
-    logger.warning("OPENAI NOT CALLED — using fallback site=%s reason=%s", site, reason)
+    logger.warning("OPENAI NOT CALLED — fallback site=%s reason=%s", site, reason)

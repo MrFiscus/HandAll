@@ -54,6 +54,8 @@ class AgentState(TypedDict):
     user_metadata: Dict[str, Any]
     # Cleared each turn in assignment_intent_handler; True skips LLM for deterministic fast path.
     bypass_llm: NotRequired[bool]
+    # Observability: fast_path = graph skipped call_model; llm = routed to call_model (OpenAI chat).
+    chat_path: NotRequired[str]
 
 
 def get_supabase_client() -> Client:
@@ -557,6 +559,231 @@ def _detect_planning_intent(text: str) -> Optional[str]:
     return None
 
 
+# Scheduling *preference* (earliest work time / Sunday rules) — not exact task moves.
+_RE_SCHED_PREF = re.compile(
+    r"(?i)"
+    r"don'?t\s+wanna|don'?t\s+want\s+to|do\s+not\s+want|never\s+want|"
+    r"wanna\s+avoid|want\s+to\s+avoid|"
+    r"not\s+.*\bearly\b|too\s+early|"
+    r"no\s+assignments?\s+.*(morning|early)|"
+    r"move\s+my\s+work\s+later|"
+    r"prefer\s+.*later|"
+    r"avoid\s+.*(early|morning)|"
+    r"don'?t\s+schedule\s+.*early|"
+    r"start\s+that\s+early|"
+    r"don'?t\s+want\s+.*assignment|"
+    r"not\s+at\s+\d"
+)
+
+
+def _infer_earliest_hhmm_from_forbidden(hour: int, minute: int = 0) -> str:
+    """Planner should not start focused work until at least ~2h after the time the user rejected."""
+    total = hour * 60 + minute + 120
+    total = max(total, 8 * 60)
+    total = min(total, 20 * 60)
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
+def _parse_clock_from_message(low: str) -> Tuple[int, int, bool]:
+    m = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", low)
+    if not m:
+        return 0, 0, False
+    h = int(m.group(1))
+    mi = int(m.group(2) or 0)
+    ap = (m.group(3) or "").lower()
+    if ap == "pm" and h < 12:
+        h += 12
+    if ap == "am" and h == 12:
+        h = 0
+    return h, mi, True
+
+
+def _extract_scheduling_preference_fields(low: str) -> Dict[str, str]:
+    has_sun = bool(re.search(r"\b(sunday|sundays)\b", low))
+    h, mi, found = _parse_clock_from_message(low)
+    if found:
+        earliest = _infer_earliest_hhmm_from_forbidden(h, mi)
+    elif re.search(r"\b(early|morning)\b", low):
+        earliest = "09:00"
+    else:
+        earliest = "09:00"
+    out: Dict[str, str] = {}
+    if has_sun:
+        out["sunday_earliest_work_time"] = earliest
+        only_sun = bool(re.search(r"\b(only|just)\s+(on\s+)?sundays?\b", low))
+        if not only_sun:
+            out["earliest_work_time"] = earliest
+    else:
+        out["earliest_work_time"] = earliest
+    return out
+
+
+def _detect_scheduling_preference_intent(text: str) -> Optional[Dict[str, str]]:
+    """
+    Returns dict of preference fields to merge into users.scheduling_prefs_json, or None.
+    Does not match pure assignment breakdown / rebalance commands.
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    low = t.lower()
+    if _RE_INTENT_BREAKDOWN.search(t):
+        return None
+    if _RE_INTENT_REBALANCE.search(t) and not _RE_SCHED_PREF.search(low):
+        return None
+    matched = bool(_RE_SCHED_PREF.search(low))
+    if not matched:
+        matched = bool(
+            re.search(r"\b(sunday|sundays)\b", low)
+            and re.search(r"\b(?:don'?t|not|no|wanna|want|avoid|hate)\b", low)
+            and re.search(r"\b(?:early|am|morning|\d)\b", low)
+        )
+    if not matched:
+        return None
+    return _extract_scheduling_preference_fields(low)
+
+
+def _merge_scheduling_prefs_sqlite(local_user_id: int, updates: Dict[str, str]) -> Dict[str, Any]:
+    with _open_app_db() as connection:
+        row = connection.execute(
+            "SELECT scheduling_prefs_json FROM users WHERE id = ?",
+            (local_user_id,),
+        ).fetchone()
+        cur: Dict[str, Any] = {}
+        if row and row[0]:
+            try:
+                raw = row[0]
+                cur = json.loads(raw) if isinstance(raw, str) else {}
+            except Exception:
+                cur = {}
+        if not isinstance(cur, dict):
+            cur = {}
+        cur.update(updates)
+        connection.execute(
+            "UPDATE users SET scheduling_prefs_json = ? WHERE id = ?",
+            (json.dumps(cur), local_user_id),
+        )
+        connection.commit()
+        return cur
+
+
+def _friendly_scheduling_pref_ack(merged: Dict[str, Any], tz_name: str) -> str:
+    parts: List[str] = []
+    su = merged.get("sunday_earliest_work_time")
+    gl = merged.get("earliest_work_time")
+    if su:
+        parts.append(f"I'll avoid scheduling assignment-style work before **{su}** on Sundays (local time)")
+    if gl and gl != su:
+        parts.append(f"on other days I'll start planned work no earlier than **{gl}**")
+    elif gl and not su:
+        parts.append(f"I'll start planned work no earlier than **{gl}**")
+    if not parts:
+        parts.append("I've saved your scheduling preferences")
+    return ". ".join(parts) + "."
+
+
+def _scheduling_preference_fast_path(
+    state: AgentState, pref_updates: Dict[str, str], text: str
+) -> Dict[str, Any]:
+    logger.info(
+        "agent.preference_intent: detected user_msg_preview=%s updates=%s",
+        (text or "")[:160],
+        pref_updates,
+    )
+    local_user = _resolve_local_user(state.get("auth_user_id"), state.get("user_metadata"))
+    if not local_user:
+        logger.warning("agent.preference_intent: no local user")
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        "Sign in to HandAll in this browser so I can save scheduling preferences and replan."
+                    )
+                )
+            ],
+            "bypass_llm": True,
+            "chat_path": "fast_path",
+        }
+
+    active_cal, _ = _resolve_active_calendar_url(int(local_user["id"]))
+    if not active_cal:
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        "Set an **active calendar** in Settings first; then I can apply scheduling preferences and replan."
+                    )
+                )
+            ],
+            "bypass_llm": True,
+            "chat_path": "fast_path",
+        }
+
+    merged = _merge_scheduling_prefs_sqlite(int(local_user["id"]), pref_updates)
+    logger.info(
+        "agent.preference_intent: prefs_stored user_id=%s merged=%s",
+        local_user["id"],
+        merged,
+    )
+
+    motivation = max(0, min(100, int(state.get("motivation") or 50)))
+    tz_name = state.get("user_metadata", {}).get("timezone") or "UTC"
+    ctx_token = CURRENT_AGENT_CONTEXT.set(
+        {
+            "user_id": state["user_id"],
+            "auth_user_id": state.get("auth_user_id"),
+            "motivation": motivation,
+            "user_metadata": state.get("user_metadata", {}),
+        }
+    )
+    raw: Dict[str, Any] = {}
+    try:
+        raw = rebalance_app_plan.invoke({"days": 7})
+    finally:
+        CURRENT_AGENT_CONTEXT.reset(ctx_token)
+
+    ok = isinstance(raw, dict) and raw.get("success")
+    logger.info(
+        "agent.preference_intent: rebalance_after_pref success=%s inserted=%s deleted=%s",
+        ok,
+        (raw or {}).get("inserted_count") if isinstance(raw, dict) else None,
+        (raw or {}).get("deleted_count") if isinstance(raw, dict) else None,
+    )
+
+    if not ok:
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        "I saved your scheduling preferences, but I couldn’t rebuild your plan just now. "
+                        "Confirm your calendar is imported in Settings, then try again."
+                    )
+                )
+            ],
+            "bypass_llm": True,
+            "chat_path": "fast_path",
+        }
+
+    inserted = int(raw.get("inserted_count") or 0)
+    deleted = int(raw.get("deleted_count") or 0)
+    ack = _friendly_scheduling_pref_ack(merged, tz_name).strip()
+    body = (
+        f"Got it. {ack.rstrip('.')}. I’ve updated your plan.\n\n"
+        "I moved your work later where possible. "
+        "A few blocks may still land early if deadlines or fixed events leave no other gap."
+    )
+    return {
+        "messages": [
+            AIMessage(
+                content=body,
+                additional_kwargs={"handall_schedule_updated": True},
+            )
+        ],
+        "bypass_llm": True,
+        "chat_path": "fast_path",
+    }
+
+
 def _weekday_hints_from_message(text: str) -> set[int]:
     low = text.lower()
     found: set[int] = set()
@@ -1023,10 +1250,14 @@ def assignment_intent_handler(state: AgentState) -> Dict[str, Any]:
     Always clears or sets bypass_llm so checkpoint state does not skip LLM on later turns.
     """
     text = _last_user_text(state)
+    pref_updates = _detect_scheduling_preference_intent(text)
+    if pref_updates:
+        return _scheduling_preference_fast_path(state, pref_updates, text)
+
     intent = _detect_planning_intent(text)
     if not intent:
         logger.info("agent.fast_path: no breakdown/rebalance intent — using LLM chat")
-        return {"bypass_llm": False}
+        return {"bypass_llm": False, "chat_path": "llm"}
 
     local_user = _resolve_local_user(state.get("auth_user_id"), state.get("user_metadata"))
     if not local_user:
@@ -1045,6 +1276,7 @@ def assignment_intent_handler(state: AgentState) -> Dict[str, Any]:
                 )
             ],
             "bypass_llm": True,
+            "chat_path": "fast_path",
         }
 
     active_cal, _ = _resolve_active_calendar_url(int(local_user["id"]))
@@ -1059,6 +1291,7 @@ def assignment_intent_handler(state: AgentState) -> Dict[str, Any]:
                 )
             ],
             "bypass_llm": True,
+            "chat_path": "fast_path",
         }
 
     motivation = max(0, min(100, int(state.get("motivation") or 50)))
@@ -1081,7 +1314,7 @@ def assignment_intent_handler(state: AgentState) -> Dict[str, Any]:
             if not raw.get("success"):
                 msg = raw.get("message") or "Could not rebalance the plan."
                 logger.warning("agent.fast_path: rebalance failed — %s", msg[:200])
-                return {"bypass_llm": False}
+                return {"bypass_llm": False, "chat_path": "llm"}
             summary = (raw.get("message") or "Plan updated.").strip()
             inserted = int(raw.get("inserted_count") or 0)
             deleted = int(raw.get("deleted_count") or 0)
@@ -1099,6 +1332,7 @@ def assignment_intent_handler(state: AgentState) -> Dict[str, Any]:
                     )
                 ],
                 "bypass_llm": True,
+                "chat_path": "fast_path",
             }
 
         # breakdown_assignment
@@ -1119,6 +1353,7 @@ def assignment_intent_handler(state: AgentState) -> Dict[str, Any]:
                     )
                 ],
                 "bypass_llm": True,
+                "chat_path": "fast_path",
             }
 
         pick = _resolve_assignment_for_breakdown(text, rows, tz_name)
@@ -1131,6 +1366,7 @@ def assignment_intent_handler(state: AgentState) -> Dict[str, Any]:
             return {
                 "messages": [AIMessage(content=body)],
                 "bypass_llm": True,
+                "chat_path": "fast_path",
             }
         if pick.outcome != "matched" or not pick.task:
             logger.info(
@@ -1140,6 +1376,7 @@ def assignment_intent_handler(state: AgentState) -> Dict[str, Any]:
             return {
                 "messages": [AIMessage(content=_format_assignment_no_match_message())],
                 "bypass_llm": True,
+                "chat_path": "fast_path",
             }
 
         matched = pick.task
@@ -1161,6 +1398,7 @@ def assignment_intent_handler(state: AgentState) -> Dict[str, Any]:
         return {
             "messages": [AIMessage(content=body)],
             "bypass_llm": True,
+            "chat_path": "fast_path",
         }
     finally:
         CURRENT_AGENT_CONTEXT.reset(ctx_token)
@@ -1939,6 +2177,21 @@ def rebalance_app_plan(days: int = 7) -> Dict[str, Any]:
     timezone_name = context.get("user_metadata", {}).get("timezone") or "UTC"
     ax = (active, active)
 
+    scheduling_prefs: Dict[str, Any] = {}
+    raw_prefs = local_user.get("scheduling_prefs_json")
+    if raw_prefs:
+        try:
+            scheduling_prefs = json.loads(raw_prefs) if isinstance(raw_prefs, str) else {}
+        except Exception:
+            scheduling_prefs = {}
+    if not isinstance(scheduling_prefs, dict):
+        scheduling_prefs = {}
+    if scheduling_prefs:
+        logger.info(
+            "agent.calendar: rebalance_app_plan scheduling_prefs keys=%s",
+            list(scheduling_prefs.keys()),
+        )
+
     with _open_app_db() as connection:
         all_rows_raw = connection.execute(
             """
@@ -2074,6 +2327,7 @@ def rebalance_app_plan(days: int = 7) -> Dict[str, Any]:
                 "assignments": [],
                 "assignment_work_units": assignment_work_units,
                 "goal_work_units": goal_work_units,
+                "scheduling_prefs": scheduling_prefs,
             }
         )
 
@@ -2269,11 +2523,15 @@ def build_system_prompt(user_metadata: Dict[str, Any]) -> str:
         "3. If the user asks to break down, plan, or schedule an **assignment**, assume matching rows exist in the snapshot "
         "or DB; use tools to find them (search by title/date) before asking for the assignment title.\n"
         "4. For **replan / rebalance the week**, call `rebalance_app_plan` rather than describing a hypothetical schedule.\n"
-        "5. For moves (e.g. “move Sunday 2am to 6am”), infer year from Today, use `local_date_yyyy_mm_dd` and "
+        "5. For **scheduling preferences** (too early, no mornings, Sundays, “move my work later”, vague “not at 7am”): "
+        "do **not** search for tasks at exact clock times or call `move_app_task_local` unless the user names a "
+        "specific task and target time. Call `rebalance_app_plan` so the planner applies saved preferences.\n"
+        "6. For **direct moves** (e.g. “move Sunday 2am to 6am”), infer year from Today, use `local_date_yyyy_mm_dd` and "
         "`move_app_task_local`; only ask for clarification if multiple tasks match.\n"
-        "6. Use Google Calendar tools **only** when the user explicitly wants external Google events changed or listed.\n"
-        "7. When you change the schedule, state what changed in one short factual paragraph.\n"
-        "8. Calendar semantics: fixed rows block time; assignment deadlines anchor work blocks; flexible rows may overlap. "
+        "7. Use Google Calendar tools **only** when the user explicitly wants external Google events changed or listed.\n"
+        "8. When you change the schedule, state what changed in one short factual paragraph. **Never** show raw UTC "
+        "or ISO timestamps to the user — use their local timezone from metadata or plain language.\n"
+        "9. Calendar semantics: fixed rows block time; assignment deadlines anchor work blocks; flexible rows may overlap. "
         "Planner times are deterministic — do not invent times without tools."
     )
 
@@ -2387,6 +2645,15 @@ def _merge_schedule_tool_truth(
     if not fact_lines:
         return assistant_text, schedule_changed
 
+    seen: set[str] = set()
+    deduped: List[str] = []
+    for line in fact_lines:
+        if line in seen:
+            continue
+        seen.add(line)
+        deduped.append(line)
+    fact_lines = deduped
+
     block = "\n".join(fact_lines)
     if any_failure:
         merged = f"{block}\n\n{assistant_text}".strip() if assistant_text else block
@@ -2451,7 +2718,7 @@ def call_model(state: AgentState) -> Dict[str, Any]:
         response = invoke_openai_chat(model, model_input, "agent.call_model")
     finally:
         CURRENT_AGENT_CONTEXT.reset(context_token)
-    return {"messages": [response]}
+    return {"messages": [response], "chat_path": "llm"}
 
 
 def build_graph():
@@ -2535,4 +2802,5 @@ def run_agent(
         "response": final_text,
         "state": result,
         "schedule_updated": schedule_from_fast or schedule_from_tools,
+        "chat_path": str(result.get("chat_path") or ""),
     }

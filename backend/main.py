@@ -13,6 +13,22 @@ from dotenv import load_dotenv
 ROOT_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(ROOT_ENV_FILE, override=True)
 
+# Ensure HandAll + uvicorn show INFO logs (OPENAI CALL START, POST /chat path lines).
+_log_name = (os.getenv("LOG_LEVEL") or "INFO").upper()
+_log_level = getattr(logging, _log_name, logging.INFO)
+if not logging.root.handlers:
+    logging.basicConfig(level=_log_level, format="%(levelname)s:%(name)s:%(message)s")
+else:
+    logging.root.setLevel(_log_level)
+for _name in ("backend", "uvicorn", "uvicorn.error", "uvicorn.access"):
+    logging.getLogger(_name).setLevel(_log_level)
+
+# TEMP: remove after debugging — confirms which process loads .env (logger so it always shows under uvicorn)
+_k = os.getenv("OPENAI_API_KEY") or ""
+_pref = _k[:10] if len(_k) >= 10 else _k
+logging.getLogger(__name__).info("OPENAI KEY PREFIX (TEMP): %s", _pref)
+print("OPENAI KEY PREFIX:", _pref, flush=True)
+
 if not os.getenv("SUPABASE_KEY") and os.getenv("SUPABASE_ANON_KEY"):
     os.environ["SUPABASE_KEY"] = os.environ["SUPABASE_ANON_KEY"]
 
@@ -447,6 +463,7 @@ class WeeklyPlanRequest(BaseModel):
     assignments: list[PlannerAssignment] = []
     assignment_work_units: list[PlannerWorkUnit] = []
     goal_work_units: list[PlannerGoalWorkUnit] = []
+    scheduling_prefs: dict[str, Any] | None = None
 
 
 class AssignmentSubtasksRequest(BaseModel):
@@ -528,6 +545,8 @@ def chat(
     schedule_updated = False
     error_source: Optional[str] = None
     error_detail: Optional[str] = None
+    out_chat_path: Optional[str] = None
+    openai_agent_chat = False
 
     auth_user_id: Optional[str]
     try:
@@ -566,9 +585,7 @@ def chat(
     try:
         if not os.getenv("OPENAI_API_KEY"):
             logger.warning(
-                "OPENAI NOT CALLED — using fallback site=%s reason=%s",
-                "POST /chat",
-                "no OPENAI_API_KEY",
+                "POST /chat: OPENAI NOT CALLED — fallback (reason=no OPENAI_API_KEY; agent not started)",
             )
             result = {
                 "response": (
@@ -587,6 +604,21 @@ def chat(
                 motivation=request.motivation,
             )
             schedule_updated = bool(result.get("schedule_updated"))
+            chat_path = str(result.get("chat_path") or "")
+            out_chat_path = chat_path or None
+            openai_agent_chat = chat_path == "llm"
+            if chat_path == "fast_path":
+                logger.info(
+                    "POST /chat: FAST PATH — no OpenAI call (agent.call_model skipped; "
+                    "see OPENAI CALL START only if another module e.g. subtasks invoked OpenAI)"
+                )
+            elif chat_path == "llm":
+                logger.info("POST /chat: LLM PATH — OpenAI chat (expect OPENAI CALL START site=agent.call_model)")
+            else:
+                logger.warning(
+                    "POST /chat: OPENAI NOT CALLED — fallback (unexpected chat_path=%r; graph state incomplete?)",
+                    chat_path,
+                )
     except Exception as exc:
         logger.exception(
             "POST /chat failed (thread_id=%s user_id=%s)",
@@ -601,9 +633,53 @@ def chat(
         "user_id": effective_profile_id,
         "thread_id": request.thread_id,
         "schedule_updated": schedule_updated,
+        "chat_path": out_chat_path,
+        "openai_agent_chat": openai_agent_chat,
         "error_source": error_source,
         "error_detail": error_detail,
     }
+
+
+def _test_openai_direct_enabled() -> bool:
+    v = (os.getenv("HANDALL_CHAT_TEST_OPENAI") or "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    # Same flag used elsewhere for dev diagnostics — avoids extra env churn.
+    return (os.getenv("HANDALL_EXPOSE_ERRORS") or "").strip() in ("1", "true", "yes", "on")
+
+
+@app.post("/chat/test-openai-direct")
+def chat_test_openai_direct() -> Dict[str, Any]:
+    """
+    Dev test: bypass agent graph and invoke OpenAI once.
+    Enable with HANDALL_CHAT_TEST_OPENAI=1 or HANDALL_EXPOSE_ERRORS=1 in root `.env`.
+    Log lines: OPENAI CALL START … OPENAI CALL DONE …
+    """
+    if not _test_openai_direct_enabled():
+        raise HTTPException(
+            status_code=404,
+            detail="Enable with HANDALL_CHAT_TEST_OPENAI=1 or HANDALL_EXPOSE_ERRORS=1",
+        )
+    if not os.getenv("OPENAI_API_KEY"):
+        logger.warning("OPENAI NOT CALLED — fallback site=POST /chat/test-openai-direct reason=no OPENAI_API_KEY")
+        return {"ok": False, "error": "OPENAI_API_KEY not set"}
+    from langchain_core.messages import HumanMessage
+
+    from backend.llm_client import get_openai_chat_model
+    from backend.llm_usage import invoke_openai_chat
+
+    logger.info("POST /chat/test-openai-direct: forcing OpenAI (bypass fast path)")
+    model = get_openai_chat_model(temperature=0)
+    if model is None:
+        logger.warning("OPENAI NOT CALLED — fallback site=test-openai-direct reason=model_unavailable")
+        return {"ok": False, "error": "get_openai_chat_model returned None"}
+    response = invoke_openai_chat(
+        model,
+        [HumanMessage(content='Reply with exactly: OPENAI_TEST_OK')],
+        "debug.test_openai_direct",
+    )
+    text = str(getattr(response, "content", "") or "")
+    return {"ok": True, "reply_preview": text[:200]}
 
 
 @app.post("/plan-week")
@@ -625,6 +701,7 @@ def plan_week(request: WeeklyPlanRequest) -> Dict[str, Any]:
                 "assignments": [assignment.model_dump() for assignment in request.assignments],
                 "assignment_work_units": [u.model_dump(exclude_none=True) for u in request.assignment_work_units],
                 "goal_work_units": [u.model_dump(exclude_none=True) for u in request.goal_work_units],
+                "scheduling_prefs": request.scheduling_prefs,
             }
         )
         return {"success": True, **result}

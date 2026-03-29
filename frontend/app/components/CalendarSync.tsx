@@ -22,7 +22,14 @@ interface CalendarSyncProps {
 }
 
 export default function CalendarSync({ redirectPath = "/settings" }: CalendarSyncProps) {
-  const { userProfile, setUserProfile, syncCalendarEvents, removeExternalEvents, lastCalendarSync } = useAppStore();
+  const {
+    userProfile,
+    setUserProfile,
+    syncCalendarEvents,
+    removeExternalEvents,
+    lastCalendarSync,
+    loadAppData,
+  } = useAppStore();
   const [calendarUrl, setCalendarUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [showDialog, setShowDialog] = useState(false);
@@ -63,7 +70,8 @@ export default function CalendarSync({ redirectPath = "/settings" }: CalendarSyn
     try {
       const previewTasks = convertCalendarEventsToTaskPreview(previewEvents);
 
-      await syncCalendarEvents(previewEvents, previewSource);
+      // Register source + set active_calendar_source_url BEFORE bulk upsert, otherwise
+      // GET /api/tasks filters by the previous active source and returns zero new rows.
       const persistenceResult = await api.saveCalendarImportBreakdown({
         sourceUrl: previewSource,
         importType: previewSource.startsWith("file://") ? "file-upload" : "url-sync",
@@ -79,11 +87,15 @@ export default function CalendarSync({ redirectPath = "/settings" }: CalendarSyn
         tasks: previewTasks,
       });
 
+      await syncCalendarEvents(previewEvents, previewSource);
+
       if (!userProfile.calendarUrls.includes(previewSource)) {
         await setUserProfile({
           calendarUrls: [...userProfile.calendarUrls, previewSource],
         });
       }
+
+      await loadAppData();
 
       toast.success(`Imported ${previewEvents.length} events into HandAll and saved the breakdown to ${persistenceResult.filePath}.`);
       clearPreview();
@@ -168,7 +180,15 @@ export default function CalendarSync({ redirectPath = "/settings" }: CalendarSyn
     setIsLoading(true);
     try {
       const events = await fetchCalendarEvents(url);
+      if (!url.startsWith("file://")) {
+        try {
+          await api.patchActiveCalendarSource(url);
+        } catch (e) {
+          console.warn("[CalendarSync] patchActiveCalendarSource:", e);
+        }
+      }
       await syncCalendarEvents(events, url);
+      await loadAppData();
       toast.success(`Resynced ${events.length} events!`);
     } catch (error) {
       console.error("Calendar resync error:", error);

@@ -166,6 +166,10 @@ export async function initDB() {
 
   await db.exec('ALTER TABLE ai_planning_items ADD COLUMN rationale TEXT').catch(() => {});
 
+  await db.exec(
+    "ALTER TABLE users ADD COLUMN scheduling_prefs_json TEXT DEFAULT '{}'",
+  ).catch(() => {});
+
   // Seed initial user if not exists
   const user = await db.get('SELECT * FROM users LIMIT 1');
   if (!user) {

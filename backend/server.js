@@ -689,6 +689,16 @@ async function runScheduleRebalanceCore(db, uid, options = {}) {
   const sideGoals = sideGoalsListFromUserRow(user);
   const { assignment_work_units, goal_work_units } = await loadPlanningItemsForPlanner(db, uid);
 
+  let scheduling_prefs = {};
+  try {
+    const raw = user.scheduling_prefs_json;
+    if (typeof raw === 'string' && raw.trim()) {
+      scheduling_prefs = JSON.parse(raw);
+    }
+  } catch (_) {
+    scheduling_prefs = {};
+  }
+
   const planPayload = {
     user_id: String(uid),
     name: user.username || 'Student',
@@ -702,6 +712,7 @@ async function runScheduleRebalanceCore(db, uid, options = {}) {
     assignments: [],
     assignment_work_units,
     goal_work_units,
+    scheduling_prefs,
   };
 
   let planRes;
@@ -830,9 +841,27 @@ async function getUserWithCalendarSources(localUserId) {
   );
   const resolved = await resolveActiveCalendarSource(db, localUserId);
   const stored = String(user?.active_calendar_source_url || '').trim();
-  if (!stored && resolved.activeUrl) {
-    await db.run('UPDATE users SET active_calendar_source_url = ? WHERE id = ?', resolved.activeUrl, localUserId);
-    user.active_calendar_source_url = resolved.activeUrl;
+  const canonical = (resolved.activeUrl || '').trim();
+  // Persist canonical active URL when empty, stale (deleted source), or out of sync with resolution.
+  if (canonical && stored !== canonical) {
+    await db.run('UPDATE users SET active_calendar_source_url = ? WHERE id = ?', canonical, localUserId);
+    user.active_calendar_source_url = canonical;
+    console.log(
+      '[handall:calendar] user=%s active_sync stored=%s -> canonical=%s resolution=%s',
+      localUserId,
+      stored || '(empty)',
+      canonical,
+      resolved.source
+    );
+  } else if (!canonical && stored) {
+    await db.run('UPDATE users SET active_calendar_source_url = ? WHERE id = ?', '', localUserId);
+    user.active_calendar_source_url = '';
+    console.log(
+      '[handall:calendar] user=%s active_clear stale_stored=%s resolution=%s',
+      localUserId,
+      stored,
+      resolved.source
+    );
   }
   const shapedUser = shapeUserForApi(user, calendarSources.map((source) => source.url));
   return shapedUser
@@ -1645,9 +1674,10 @@ app.post('/api/calendar-imports', async (req, res) => {
     await db.run('INSERT OR IGNORE INTO calendar_sources (user_id, url) VALUES (?, ?)', req.localUser.id, trimmed);
     await db.run('UPDATE users SET active_calendar_source_url = ? WHERE id = ?', trimmed, req.localUser.id);
     console.log(
-      '[handall:calendar] calendar-import set active_source=%s user=%s',
-      trimmed,
+      '[handall:calendar] POST /api/calendar-imports user=%s active_set=%s events_in_payload=%s',
       req.localUser.id,
+      trimmed,
+      events.length
     );
 
     res.json({
@@ -1747,6 +1777,10 @@ app.post('/api/user/setup', async (req, res) => {
     await db.run('DELETE FROM calendar_sources WHERE user_id = ?', uid);
     for (const url of calendarUrls) {
       await db.run('INSERT OR IGNORE INTO calendar_sources (user_id, url) VALUES (?, ?)', uid, url);
+    }
+    if (calendarUrls.length === 0) {
+      await db.run('UPDATE users SET active_calendar_source_url = ? WHERE id = ?', '', uid);
+      console.log('[handall:calendar] user/setup cleared active_calendar (no calendar_urls) user=%s', uid);
     }
   }
 
@@ -1875,8 +1909,9 @@ app.get('/api/tasks', async (req, res) => {
   const resolved = await resolveActiveCalendarSource(db, uid);
   const activeUrl = resolved.activeUrl;
   console.log(
-    '[handall:calendar] GET /api/tasks user=%s active_source=%s',
+    '[handall:calendar] GET /api/tasks user=%s resolution=%s active_source=%s',
     uid,
+    resolved.source,
     activeUrl || '(none)',
   );
   const all = await db.all(
@@ -1955,6 +1990,21 @@ app.post('/api/tasks/bulk', async (req, res) => {
     }
 
     await db.run('COMMIT');
+
+    const resolvedAfterBulk = await resolveActiveCalendarSource(db, uid);
+    const allTasks = await db.all('SELECT * FROM tasks WHERE user_id = ?', uid);
+    const visibleForActive = resolvedAfterBulk.activeUrl
+      ? allTasks.filter((t) => taskMatchesActiveCalendar(t, resolvedAfterBulk.activeUrl))
+      : [];
+    console.log(
+      '[handall:calendar] POST /api/tasks/bulk user=%s resolution=%s active=%s bulk_rows=%s tasks_in_db=%s tasks_matching_active=%s',
+      uid,
+      resolvedAfterBulk.source,
+      resolvedAfterBulk.activeUrl || '(none)',
+      events.length,
+      allTasks.length,
+      visibleForActive.length
+    );
 
     const user = await db.get('SELECT * FROM users WHERE id = ?', uid);
     const motivation = Number.isFinite(Number(user?.motivation))
@@ -2212,6 +2262,19 @@ app.delete('/api/tasks/source', async (req, res) => {
     'DELETE FROM calendar_imports WHERE user_id = ? AND source_url = ?',
     req.localUser.id,
     sourceUrl
+  );
+  await db.run('DELETE FROM calendar_sources WHERE user_id = ? AND url = ?', req.localUser.id, sourceUrl);
+  const afterDelete = await resolveActiveCalendarSource(db, req.localUser.id);
+  if (afterDelete.activeUrl) {
+    await db.run('UPDATE users SET active_calendar_source_url = ? WHERE id = ?', afterDelete.activeUrl, req.localUser.id);
+  } else {
+    await db.run('UPDATE users SET active_calendar_source_url = ? WHERE id = ?', '', req.localUser.id);
+  }
+  console.log(
+    '[handall:calendar] DELETE /api/tasks/source user=%s removed=%s new_active=%s',
+    req.localUser.id,
+    sourceUrl,
+    afterDelete.activeUrl || '(none)',
   );
   const remainingSources = await db.get(
     'SELECT COUNT(*) AS count FROM calendar_sources WHERE user_id = ?',

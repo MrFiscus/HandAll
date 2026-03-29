@@ -13,6 +13,7 @@ import { supabase } from "../lib/supabase";
 import { cn } from "./ui/utils";
 import { api } from "../utils/api";
 import { toast } from "sonner";
+import Auth from "./Auth";
 
 const GOOGLE_CALENDAR_SYNC_KEY = "handall-google-calendar-sync";
 const GOOGLE_CALENDAR_CONNECT_QUERY = "google_calendar_connect";
@@ -41,7 +42,7 @@ export default function Root() {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setLoading(false);
-      if (!session) {
+      if (!session && location.pathname !== "/" && location.pathname !== "/login" && location.pathname !== "/signin") {
         resetAppState();
         navigate("/login");
       }
@@ -50,13 +51,13 @@ export default function Root() {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
-      if (!session) {
+      if (!session && location.pathname !== "/" && location.pathname !== "/login" && location.pathname !== "/signin") {
         resetAppState();
         navigate("/login");
       }
     });
     return () => subscription.unsubscribe();
-  }, [navigate, resetAppState]);
+  }, [location.pathname, navigate, resetAppState]);
 
   useEffect(() => {
     if (session?.user?.id) {
@@ -70,6 +71,12 @@ export default function Root() {
       localStorage.setItem(AGENT_USER_ID_KEY, session.user.id);
     }
   }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (session && (location.pathname === "/login" || location.pathname === "/signin")) {
+      navigate("/");
+    }
+  }, [session, location.pathname, navigate]);
 
   useEffect(() => {
     if (!session) return;
@@ -156,7 +163,11 @@ export default function Root() {
     );
   }
 
-  if (!session && location.pathname !== "/login") return null;
+  if (!session && location.pathname === "/") {
+    return <Auth />;
+  }
+
+  if (!session && location.pathname !== "/login" && location.pathname !== "/signin") return null;
 
   if (location.pathname === "/setup") {
     return <Outlet />;

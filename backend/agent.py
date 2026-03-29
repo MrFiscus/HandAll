@@ -21,8 +21,8 @@ from dotenv import load_dotenv
 from supabase import Client, create_client
 
 from backend.llm_client import get_gemini_chat_model
-from backend.llm_usage import log_llm_chat_completion
-from backend.task_generation import generate_assignment_subtasks
+from backend.llm_usage import log_llm_chat_completion, log_llm_fallback
+from backend.task_generation import _fallback_assignment_subtasks, generate_assignment_subtasks
 
 
 ROOT_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
@@ -35,6 +35,7 @@ if not os.getenv("SUPABASE_KEY") and os.getenv("SUPABASE_ANON_KEY"):
 CURRENT_AGENT_CONTEXT: ContextVar[Dict[str, Any]] = ContextVar("current_agent_context", default={})
 
 logger = logging.getLogger(__name__)
+LLM_BACKOFF_UNTIL: Optional[datetime] = None
 
 
 # The state object is the shared data packet passed from node to node.
@@ -617,7 +618,7 @@ def list_assignment_plans(
             SELECT *
             FROM ai_planning_items
             WHERE user_id = ?
-              AND item_type = 'assignment_task'
+              AND item_type IN ('assignment_subtask', 'assignment_task')
             ORDER BY assignment_external_id, sort_order ASC, id ASC
             """,
             (local_user["id"],),
@@ -626,16 +627,30 @@ def list_assignment_plans(
     planning_by_assignment: Dict[str, List[Dict[str, Any]]] = {}
     for row in planning_rows:
         assignment_key = row["assignment_external_id"] or ""
-        planning_by_assignment.setdefault(assignment_key, []).append(
-            {
-                "id": str(row["id"]),
-                "title": row["title"],
-                "description": row["description"] or "",
-                "estimated_minutes": int(row["estimated_minutes"] or 0),
-                "sort_order": int(row["sort_order"] or 0),
-                "due_iso": row["due_iso"],
-            }
+        item = {
+            "id": str(row["id"]),
+            "title": row["title"],
+            "description": row["description"] or "",
+            "estimated_minutes": int(row["estimated_minutes"] or 0),
+            "sort_order": int(row["sort_order"] or 0),
+            "due_iso": row["due_iso"],
+        }
+        existing = planning_by_assignment.setdefault(assignment_key, [])
+        signature = (
+            item["title"].strip().lower(),
+            item["sort_order"],
+            item["estimated_minutes"],
         )
+        existing_signatures = {
+            (
+                current["title"].strip().lower(),
+                current["sort_order"],
+                current["estimated_minutes"],
+            )
+            for current in existing
+        }
+        if signature not in existing_signatures:
+            existing.append(item)
 
     assignments: List[Dict[str, Any]] = []
     for row in assignment_rows:
@@ -704,7 +719,7 @@ def generate_assignment_plan(assignment_identifier: str) -> Dict[str, Any]:
             """
             DELETE FROM ai_planning_items
             WHERE user_id = ?
-              AND item_type = 'assignment_task'
+              AND item_type IN ('assignment_subtask', 'assignment_task')
               AND assignment_external_id = ?
             """,
             (local_user["id"], assignment_external_id),
@@ -726,7 +741,7 @@ def generate_assignment_plan(assignment_identifier: str) -> Dict[str, Any]:
                 """,
                 (
                     local_user["id"],
-                    "assignment_task",
+                    "assignment_subtask",
                     assignment_external_id,
                     row["title"],
                     item["title"],
@@ -1521,6 +1536,142 @@ def _flatten_ai_message_content(content: Any) -> str:
     return str(content).strip()
 
 
+def _format_assignment_plan_fallback(local_user_id: int, query: str, motivation: int) -> str:
+    row, matches, error_message = _find_assignment_task(local_user_id, query)
+    if error_message and matches:
+        options = "\n".join(
+            f"- {match['title']} (due {match['start_time']})"
+            for match in matches[:5]
+        )
+        return f"I found a few matching assignments. Be a little more specific:\n{options}"
+
+    if error_message or row is None:
+        upcoming = _get_upcoming_tasks(local_user_id, 14)
+        assignments = [task for task in upcoming if task.get("type") == "assignment"][:5]
+        if not assignments:
+            return "I couldn't find an upcoming assignment in HandAll right now."
+        lines = [
+            f"- {task['title']} (due {task['start']})"
+            for task in assignments
+        ]
+        return "I couldn't match that exact assignment, but these upcoming ones are in HandAll:\n" + "\n".join(lines)
+
+    subtasks = _fallback_assignment_subtasks(row["title"], motivation)
+    bullet_lines = [
+        f"- {item['title']} ({int(item.get('estimated_minutes') or 0)} min)"
+        for item in subtasks[:6]
+    ]
+    return (
+        f"Here’s a usable breakdown for {row['title']}:\n"
+        + "\n".join(bullet_lines)
+        + "\n\nIf you want, I can also help reschedule these into open study blocks."
+    )
+
+
+def _format_schedule_fallback(local_user_id: int, tz_name: str, message: str) -> str:
+    lower = message.lower()
+    z = _safe_zone(tz_name)
+    now_local = datetime.now(z)
+
+    if "tomorrow" in lower:
+        target_day = now_local.date() + timedelta(days=1)
+    else:
+        target_day = now_local.date()
+
+    tasks = _tasks_starting_on_local_date(local_user_id, target_day, tz_name)
+
+    if "morning" in lower:
+        filtered: List[Dict[str, Any]] = []
+        for task in tasks:
+            start_local = _parse_iso_datetime(task["start"]).astimezone(z)
+            if 5 <= start_local.hour < 12:
+                filtered.append(task)
+        tasks = filtered
+
+    if not tasks:
+        label = "tomorrow morning" if "tomorrow" in lower and "morning" in lower else "that time"
+        return f"I don't see anything scheduled in HandAll for {label}."
+
+    lines: List[str] = []
+    for task in tasks[:8]:
+        start_local = _parse_iso_datetime(task["start"]).astimezone(z)
+        end_local = _parse_iso_datetime(task["end"]).astimezone(z)
+        lines.append(
+            f"- {task['title']} from {start_local.strftime('%I:%M %p').lstrip('0')} to {end_local.strftime('%I:%M %p').lstrip('0')}"
+        )
+    return "Here’s what I see in your HandAll schedule:\n" + "\n".join(lines)
+
+
+def _fallback_chat_response(
+    *,
+    user_id: str,
+    auth_user_id: Optional[str],
+    message: str,
+    motivation: int,
+    user_metadata: Dict[str, Any],
+) -> str:
+    local_user = _resolve_local_user(auth_user_id, user_metadata)
+    if not local_user:
+        return (
+            "The AI model is temporarily unavailable, and I also couldn't resolve an authenticated HandAll user "
+            "to inspect your app data."
+        )
+
+    lower = (message or "").strip().lower()
+    tz_name = user_metadata.get("timezone") or "UTC"
+
+    if any(phrase in lower for phrase in ["break down", "subtask", "assignment", "work on next"]):
+        if "what assignment should i work on next" in lower:
+            assignments = [
+                task for task in _get_upcoming_tasks(int(local_user["id"]), 14)
+                if task.get("type") == "assignment"
+            ]
+            if assignments:
+                next_assignment = assignments[0]
+                return _format_assignment_plan_fallback(
+                    int(local_user["id"]),
+                    next_assignment["external_id"] or next_assignment["title"],
+                    motivation,
+                )
+            return "I don't see any upcoming assignments in HandAll right now."
+
+        query = re.sub(
+            r"^(help me\s+)?(break down|help with)\s+",
+            "",
+            message.strip(),
+            flags=re.IGNORECASE,
+        )
+        query = re.sub(
+            r"\s+(into smaller tasks|into smaller task|into tasks|for me)[\s.!?]*$",
+            "",
+            query,
+            flags=re.IGNORECASE,
+        ).strip(" .!?")
+        if not query:
+            query = message
+        return _format_assignment_plan_fallback(int(local_user["id"]), query, motivation)
+
+    if any(word in lower for word in ["schedule", "scheduled", "tomorrow", "today"]):
+        return _format_schedule_fallback(int(local_user["id"]), tz_name, message)
+
+    assignments = [
+        task for task in _get_upcoming_tasks(int(local_user["id"]), 14)
+        if task.get("type") == "assignment"
+    ][:3]
+    if assignments:
+        lines = "\n".join(f"- {task['title']} (due {task['start']})" for task in assignments)
+        return (
+            "The live AI model is temporarily unavailable, but I can still see your HandAll data. "
+            "Your next assignments are:\n"
+            + lines
+        )
+    return "The live AI model is temporarily unavailable right now, and I don't see any upcoming assignments in HandAll yet."
+
+
+def _llm_backoff_active() -> bool:
+    return LLM_BACKOFF_UNTIL is not None and datetime.now(timezone.utc) < LLM_BACKOFF_UNTIL
+
+
 def call_model(state: AgentState) -> Dict[str, Any]:
     """Call Gemini with the latest state and let it decide whether to use tools."""
     base = get_gemini_chat_model(temperature=0.2)
@@ -1582,6 +1733,7 @@ def run_agent(
     auth_user_id: Optional[str] = None,
     motivation: int = 50,
 ) -> Dict[str, Any]:
+    global LLM_BACKOFF_UNTIL
     config = {"configurable": {"thread_id": thread_id}}
     # This initial state is the first packet given to the graph for the current turn.
     # MemorySaver uses thread_id to stitch this turn together with prior turns.
@@ -1601,7 +1753,39 @@ def run_agent(
         }
     )
     try:
+        if _llm_backoff_active():
+            fallback_metadata = fetch_user_data(initial_state).get("user_metadata", {})
+            fallback_text = _fallback_chat_response(
+                user_id=user_id,
+                auth_user_id=auth_user_id,
+                message=message,
+                motivation=motivation,
+                user_metadata=fallback_metadata,
+            )
+            return {
+                "response": fallback_text,
+                "state": {"backoff_until": LLM_BACKOFF_UNTIL.isoformat()},
+                "schedule_updated": False,
+            }
         result = graph.invoke(initial_state, config=config)
+    except Exception as exc:
+        log_llm_fallback("agent.run_agent", f"graph.invoke exception: {exc!s}"[:300])
+        error_text = str(exc)
+        if "RESOURCE_EXHAUSTED" in error_text or "429" in error_text:
+            LLM_BACKOFF_UNTIL = datetime.now(timezone.utc) + timedelta(seconds=75)
+        fallback_metadata = fetch_user_data(initial_state).get("user_metadata", {})
+        fallback_text = _fallback_chat_response(
+            user_id=user_id,
+            auth_user_id=auth_user_id,
+            message=message,
+            motivation=motivation,
+            user_metadata=fallback_metadata,
+        )
+        return {
+            "response": fallback_text,
+            "state": {"error": str(exc)},
+            "schedule_updated": False,
+        }
     finally:
         CURRENT_AGENT_CONTEXT.reset(context_token)
 

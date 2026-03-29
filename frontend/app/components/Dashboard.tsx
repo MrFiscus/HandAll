@@ -21,6 +21,7 @@ import { toast } from "sonner";
 import WelcomeGuide from "./WelcomeGuide";
 import WeeklyCalendar from "./WeeklyCalendar";
 import { supabase } from "../lib/supabase";
+import { normalizeChatResponseContent } from "../utils/chatResponse";
 
 const AGENT_API_BASE_URL =
   import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "/agent-api";
@@ -199,13 +200,19 @@ export default function Dashboard() {
     setIsSending(true);
 
     try {
-      const userId = localStorage.getItem(AGENT_USER_ID_KEY) ?? crypto.randomUUID();
+      const authId = (await supabase?.auth.getSession())?.data?.session?.user?.id ?? null;
+      const userId = authId ?? localStorage.getItem(AGENT_USER_ID_KEY) ?? crypto.randomUUID();
+      if (authId) {
+        localStorage.setItem(AGENT_USER_ID_KEY, authId);
+      } else if (!localStorage.getItem(AGENT_USER_ID_KEY)) {
+        localStorage.setItem(AGENT_USER_ID_KEY, userId);
+      }
       const response = await fetch(`${AGENT_API_BASE_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           user_id: userId,
-          auth_user_id: userProfile?.id ?? null,
+          auth_user_id: authId,
           thread_id: threadIdRef.current,
           message: trimmedMessage,
           motivation: lastMotivation ?? null,
@@ -217,7 +224,7 @@ export default function Dashboard() {
       const data = await response.json();
       if (sendGen !== chatSendGenRef.current) return;
 
-      const display = typeof data.response === "string" ? data.response : JSON.stringify(data.response);
+      const display = normalizeChatResponseContent(data.response);
 
       setChatMessages((prev) => [
         ...prev,

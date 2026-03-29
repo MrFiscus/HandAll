@@ -22,6 +22,7 @@ from supabase import Client, create_client
 
 from backend.llm_client import get_gemini_chat_model
 from backend.llm_usage import log_llm_chat_completion
+from backend.task_generation import generate_assignment_subtasks
 
 
 ROOT_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
@@ -346,6 +347,60 @@ def _get_upcoming_tasks(local_user_id: int, days: int) -> List[Dict[str, Any]]:
     return [_serialize_task_row(row) for row in rows]
 
 
+def _find_assignment_task(
+    local_user_id: int,
+    assignment_identifier: str,
+    *,
+    days: int = 60,
+) -> Tuple[Optional[sqlite3.Row], List[sqlite3.Row], Optional[str]]:
+    token = (assignment_identifier or "").strip()
+    if not token:
+        return None, [], "assignment_identifier is required."
+
+    horizon_days = max(1, min(int(days or 60), 180))
+    now_iso = datetime.now(timezone.utc).isoformat()
+    horizon_iso = (datetime.now(timezone.utc) + timedelta(days=horizon_days)).isoformat()
+
+    with _open_app_db() as connection:
+        direct = connection.execute(
+            """
+            SELECT *
+            FROM tasks
+            WHERE user_id = ?
+              AND type = 'assignment'
+              AND end_time >= ?
+              AND start_time <= ?
+              AND (CAST(id AS TEXT) = ? OR external_id = ?)
+            ORDER BY start_time ASC
+            """,
+            (local_user_id, now_iso, horizon_iso, token, token),
+        ).fetchall()
+        if direct:
+            row = direct[0]
+            return row, [row], None
+
+        like = f"%{token.lower()}%"
+        matches = connection.execute(
+            """
+            SELECT *
+            FROM tasks
+            WHERE user_id = ?
+              AND type = 'assignment'
+              AND end_time >= ?
+              AND start_time <= ?
+              AND LOWER(title) LIKE ?
+            ORDER BY start_time ASC
+            """,
+            (local_user_id, now_iso, horizon_iso, like),
+        ).fetchall()
+
+    if not matches:
+        return None, [], f"No assignment found matching {token!r}."
+    if len(matches) > 1:
+        return None, matches, f"Several assignments matched {token!r}; ask the user to be more specific."
+    return matches[0], matches, None
+
+
 @tool
 def list_events() -> List[Dict[str, Any]]:
     """Fetch Google Calendar events scheduled in the next 24 hours."""
@@ -505,6 +560,194 @@ def search_app_tasks(
         "local_date": local_date_yyyy_mm_dd,
         "count": len(enriched),
         "matches": enriched,
+    }
+
+
+@tool
+def list_assignment_plans(
+    assignment_title_contains: str = "",
+    days: int = 30,
+) -> Dict[str, Any]:
+    """List upcoming assignments and any generated subtasks already saved for them."""
+    context = _get_agent_context()
+    local_user = _resolve_local_user(context.get("auth_user_id"), context.get("user_metadata"))
+    if not local_user:
+        return {
+            "success": False,
+            "message": "I need an authenticated HandAll user before I can inspect assignments.",
+            "assignments": [],
+        }
+
+    safe_days = max(1, min(int(days or 30), 90))
+    now_iso = datetime.now(timezone.utc).isoformat()
+    horizon_iso = (datetime.now(timezone.utc) + timedelta(days=safe_days)).isoformat()
+    title_filter = f"%{(assignment_title_contains or '').strip().lower()}%"
+
+    with _open_app_db() as connection:
+        if (assignment_title_contains or "").strip():
+            assignment_rows = connection.execute(
+                """
+                SELECT *
+                FROM tasks
+                WHERE user_id = ?
+                  AND type = 'assignment'
+                  AND end_time >= ?
+                  AND start_time <= ?
+                  AND LOWER(title) LIKE ?
+                ORDER BY start_time ASC
+                """,
+                (local_user["id"], now_iso, horizon_iso, title_filter),
+            ).fetchall()
+        else:
+            assignment_rows = connection.execute(
+                """
+                SELECT *
+                FROM tasks
+                WHERE user_id = ?
+                  AND type = 'assignment'
+                  AND end_time >= ?
+                  AND start_time <= ?
+                ORDER BY start_time ASC
+                """,
+                (local_user["id"], now_iso, horizon_iso),
+            ).fetchall()
+
+        planning_rows = connection.execute(
+            """
+            SELECT *
+            FROM ai_planning_items
+            WHERE user_id = ?
+              AND item_type = 'assignment_task'
+            ORDER BY assignment_external_id, sort_order ASC, id ASC
+            """,
+            (local_user["id"],),
+        ).fetchall()
+
+    planning_by_assignment: Dict[str, List[Dict[str, Any]]] = {}
+    for row in planning_rows:
+        assignment_key = row["assignment_external_id"] or ""
+        planning_by_assignment.setdefault(assignment_key, []).append(
+            {
+                "id": str(row["id"]),
+                "title": row["title"],
+                "description": row["description"] or "",
+                "estimated_minutes": int(row["estimated_minutes"] or 0),
+                "sort_order": int(row["sort_order"] or 0),
+                "due_iso": row["due_iso"],
+            }
+        )
+
+    assignments: List[Dict[str, Any]] = []
+    for row in assignment_rows:
+        external_id = row["external_id"] or f"task:{row['id']}"
+        assignments.append(
+            {
+                "id": str(row["id"]),
+                "external_id": external_id,
+                "title": row["title"],
+                "description": row["description"] or "",
+                "start": row["start_time"],
+                "end": row["end_time"],
+                "subtasks": planning_by_assignment.get(external_id, []),
+            }
+        )
+
+    return {
+        "success": True,
+        "days": safe_days,
+        "count": len(assignments),
+        "assignments": assignments[:20],
+    }
+
+
+@tool
+def generate_assignment_plan(assignment_identifier: str) -> Dict[str, Any]:
+    """Generate or refresh assignment subtasks for one upcoming assignment in HandAll."""
+    context = _get_agent_context()
+    local_user = _resolve_local_user(context.get("auth_user_id"), context.get("user_metadata"))
+    if not local_user:
+        return {
+            "success": False,
+            "message": "I need an authenticated HandAll user before I can generate assignment subtasks.",
+        }
+
+    row, matches, error_message = _find_assignment_task(int(local_user["id"]), assignment_identifier)
+    if error_message:
+        if matches:
+            return {
+                "success": False,
+                "message": error_message,
+                "matches": [
+                    {
+                        "id": str(match["id"]),
+                        "external_id": match["external_id"],
+                        "title": match["title"],
+                        "start": match["start_time"],
+                        "end": match["end_time"],
+                    }
+                    for match in matches[:10]
+                ],
+            }
+        return {"success": False, "message": error_message, "subtasks": []}
+
+    due_iso = row["start_time"]
+    subtasks = generate_assignment_subtasks(
+        row["title"],
+        row["description"] or "",
+        due_iso,
+        int(context.get("motivation", 50) or 50),
+    )
+    assignment_external_id = row["external_id"] or f"task:{row['id']}"
+
+    with _open_app_db() as connection:
+        connection.execute(
+            """
+            DELETE FROM ai_planning_items
+            WHERE user_id = ?
+              AND item_type = 'assignment_task'
+              AND assignment_external_id = ?
+            """,
+            (local_user["id"], assignment_external_id),
+        )
+        for index, item in enumerate(subtasks, start=1):
+            connection.execute(
+                """
+                INSERT INTO ai_planning_items (
+                    user_id,
+                    item_type,
+                    assignment_external_id,
+                    assignment_title,
+                    title,
+                    description,
+                    estimated_minutes,
+                    sort_order,
+                    due_iso
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    local_user["id"],
+                    "assignment_task",
+                    assignment_external_id,
+                    row["title"],
+                    item["title"],
+                    item.get("description", ""),
+                    int(item.get("estimated_minutes") or 45),
+                    int(item.get("sort_order") or index),
+                    due_iso,
+                ),
+            )
+        connection.commit()
+
+    return {
+        "success": True,
+        "message": f"Generated {len(subtasks)} subtasks for {row['title']}.",
+        "assignment": {
+            "id": str(row["id"]),
+            "external_id": assignment_external_id,
+            "title": row["title"],
+            "due_iso": due_iso,
+        },
+        "subtasks": subtasks,
     }
 
 
@@ -996,6 +1239,8 @@ TOOLS = [
     manage_event,
     list_schedule,
     search_app_tasks,
+    list_assignment_plans,
+    generate_assignment_plan,
     move_app_task_local,
     update_app_task_times,
     add_app_task,
@@ -1126,6 +1371,8 @@ def build_system_prompt(user_metadata: Dict[str, Any]) -> str:
         f"Full side-goals list (use ALL in advice, not just one): {goals_line}. "
         f"Other preferences: {json.dumps({k: v for k, v in prefs.items() if k not in {'side_goals', 'sideGoals'}})}. "
         "Always try to resolve requests using list_schedule, search_app_tasks, or move_app_task_local before asking questions. "
+        "If the user asks for help with an assignment, inspect assignment subtasks with list_assignment_plans and generate or refresh them with generate_assignment_plan when needed. "
+        "After assignment subtasks exist, use rebalance_app_plan if the user wants actual working blocks placed on the schedule. "
         "For moves like 'move Sunday March 29 2am to 6am', infer the calendar year from Today if the user did not state a year, "
         "use local_date_yyyy_mm_dd (YYYY-MM-DD) in the user's timezone, and call move_app_task_local — do not ask for year or task title "
         "unless no task matches or several tasks match (then use title_contains or list options). "

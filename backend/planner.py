@@ -543,6 +543,116 @@ def _make_task(
     }
 
 
+def _heavy_work_minutes_before_recovery_gap(motivation: int) -> int:
+    """Cumulative heavy (assignment) minutes before empty recovery space is required: 50–90 based on energy."""
+    m = max(0, min(100, int(motivation)))
+    return 50 + int((m / 100.0) * 40)
+
+
+def _recovery_gap_minutes(last_heavy_block_minutes: int, motivation: int) -> int:
+    """Target empty recovery gap length 10–20 min; scales slightly with prior focus block (no calendar event)."""
+    base = 10
+    extra = min(10, max(0, int(last_heavy_block_minutes) - 35) // 9)
+    jitter = (motivation % 5) if motivation else 0
+    d = base + extra + jitter
+    return max(10, min(20, d))
+
+
+def _consume_recovery_gap(
+    usable_slots: List[Dict[str, Any]],
+    slot_index: int,
+    due_dt: datetime,
+    preferred_minutes: int,
+) -> tuple[int, bool, int]:
+    """
+    Advance the schedule cursor by consuming time in usable_slots without creating a task.
+    The calendar stays blank for that interval. Tries preferred duration, then 15, 12, 10 minutes.
+    Returns (new_slot_index, success, minutes_consumed).
+    """
+    for dur in sorted({preferred_minutes, 15, 12, 10}, reverse=True):
+        d = max(10, min(20, int(dur)))
+        idx = slot_index
+        attempts = 0
+        while idx < len(usable_slots) and attempts < len(usable_slots) + 2:
+            attempts += 1
+            slot = usable_slots[idx]
+            if slot["start"] >= due_dt:
+                return slot_index, False, 0
+            if slot["remaining_minutes"] >= d and slot["start"] + timedelta(minutes=d) <= due_dt:
+                slot["start"] = slot["start"] + timedelta(minutes=d)
+                slot["remaining_minutes"] -= d
+                if slot["remaining_minutes"] < 15:
+                    idx += 1
+                return idx, True, d
+            idx += 1
+    return slot_index, False, 0
+
+
+def _needs_recovery_gap_before_heavy(
+    cumulative_heavy: int,
+    consecutive_heavy: int,
+    motivation: int,
+) -> bool:
+    """Heavy = assignment working blocks only."""
+    if consecutive_heavy >= 2:
+        return True
+    if cumulative_heavy >= _heavy_work_minutes_before_recovery_gap(motivation):
+        return True
+    return False
+
+
+def _apply_recovery_gap_before_heavy(
+    usable_slots: List[Dict[str, Any]],
+    slot_index: int,
+    due_dt: datetime,
+    motivation: int,
+    last_block_minutes: int,
+    state: Dict[str, Any],
+) -> int:
+    """
+    If rules require recovery space before the next heavy block, consume empty time in usable_slots
+    (no task rows) and reset counters in state.
+    """
+    if not _needs_recovery_gap_before_heavy(
+        int(state.get("cumulative_heavy", 0)),
+        int(state.get("consecutive_heavy", 0)),
+        motivation,
+    ):
+        return slot_index
+
+    pref = _recovery_gap_minutes(last_block_minutes, motivation)
+    new_idx, ok, mins = _consume_recovery_gap(usable_slots, slot_index, due_dt, pref)
+    if ok:
+        state["recovery_gaps_applied"] = int(state.get("recovery_gaps_applied", 0)) + 1
+        state["recovery_gap_minutes_total"] = int(state.get("recovery_gap_minutes_total", 0)) + mins
+        state["cumulative_heavy"] = 0
+        state["consecutive_heavy"] = 0
+        return new_idx
+
+    state["recovery_gaps_skipped_no_slot"] = int(state.get("recovery_gaps_skipped_no_slot", 0)) + 1
+    state["cumulative_heavy"] = max(0, int(state.get("cumulative_heavy", 0)) - 25)
+    state["consecutive_heavy"] = max(1, int(state.get("consecutive_heavy", 0)) - 1)
+    return slot_index
+
+
+def _apply_recovery_gap_before_goal(
+    usable_slots: List[Dict[str, Any]],
+    horizon_end: datetime,
+    state: Dict[str, Any],
+) -> None:
+    """Light goal chunks: no more than 2 consecutive goal blocks without empty recovery space."""
+    if int(state.get("consecutive_goal", 0)) < 2:
+        return
+    _new_idx, ok, mins = _consume_recovery_gap(usable_slots, 0, horizon_end, 10)
+    if ok:
+        state["recovery_gaps_applied"] = int(state.get("recovery_gaps_applied", 0)) + 1
+        state["recovery_gap_minutes_total"] = int(state.get("recovery_gap_minutes_total", 0)) + mins
+        state["consecutive_goal"] = 0
+    else:
+        state["recovery_gaps_skipped_no_slot"] = int(state.get("recovery_gaps_skipped_no_slot", 0)) + 1
+        state["consecutive_goal"] = 0
+
+
 def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
     timezone_name = payload.get("timezone") or "UTC"
     tz = _get_timezone(timezone_name)
@@ -588,6 +698,16 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     far_future = plan_end + timedelta(days=365)
 
+    pacing_state: Dict[str, Any] = {
+        "cumulative_heavy": 0,
+        "consecutive_heavy": 0,
+        "consecutive_goal": 0,
+        "last_heavy_dur": 50,
+        "recovery_gaps_applied": 0,
+        "recovery_gaps_skipped_no_slot": 0,
+        "recovery_gap_minutes_total": 0,
+    }
+
     def _unit_due_dt(unit: Dict[str, Any]) -> datetime:
         raw = unit.get("due_iso")
         if not raw:
@@ -614,6 +734,17 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
             unit_desc = unit["description"] or f"Subtask for {unit.get('assignment_title') or 'assignment'}."
 
             while remaining_minutes > 0 and slot_index < len(usable_slots):
+                slot_index = _apply_recovery_gap_before_heavy(
+                    usable_slots,
+                    slot_index,
+                    due_dt,
+                    motivation,
+                    int(pacing_state.get("last_heavy_dur", 50)),
+                    pacing_state,
+                )
+
+                if slot_index >= len(usable_slots):
+                    break
                 slot = usable_slots[slot_index]
                 if slot["start"] >= due_dt:
                     break
@@ -649,6 +780,9 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
                 remaining_minutes -= duration
                 working_by_day[slot["day_key"]] += 1
                 block_index += 1
+                pacing_state["cumulative_heavy"] = int(pacing_state.get("cumulative_heavy", 0)) + duration
+                pacing_state["consecutive_heavy"] = int(pacing_state.get("consecutive_heavy", 0)) + 1
+                pacing_state["last_heavy_dur"] = duration
 
                 if slot["remaining_minutes"] < 30:
                     slot_index += 1
@@ -659,6 +793,17 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
             remaining_minutes = int(math.ceil(float(assignment["estimated_hours"]) * 60))
             block_index = 1
             while remaining_minutes > 0 and slot_index < len(usable_slots):
+                slot_index = _apply_recovery_gap_before_heavy(
+                    usable_slots,
+                    slot_index,
+                    assignment["due_date"],
+                    motivation,
+                    int(pacing_state.get("last_heavy_dur", 50)),
+                    pacing_state,
+                )
+
+                if slot_index >= len(usable_slots):
+                    break
                 slot = usable_slots[slot_index]
                 if slot["start"] >= assignment["due_date"]:
                     break
@@ -695,6 +840,9 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
                 remaining_minutes -= duration
                 working_by_day[slot["day_key"]] += 1
                 block_index += 1
+                pacing_state["cumulative_heavy"] = int(pacing_state.get("cumulative_heavy", 0)) + duration
+                pacing_state["consecutive_heavy"] = int(pacing_state.get("consecutive_heavy", 0)) + 1
+                pacing_state["last_heavy_dur"] = duration
 
                 if slot["remaining_minutes"] < 30:
                     slot_index += 1
@@ -720,6 +868,9 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     extra_counter = 0
 
+    pacing_state["consecutive_heavy"] = 0
+    pacing_state["cumulative_heavy"] = 0
+
     if goal_work_units:
         sorted_goals = sorted(
             goal_work_units,
@@ -737,6 +888,11 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
                 disp_title = title
             block_num = 1
             while rem > 0:
+                _apply_recovery_gap_before_goal(
+                    usable_slots,
+                    plan_end,
+                    pacing_state,
+                )
                 slot = next((s for s in usable_slots if s["remaining_minutes"] >= 15), None)
                 if slot is None:
                     break
@@ -757,6 +913,7 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
                 slot["remaining_minutes"] -= duration
                 rem -= duration
                 block_num += 1
+                pacing_state["consecutive_goal"] = int(pacing_state.get("consecutive_goal", 0)) + 1
             g_idx += 1
 
         remaining_slots = [slot for slot in usable_slots if slot["remaining_minutes"] >= 30]
@@ -852,5 +1009,9 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
             "daily_working_block_cap": _daily_working_limit(motivation),
             "used_ai_assignment_subtasks": bool(assignment_work_units),
             "used_ai_goal_tasks": bool(goal_work_units),
+            "planner_recovery_gaps_applied": int(pacing_state.get("recovery_gaps_applied", 0)),
+            "planner_recovery_gaps_skipped_no_slot": int(pacing_state.get("recovery_gaps_skipped_no_slot", 0)),
+            "planner_recovery_gap_minutes_total": int(pacing_state.get("recovery_gap_minutes_total", 0)),
+            "heavy_minutes_before_recovery_gap_rule": _heavy_work_minutes_before_recovery_gap(motivation),
         },
     }

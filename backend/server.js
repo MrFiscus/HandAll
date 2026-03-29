@@ -294,7 +294,7 @@ async function classifyEventsAndPersist(db, uid, bodyEvents) {
         confidence: r.confidence,
         subtype: r.subtype,
         reason: r.reason,
-        source: 'gemini',
+        source: 'openai',
       };
       await db.run('UPDATE tasks SET type = ?, ai_meta = ? WHERE id = ?', mapped, JSON.stringify(meta), row.id);
       await db.run('DELETE FROM ai_cache_event_class WHERE user_id = ? AND external_key = ?', uid, String(r.id));
@@ -2159,7 +2159,7 @@ app.post('/api/ai/assignment-breakdown', async (req, res) => {
       return res.status(503).json({
         error:
           (data && data.error) ||
-          'AI subtask generation failed. Start the planner on port 8011 and set GOOGLE_API_KEY in the root .env.',
+          'AI subtask generation failed. Start the planner on port 8011 and set OPENAI_API_KEY in the root .env.',
         subtasks: [],
       });
     }
@@ -2278,7 +2278,8 @@ app.get('*', (req, res) => {
 
   res.status(404).json({
     error: 'Frontend build not found',
-    message: 'Run `npm --prefix frontend run build` for production, or use the Vite dev server at http://localhost:3000.'
+    message:
+      'Run `npm --prefix frontend run build` for production, or use the Vite dev server at http://localhost:3000.'
   });
 });
 

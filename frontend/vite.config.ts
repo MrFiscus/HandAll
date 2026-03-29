@@ -12,6 +12,8 @@ export default defineConfig({
   ],
   server: {
     port: 3000,
+    // If 3000 is taken, fail instead of picking the next port (3001 is the Node API — must not collide).
+    strictPort: true,
     proxy: {
       '/api': {
         target: 'http://localhost:3001',

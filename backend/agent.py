@@ -5,9 +5,15 @@ import re
 import sqlite3
 from contextvars import ContextVar
 from datetime import date, datetime, time, timedelta, timezone
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Annotated, Any, Dict, List, Optional, Tuple, TypedDict
 from zoneinfo import ZoneInfo
+
+try:
+    from typing import NotRequired
+except ImportError:
+    from typing_extensions import NotRequired  # type: ignore
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -20,9 +26,9 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
-from backend.llm_client import get_gemini_chat_model
-from backend.llm_usage import log_llm_chat_completion, log_llm_fallback
-from backend.task_generation import _fallback_assignment_subtasks, generate_assignment_subtasks
+from backend.llm_client import get_openai_chat_model
+from backend.llm_usage import invoke_openai_chat
+from backend.task_generation import generate_assignment_subtasks
 
 
 ROOT_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
@@ -35,7 +41,6 @@ if not os.getenv("SUPABASE_KEY") and os.getenv("SUPABASE_ANON_KEY"):
 CURRENT_AGENT_CONTEXT: ContextVar[Dict[str, Any]] = ContextVar("current_agent_context", default={})
 
 logger = logging.getLogger(__name__)
-LLM_BACKOFF_UNTIL: Optional[datetime] = None
 
 
 # The state object is the shared data packet passed from node to node.
@@ -47,6 +52,8 @@ class AgentState(TypedDict):
     auth_user_id: Optional[str]
     motivation: int
     user_metadata: Dict[str, Any]
+    # Cleared each turn in assignment_intent_handler; True skips LLM for deterministic fast path.
+    bypass_llm: NotRequired[bool]
 
 
 def get_supabase_client() -> Client:
@@ -402,6 +409,389 @@ def _find_assignment_task(
     return matches[0], matches, None
 
 
+# --- Planning intent + assignment breakdown (deterministic fast path) ---
+
+_RE_INTENT_BREAKDOWN = re.compile(
+    r"\b("
+    r"break\s*down|breakdown|subtasks?|"
+    r"split\s+(into|it\s+into|the\s+work)|"
+    r"decompose|chunk\s+up|work\s*units?|"
+    r"step[\s-]by[\s-]step|"
+    r"plan\s+(out\s+)?(how\s+to\s+)?(do|finish|write|complete|tackle)|"
+    r"plan\s+(my\s+)?(research\s+)?(paper|essay|assignment|project|report)|"
+    r"outline\s+(my\s+)?(work|paper)|"
+    r"break\s+up\s+the\s+work"
+    r")\b",
+    re.I,
+)
+_RE_INTENT_REBALANCE = re.compile(
+    r"\b("
+    r"rebalance|re[\s-]?plan\s+(my\s+)?(week|schedule)|"
+    r"regenerate\s+(my\s+)?(plan|schedule|calendar)|"
+    r"rebuild\s+(my\s+)?(plan|schedule)|"
+    r"reschedule\s+my\s+whole\s+(plan|week)"
+    r")\b",
+    re.I,
+)
+
+# "Tuesday", "due tue", etc. → weekday 0=Mon .. 6=Sun (datetime.weekday)
+_WEEKDAY_NAMES: Dict[str, int] = {
+    "monday": 0,
+    "mon": 0,
+    "tuesday": 1,
+    "tue": 1,
+    "tues": 1,
+    "wednesday": 2,
+    "wed": 2,
+    "thursday": 3,
+    "thu": 3,
+    "thur": 3,
+    "thurs": 3,
+    "friday": 4,
+    "fri": 4,
+    "saturday": 5,
+    "sat": 5,
+    "sunday": 6,
+    "sun": 6,
+}
+
+
+def _detect_planning_intent(text: str) -> Optional[str]:
+    """
+    Returns 'breakdown_assignment', 'rebalance_plan', or None.
+    Breakdown patterns take precedence over rebalance when both could match.
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    if _RE_INTENT_BREAKDOWN.search(t):
+        return "breakdown_assignment"
+    if _RE_INTENT_REBALANCE.search(t):
+        return "rebalance_plan"
+    return None
+
+
+def _weekday_hints_from_message(text: str) -> set[int]:
+    low = text.lower()
+    found: set[int] = set()
+    for name, num in _WEEKDAY_NAMES.items():
+        if re.search(rf"\b{re.escape(name)}\b", low):
+            found.add(num)
+    return found
+
+
+def _assignment_external_key(row: Dict[str, Any]) -> str:
+    ext = row.get("external_id")
+    if ext and str(ext).strip():
+        return str(ext).strip()
+    return f"handall-db-{row.get('id')}"
+
+
+def _fetch_user_assignment_tasks(local_user_id: int) -> List[Dict[str, Any]]:
+    with _open_app_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM tasks
+            WHERE user_id = ?
+              AND lower(COALESCE(type, '')) = 'assignment'
+              AND lower(COALESCE(status, '')) NOT IN ('completed', 'cancelled')
+            ORDER BY start_time ASC
+            LIMIT 80
+            """,
+            (local_user_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _due_weekday_local(row: Dict[str, Any], tz_name: str) -> int:
+    st = _parse_iso_datetime(row["start_time"])
+    return st.astimezone(_safe_zone(tz_name)).weekday()
+
+
+def _score_assignment_match(user_text: str, row: Dict[str, Any], tz_name: str) -> float:
+    ut = user_text.lower()
+    title = (row.get("title") or "").lower()
+    desc = (row.get("description") or "").lower()
+    sm = SequenceMatcher(None, ut, title).ratio()
+    utoks = set(re.findall(r"[a-z0-9]{3,}", ut))
+    ttoks = set(re.findall(r"[a-z0-9]{3,}", title))
+    union = utoks | ttoks
+    overlap = len(utoks & ttoks) / max(1, len(union))
+    score = 0.42 * sm + 0.38 * overlap
+    hints = _weekday_hints_from_message(ut)
+    if hints:
+        try:
+            dw = _due_weekday_local(row, tz_name)
+            if dw in hints:
+                score += 0.22
+        except Exception:
+            pass
+    # Light boost if user words appear in title
+    for w in utoks:
+        if len(w) > 3 and w in title:
+            score += 0.04
+    return min(1.0, score)
+
+
+def _pick_assignment_for_breakdown(
+    user_text: str,
+    rows: List[Dict[str, Any]],
+    tz_name: str,
+) -> Optional[Dict[str, Any]]:
+    if not rows:
+        return None
+    if len(rows) == 1:
+        logger.info(
+            "agent.assignment_match: single assignment row id=%s title=%r",
+            rows[0].get("id"),
+            (rows[0].get("title") or "")[:80],
+        )
+        return rows[0]
+    best: Optional[Dict[str, Any]] = None
+    best_s = -1.0
+    for r in rows:
+        s = _score_assignment_match(user_text, r, tz_name)
+        if s > best_s:
+            best_s = s
+            best = r
+    if best is not None and best_s >= 0.26:
+        logger.info(
+            "agent.assignment_match: best match id=%s score=%.3f title=%r",
+            best.get("id"),
+            best_s,
+            (best.get("title") or "")[:80],
+        )
+        return best
+    logger.info(
+        "agent.assignment_match: no confident match (best_score=%.3f, n=%s)",
+        best_s,
+        len(rows),
+    )
+    return None
+
+
+def _replace_assignment_subtasks_sqlite(
+    local_user_id: int,
+    task_row: Dict[str, Any],
+    subtasks: List[Dict[str, Any]],
+) -> None:
+    key = _assignment_external_key(task_row)
+    with _open_app_db() as connection:
+        connection.execute(
+            """
+            DELETE FROM ai_planning_items
+            WHERE user_id = ? AND item_type = ? AND assignment_external_id = ?
+            """,
+            (local_user_id, "assignment_subtask", key),
+        )
+        for st in subtasks:
+            title = str(st.get("title") or "").strip()
+            if not title:
+                continue
+            em = int(st.get("estimated_minutes") or 45)
+            em = max(15, min(240, em))
+            so = int(st.get("sort_order") or 0)
+            desc = str(st.get("description") or "").strip() or None
+            connection.execute(
+                """
+                INSERT INTO ai_planning_items (
+                    user_id, item_type, assignment_external_id, assignment_title,
+                    side_goal, title, description, estimated_minutes, sort_order, due_iso, rationale
+                )
+                VALUES (?, 'assignment_subtask', ?, ?, NULL, ?, ?, ?, ?, ?, NULL)
+                """,
+                (
+                    local_user_id,
+                    key,
+                    task_row.get("title") or "",
+                    title,
+                    desc,
+                    em,
+                    so,
+                    task_row.get("start_time"),
+                ),
+            )
+        connection.commit()
+
+
+def _format_breakdown_response(
+    task_row: Dict[str, Any],
+    subtasks: List[Dict[str, Any]],
+    tz_name: str,
+) -> str:
+    title = task_row.get("title") or "Assignment"
+    due_line = ""
+    try:
+        st = _parse_iso_datetime(task_row["start_time"])
+        loc = st.astimezone(_safe_zone(tz_name))
+        due_line = f"\n**Due:** {loc.strftime('%A, %Y-%m-%d %H:%M')} ({tz_name})"
+    except Exception:
+        pass
+    lines = [
+        "### Assignment breakdown (HandAll)",
+        f"**Assignment:** {title}{due_line}",
+        "",
+        "**Steps (saved to your plan for scheduling):**",
+    ]
+    ordered = sorted(subtasks, key=lambda x: int(x.get("sort_order") or 0))
+    for i, st in enumerate(ordered, 1):
+        mn = int(st.get("estimated_minutes") or 45)
+        lines.append(f"{i}. **{st.get('title', 'Step')}** — *{mn} min*")
+        d = (st.get("description") or "").strip()
+        if d:
+            lines.append(f"   - {d}")
+    lines.append("")
+    lines.append(
+        "_These subtasks are stored in HandAll. Use **Rebalance** or the planner to place them on your calendar._"
+    )
+    return "\n".join(lines)
+
+
+def _last_user_text(state: AgentState) -> str:
+    for m in reversed(state.get("messages") or []):
+        if isinstance(m, HumanMessage):
+            c = m.content
+            if isinstance(c, str):
+                return c.strip()
+            if isinstance(c, list):
+                parts: List[str] = []
+                for block in c:
+                    if isinstance(block, str) and block.strip():
+                        parts.append(block.strip())
+                    elif isinstance(block, dict) and block.get("type") == "text":
+                        t = block.get("text")
+                        if isinstance(t, str) and t.strip():
+                            parts.append(t.strip())
+                return "\n".join(parts).strip()
+    return ""
+
+
+def assignment_intent_handler(state: AgentState) -> Dict[str, Any]:
+    """
+    Deterministic fast path: breakdown / rebalance without generic LLM chat.
+    Always clears or sets bypass_llm so checkpoint state does not skip LLM on later turns.
+    """
+    text = _last_user_text(state)
+    intent = _detect_planning_intent(text)
+    if not intent:
+        logger.info("agent.fast_path: no breakdown/rebalance intent — using LLM chat")
+        return {"bypass_llm": False}
+
+    local_user = _resolve_local_user(state.get("auth_user_id"), state.get("user_metadata"))
+    if not local_user:
+        logger.warning(
+            "agent.fast_path: no local SQLite user for auth_user_id=%s intent=%s",
+            state.get("auth_user_id"),
+            intent,
+        )
+        return {
+            "messages": [
+                AIMessage(
+                    content=(
+                        "Your account isn’t linked to HandAll tasks yet. "
+                        "Open the app while signed in, then try again."
+                    )
+                )
+            ],
+            "bypass_llm": True,
+        }
+
+    motivation = max(0, min(100, int(state.get("motivation") or 50)))
+    tz_name = state.get("user_metadata", {}).get("timezone") or "UTC"
+
+    ctx_token = CURRENT_AGENT_CONTEXT.set(
+        {
+            "user_id": state["user_id"],
+            "auth_user_id": state.get("auth_user_id"),
+            "motivation": motivation,
+            "user_metadata": state.get("user_metadata", {}),
+        }
+    )
+    try:
+        if intent == "rebalance_plan":
+            logger.info("agent.fast_path: TRIGGER deterministic tool=rebalance_app_plan")
+            raw = rebalance_app_plan.invoke({"days": 7})
+            if not isinstance(raw, dict):
+                raw = {}
+            if not raw.get("success"):
+                msg = raw.get("message") or "Could not rebalance the plan."
+                logger.warning("agent.fast_path: rebalance failed — %s", msg[:200])
+                return {"bypass_llm": False}
+            summary = (raw.get("message") or "Plan updated.").strip()
+            inserted = int(raw.get("inserted_count") or 0)
+            deleted = int(raw.get("deleted_count") or 0)
+            body = (
+                "### Schedule replanned (HandAll)\n\n"
+                f"{summary}\n\n"
+                f"- Replaced **{deleted}** old blocks with **{inserted}** new planned tasks.\n"
+                "_Your calendar tasks in the app are updated._"
+            )
+            return {
+                "messages": [
+                    AIMessage(
+                        content=body,
+                        additional_kwargs={"handall_schedule_updated": True},
+                    )
+                ],
+                "bypass_llm": True,
+            }
+
+        # breakdown_assignment
+        rows = _fetch_user_assignment_tasks(int(local_user["id"]))
+        logger.info(
+            "agent.fast_path: assignment_tasks_fetched count=%s local_user_id=%s",
+            len(rows),
+            local_user["id"],
+        )
+        if not rows:
+            logger.info("agent.fast_path: no assignment-type tasks — deterministic reply")
+            return {
+                "messages": [
+                    AIMessage(
+                        content=(
+                            "I couldn't find any assignments. Try importing your calendar first."
+                        )
+                    )
+                ],
+                "bypass_llm": True,
+            }
+
+        matched = _pick_assignment_for_breakdown(text, rows, tz_name)
+        if not matched:
+            logger.info(
+                "agent.fast_path: could not match message to an assignment — using LLM chat"
+            )
+            return {"bypass_llm": False}
+
+        logger.info(
+            "agent.fast_path: TRIGGER assignment breakdown pipeline task_id=%s key=%s",
+            matched.get("id"),
+            _assignment_external_key(matched),
+        )
+
+        subtasks = generate_assignment_subtasks(
+            parent_title=str(matched.get("title") or ""),
+            parent_description=str(matched.get("description") or ""),
+            due_date_iso=str(matched.get("start_time") or ""),
+            motivation=motivation,
+        )
+        _replace_assignment_subtasks_sqlite(int(local_user["id"]), matched, subtasks)
+        body = _format_breakdown_response(matched, subtasks, tz_name)
+        return {
+            "messages": [AIMessage(content=body)],
+            "bypass_llm": True,
+        }
+    finally:
+        CURRENT_AGENT_CONTEXT.reset(ctx_token)
+
+
+def _route_after_assignment_intent(state: AgentState) -> str:
+    if state.get("bypass_llm"):
+        return "__end__"
+    return "call_model"
+
+
 @tool
 def list_events() -> List[Dict[str, Any]]:
     """Fetch Google Calendar events scheduled in the next 24 hours."""
@@ -492,7 +882,7 @@ def list_schedule(days: int = 7) -> Dict[str, Any]:
     if not local_user:
         return {
             "success": False,
-            "message": "I need an authenticated HandAll user before I can inspect the app schedule.",
+            "message": "Sign in to HandAll in this browser so I can read or change your saved tasks.",
             "tasks": [],
         }
 
@@ -524,7 +914,7 @@ def search_app_tasks(
     if not local_user:
         return {
             "success": False,
-            "message": "I need an authenticated HandAll user before I can search the schedule.",
+            "message": "Sign in to HandAll in this browser so I can read or change your saved tasks.",
             "matches": [],
         }
     tz_name = context.get("user_metadata", {}).get("timezone") or "UTC"
@@ -575,7 +965,7 @@ def list_assignment_plans(
     if not local_user:
         return {
             "success": False,
-            "message": "I need an authenticated HandAll user before I can inspect assignments.",
+            "message": "Sign in to HandAll in this browser so I can read or change your saved tasks.",
             "assignments": [],
         }
 
@@ -654,16 +1044,17 @@ def list_assignment_plans(
 
     assignments: List[Dict[str, Any]] = []
     for row in assignment_rows:
-        external_id = row["external_id"] or f"task:{row['id']}"
+        ser = _serialize_task_row(row)
+        ext_key = _assignment_external_key(ser)
         assignments.append(
             {
-                "id": str(row["id"]),
-                "external_id": external_id,
-                "title": row["title"],
-                "description": row["description"] or "",
-                "start": row["start_time"],
-                "end": row["end_time"],
-                "subtasks": planning_by_assignment.get(external_id, []),
+                "id": ser["id"],
+                "external_id": ext_key,
+                "title": ser["title"],
+                "description": ser["description"] or "",
+                "start": ser["start"],
+                "end": ser["end"],
+                "subtasks": planning_by_assignment.get(ext_key, []),
             }
         )
 
@@ -683,7 +1074,7 @@ def generate_assignment_plan(assignment_identifier: str) -> Dict[str, Any]:
     if not local_user:
         return {
             "success": False,
-            "message": "I need an authenticated HandAll user before I can generate assignment subtasks.",
+            "message": "Sign in to HandAll in this browser so I can generate assignment subtasks.",
         }
 
     row, matches, error_message = _find_assignment_task(int(local_user["id"]), assignment_identifier)
@@ -707,12 +1098,13 @@ def generate_assignment_plan(assignment_identifier: str) -> Dict[str, Any]:
 
     due_iso = row["start_time"]
     subtasks = generate_assignment_subtasks(
-        row["title"],
-        row["description"] or "",
+        str(row["title"] or ""),
+        str(row["description"] or ""),
         due_iso,
         int(context.get("motivation", 50) or 50),
     )
-    assignment_external_id = row["external_id"] or f"task:{row['id']}"
+    ser_row = _serialize_task_row(row)
+    assignment_external_id = _assignment_external_key(ser_row)
 
     with _open_app_db() as connection:
         connection.execute(
@@ -725,29 +1117,29 @@ def generate_assignment_plan(assignment_identifier: str) -> Dict[str, Any]:
             (local_user["id"], assignment_external_id),
         )
         for index, item in enumerate(subtasks, start=1):
+            title = str(item.get("title") or "").strip()
+            if not title:
+                continue
+            em = int(item.get("estimated_minutes") or 45)
+            em = max(15, min(240, em))
+            so = int(item.get("sort_order") or index)
+            desc = str(item.get("description") or "").strip() or None
             connection.execute(
                 """
                 INSERT INTO ai_planning_items (
-                    user_id,
-                    item_type,
-                    assignment_external_id,
-                    assignment_title,
-                    title,
-                    description,
-                    estimated_minutes,
-                    sort_order,
-                    due_iso
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    user_id, item_type, assignment_external_id, assignment_title,
+                    side_goal, title, description, estimated_minutes, sort_order, due_iso, rationale
+                )
+                VALUES (?, 'assignment_subtask', ?, ?, NULL, ?, ?, ?, ?, ?, NULL)
                 """,
                 (
                     local_user["id"],
-                    "assignment_subtask",
                     assignment_external_id,
-                    row["title"],
-                    item["title"],
-                    item.get("description", ""),
-                    int(item.get("estimated_minutes") or 45),
-                    int(item.get("sort_order") or index),
+                    ser_row.get("title") or "",
+                    title,
+                    desc,
+                    em,
+                    so,
                     due_iso,
                 ),
             )
@@ -757,9 +1149,9 @@ def generate_assignment_plan(assignment_identifier: str) -> Dict[str, Any]:
         "success": True,
         "message": f"Generated {len(subtasks)} subtasks for {row['title']}.",
         "assignment": {
-            "id": str(row["id"]),
+            "id": ser_row["id"],
             "external_id": assignment_external_id,
-            "title": row["title"],
+            "title": ser_row["title"],
             "due_iso": due_iso,
         },
         "subtasks": subtasks,
@@ -859,7 +1251,7 @@ def update_app_task_times(
     if not local_user:
         return {
             "success": False,
-            "message": "I need an authenticated HandAll user before I can update tasks.",
+            "message": "Sign in to HandAll in this browser so I can read or change your saved tasks.",
         }
 
     new_start = _parse_iso_datetime(new_start_iso_utc)
@@ -884,7 +1276,7 @@ def move_app_task_local(
     if not local_user:
         return {
             "success": False,
-            "message": "I need an authenticated HandAll user before I can move tasks.",
+            "message": "Sign in to HandAll in this browser so I can read or change your saved tasks.",
         }
     tz_name = context.get("user_metadata", {}).get("timezone") or "UTC"
     try:
@@ -954,7 +1346,7 @@ def add_app_task(
     if not local_user:
         return {
             "success": False,
-            "message": "I need an authenticated HandAll user before I can add tasks.",
+            "message": "Sign in to HandAll in this browser so I can read or change your saved tasks.",
         }
 
     start_dt = _parse_iso_datetime(start_time)
@@ -999,7 +1391,7 @@ def remove_app_task(task_identifier: str) -> Dict[str, Any]:
     if not local_user:
         return {
             "success": False,
-            "message": "I need an authenticated HandAll user before I can remove tasks.",
+            "message": "Sign in to HandAll in this browser so I can read or change your saved tasks.",
         }
 
     identifier = (task_identifier or "").strip()
@@ -1088,7 +1480,7 @@ def rebalance_app_plan(days: int = 7) -> Dict[str, Any]:
     if not local_user:
         return {
             "success": False,
-            "message": "I need an authenticated HandAll user before I can rebalance the plan.",
+            "message": "Sign in to HandAll in this browser so I can read or change your saved tasks.",
         }
 
     from backend.planner import generate_weekly_plan
@@ -1377,26 +1769,27 @@ def build_system_prompt(user_metadata: Dict[str, Any]) -> str:
     today_local = user_metadata.get("today_local", "")
     schedule_snapshot = user_metadata.get("schedule_snapshot", "(not loaded)")
     return (
-        f"You are HandAll's helpful AI planning agent assisting {name}. "
-        f"The user's timezone is {timezone_name}. "
-        f"Today in that timezone: {today_local}. "
-        f"You have access to their HandAll app schedule (stored tasks). "
-        f"Current schedule snapshot (next ~14 days, local times):\n{schedule_snapshot}\n"
-        f"Current motivation/energy: {motivation}/100 (low = prefer shorter sessions, more rest, lighter tasks; high = can plan deeper work). "
-        f"Full side-goals list (use ALL in advice, not just one): {goals_line}. "
-        f"Other preferences: {json.dumps({k: v for k, v in prefs.items() if k not in {'side_goals', 'sideGoals'}})}. "
-        "Always try to resolve requests using list_schedule, search_app_tasks, or move_app_task_local before asking questions. "
-        "If the user asks for help with an assignment, inspect assignment subtasks with list_assignment_plans and generate or refresh them with generate_assignment_plan when needed. "
-        "After assignment subtasks exist, use rebalance_app_plan if the user wants actual working blocks placed on the schedule. "
-        "For moves like 'move Sunday March 29 2am to 6am', infer the calendar year from Today if the user did not state a year, "
-        "use local_date_yyyy_mm_dd (YYYY-MM-DD) in the user's timezone, and call move_app_task_local — do not ask for year or task title "
-        "unless no task matches or several tasks match (then use title_contains or list options). "
-        "Use HandAll schedule tools to add, remove, move, search, inspect, and rebalance tasks inside the app. "
-        "Use the Google Calendar tools only when the user explicitly wants external Google Calendar events inspected or changed. "
-        "When you edit the app schedule, state what changed (task title, previous time → new time) in plain language. Be concise and accurate. "
-        "Calendar rows may include ai-classification metadata: fixed commitments block time and are not moved by the planner; "
-        "assignment deadlines drive AI-generated work blocks scheduled before the due time; flexible events can be overlapped by planned work. "
-        "If the user asks why something was classified or how work was split, explain using that distinction and that times for focus blocks come from HandAll's deterministic planner, not guessed by the chat model."
+        f"You are HandAll's execution-focused planning engine for {name}, not a generic tutor or essay coach. "
+        f"Timezone: {timezone_name}. Today (local): {today_local}. "
+        f"Motivation/energy: {motivation}/100. Side goals: {goals_line}. "
+        f"Other prefs: {json.dumps({k: v for k, v in prefs.items() if k not in {'side_goals', 'sideGoals'}})}.\n\n"
+        "**Data you already have (do not ask the user to repeat it):**\n"
+        f"- Upcoming HandAll tasks (local times, next ~14 days):\n{schedule_snapshot}\n\n"
+        "**Rules:**\n"
+        "1. Prefer **tools** over prose. Call `list_schedule`, `search_app_tasks`, `list_assignment_plans`, "
+        "`generate_assignment_plan`, `rebalance_app_plan`, "
+        "`move_app_task_local`, `update_app_task_times`, `add_app_task`, `remove_app_task` to read or change real data.\n"
+        "2. Do **not** give textbook study tips, essay structure lectures, or filler questions when the user wants planning "
+        "or schedule changes — act on the snapshot and tools.\n"
+        "3. If the user asks to break down, plan, or schedule an **assignment**, assume matching rows exist in the snapshot "
+        "or DB; use tools to find them (search by title/date) before asking for the assignment title.\n"
+        "4. For **replan / rebalance the week**, call `rebalance_app_plan` rather than describing a hypothetical schedule.\n"
+        "5. For moves (e.g. “move Sunday 2am to 6am”), infer year from Today, use `local_date_yyyy_mm_dd` and "
+        "`move_app_task_local`; only ask for clarification if multiple tasks match.\n"
+        "6. Use Google Calendar tools **only** when the user explicitly wants external Google events changed or listed.\n"
+        "7. When you change the schedule, state what changed in one short factual paragraph.\n"
+        "8. Calendar semantics: fixed rows block time; assignment deadlines anchor work blocks; flexible rows may overlap. "
+        "Planner times are deterministic — do not invent times without tools."
     )
 
 
@@ -1434,6 +1827,7 @@ def _merge_schedule_tool_truth(
             "remove_app_task",
             "update_app_task_times",
             "move_app_task_local",
+            "generate_assignment_plan",
         }:
             continue
         payload = _parse_tool_message_payload(message)
@@ -1493,6 +1887,18 @@ def _merge_schedule_tool_truth(
                     payload.get("message") or "Could not reschedule task."
                 )
 
+        elif name == "generate_assignment_plan":
+            if payload.get("success"):
+                schedule_changed = True
+                m = (payload.get("message") or "Assignment plan updated.").strip()
+                if m:
+                    fact_lines.append(m)
+            else:
+                any_failure = True
+                fact_lines.append(
+                    payload.get("message") or "Could not generate assignment plan."
+                )
+
     if not fact_lines:
         return assistant_text, schedule_changed
 
@@ -1505,7 +1911,7 @@ def _merge_schedule_tool_truth(
 
 
 def _flatten_block_dict(block: Dict[str, Any]) -> str:
-    """Extract user-visible text from one structured LangChain/Gemini content block."""
+    """Extract user-visible text from one structured LangChain content block."""
     typ = block.get("type")
     text_val = block.get("text")
     if not isinstance(text_val, str) or not text_val.strip():
@@ -1516,7 +1922,7 @@ def _flatten_block_dict(block: Dict[str, Any]) -> str:
 
 
 def _flatten_ai_message_content(content: Any) -> str:
-    """Gemini/LangChain may return str, a single dict, or a list of blocks."""
+    """LangChain/OpenAI may return str, a single dict, or a list of blocks."""
     if content is None:
         return ""
     if isinstance(content, str):
@@ -1536,147 +1942,11 @@ def _flatten_ai_message_content(content: Any) -> str:
     return str(content).strip()
 
 
-def _format_assignment_plan_fallback(local_user_id: int, query: str, motivation: int) -> str:
-    row, matches, error_message = _find_assignment_task(local_user_id, query)
-    if error_message and matches:
-        options = "\n".join(
-            f"- {match['title']} (due {match['start_time']})"
-            for match in matches[:5]
-        )
-        return f"I found a few matching assignments. Be a little more specific:\n{options}"
-
-    if error_message or row is None:
-        upcoming = _get_upcoming_tasks(local_user_id, 14)
-        assignments = [task for task in upcoming if task.get("type") == "assignment"][:5]
-        if not assignments:
-            return "I couldn't find an upcoming assignment in HandAll right now."
-        lines = [
-            f"- {task['title']} (due {task['start']})"
-            for task in assignments
-        ]
-        return "I couldn't match that exact assignment, but these upcoming ones are in HandAll:\n" + "\n".join(lines)
-
-    subtasks = _fallback_assignment_subtasks(row["title"], motivation)
-    bullet_lines = [
-        f"- {item['title']} ({int(item.get('estimated_minutes') or 0)} min)"
-        for item in subtasks[:6]
-    ]
-    return (
-        f"Here’s a usable breakdown for {row['title']}:\n"
-        + "\n".join(bullet_lines)
-        + "\n\nIf you want, I can also help reschedule these into open study blocks."
-    )
-
-
-def _format_schedule_fallback(local_user_id: int, tz_name: str, message: str) -> str:
-    lower = message.lower()
-    z = _safe_zone(tz_name)
-    now_local = datetime.now(z)
-
-    if "tomorrow" in lower:
-        target_day = now_local.date() + timedelta(days=1)
-    else:
-        target_day = now_local.date()
-
-    tasks = _tasks_starting_on_local_date(local_user_id, target_day, tz_name)
-
-    if "morning" in lower:
-        filtered: List[Dict[str, Any]] = []
-        for task in tasks:
-            start_local = _parse_iso_datetime(task["start"]).astimezone(z)
-            if 5 <= start_local.hour < 12:
-                filtered.append(task)
-        tasks = filtered
-
-    if not tasks:
-        label = "tomorrow morning" if "tomorrow" in lower and "morning" in lower else "that time"
-        return f"I don't see anything scheduled in HandAll for {label}."
-
-    lines: List[str] = []
-    for task in tasks[:8]:
-        start_local = _parse_iso_datetime(task["start"]).astimezone(z)
-        end_local = _parse_iso_datetime(task["end"]).astimezone(z)
-        lines.append(
-            f"- {task['title']} from {start_local.strftime('%I:%M %p').lstrip('0')} to {end_local.strftime('%I:%M %p').lstrip('0')}"
-        )
-    return "Here’s what I see in your HandAll schedule:\n" + "\n".join(lines)
-
-
-def _fallback_chat_response(
-    *,
-    user_id: str,
-    auth_user_id: Optional[str],
-    message: str,
-    motivation: int,
-    user_metadata: Dict[str, Any],
-) -> str:
-    local_user = _resolve_local_user(auth_user_id, user_metadata)
-    if not local_user:
-        return (
-            "The AI model is temporarily unavailable, and I also couldn't resolve an authenticated HandAll user "
-            "to inspect your app data."
-        )
-
-    lower = (message or "").strip().lower()
-    tz_name = user_metadata.get("timezone") or "UTC"
-
-    if any(phrase in lower for phrase in ["break down", "subtask", "assignment", "work on next"]):
-        if "what assignment should i work on next" in lower:
-            assignments = [
-                task for task in _get_upcoming_tasks(int(local_user["id"]), 14)
-                if task.get("type") == "assignment"
-            ]
-            if assignments:
-                next_assignment = assignments[0]
-                return _format_assignment_plan_fallback(
-                    int(local_user["id"]),
-                    next_assignment["external_id"] or next_assignment["title"],
-                    motivation,
-                )
-            return "I don't see any upcoming assignments in HandAll right now."
-
-        query = re.sub(
-            r"^(help me\s+)?(break down|help with)\s+",
-            "",
-            message.strip(),
-            flags=re.IGNORECASE,
-        )
-        query = re.sub(
-            r"\s+(into smaller tasks|into smaller task|into tasks|for me)[\s.!?]*$",
-            "",
-            query,
-            flags=re.IGNORECASE,
-        ).strip(" .!?")
-        if not query:
-            query = message
-        return _format_assignment_plan_fallback(int(local_user["id"]), query, motivation)
-
-    if any(word in lower for word in ["schedule", "scheduled", "tomorrow", "today"]):
-        return _format_schedule_fallback(int(local_user["id"]), tz_name, message)
-
-    assignments = [
-        task for task in _get_upcoming_tasks(int(local_user["id"]), 14)
-        if task.get("type") == "assignment"
-    ][:3]
-    if assignments:
-        lines = "\n".join(f"- {task['title']} (due {task['start']})" for task in assignments)
-        return (
-            "The live AI model is temporarily unavailable, but I can still see your HandAll data. "
-            "Your next assignments are:\n"
-            + lines
-        )
-    return "The live AI model is temporarily unavailable right now, and I don't see any upcoming assignments in HandAll yet."
-
-
-def _llm_backoff_active() -> bool:
-    return LLM_BACKOFF_UNTIL is not None and datetime.now(timezone.utc) < LLM_BACKOFF_UNTIL
-
-
 def call_model(state: AgentState) -> Dict[str, Any]:
-    """Call Gemini with the latest state and let it decide whether to use tools."""
-    base = get_gemini_chat_model(temperature=0.2)
+    """Call the OpenAI model with the latest state and let it decide whether to use tools."""
+    base = get_openai_chat_model(temperature=0.2)
     if base is None:
-        raise RuntimeError("GOOGLE_API_KEY is not configured in the environment.")
+        raise RuntimeError("OPENAI_API_KEY is not configured in the environment.")
     model = base.bind_tools(TOOLS)
 
     system_prompt = build_system_prompt(state.get("user_metadata", {}))
@@ -1693,8 +1963,7 @@ def call_model(state: AgentState) -> Dict[str, Any]:
         }
     )
     try:
-        response = model.invoke(model_input)
-        log_llm_chat_completion(response, "agent.call_model")
+        response = invoke_openai_chat(model, model_input, "agent.call_model")
     finally:
         CURRENT_AGENT_CONTEXT.reset(context_token)
     return {"messages": [response]}
@@ -1704,11 +1973,17 @@ def build_graph():
     graph_builder = StateGraph(AgentState)
 
     graph_builder.add_node("fetch_user_data", fetch_user_data)
+    graph_builder.add_node("assignment_intent_handler", assignment_intent_handler)
     graph_builder.add_node("call_model", call_model)
     graph_builder.add_node("tools", ToolNode(TOOLS))
 
     graph_builder.add_edge(START, "fetch_user_data")
-    graph_builder.add_edge("fetch_user_data", "call_model")
+    graph_builder.add_edge("fetch_user_data", "assignment_intent_handler")
+    graph_builder.add_conditional_edges(
+        "assignment_intent_handler",
+        _route_after_assignment_intent,
+        {"call_model": "call_model", "__end__": END},
+    )
     graph_builder.add_conditional_edges(
         "call_model",
         tools_condition,
@@ -1733,7 +2008,6 @@ def run_agent(
     auth_user_id: Optional[str] = None,
     motivation: int = 50,
 ) -> Dict[str, Any]:
-    global LLM_BACKOFF_UNTIL
     config = {"configurable": {"thread_id": thread_id}}
     # This initial state is the first packet given to the graph for the current turn.
     # MemorySaver uses thread_id to stitch this turn together with prior turns.
@@ -1753,39 +2027,7 @@ def run_agent(
         }
     )
     try:
-        if _llm_backoff_active():
-            fallback_metadata = fetch_user_data(initial_state).get("user_metadata", {})
-            fallback_text = _fallback_chat_response(
-                user_id=user_id,
-                auth_user_id=auth_user_id,
-                message=message,
-                motivation=motivation,
-                user_metadata=fallback_metadata,
-            )
-            return {
-                "response": fallback_text,
-                "state": {"backoff_until": LLM_BACKOFF_UNTIL.isoformat()},
-                "schedule_updated": False,
-            }
         result = graph.invoke(initial_state, config=config)
-    except Exception as exc:
-        log_llm_fallback("agent.run_agent", f"graph.invoke exception: {exc!s}"[:300])
-        error_text = str(exc)
-        if "RESOURCE_EXHAUSTED" in error_text or "429" in error_text:
-            LLM_BACKOFF_UNTIL = datetime.now(timezone.utc) + timedelta(seconds=75)
-        fallback_metadata = fetch_user_data(initial_state).get("user_metadata", {})
-        fallback_text = _fallback_chat_response(
-            user_id=user_id,
-            auth_user_id=auth_user_id,
-            message=message,
-            motivation=motivation,
-            user_metadata=fallback_metadata,
-        )
-        return {
-            "response": fallback_text,
-            "state": {"error": str(exc)},
-            "schedule_updated": False,
-        }
     finally:
         CURRENT_AGENT_CONTEXT.reset(context_token)
 
@@ -1799,6 +2041,13 @@ def run_agent(
             break
     final_text = _flatten_ai_message_content(last_ai.content) if last_ai else ""
 
-    final_text, schedule_updated = _merge_schedule_tool_truth(result["messages"], final_text)
+    schedule_from_fast = bool(
+        last_ai and last_ai.additional_kwargs.get("handall_schedule_updated")
+    )
+    final_text, schedule_from_tools = _merge_schedule_tool_truth(result["messages"], final_text)
 
-    return {"response": final_text, "state": result, "schedule_updated": schedule_updated}
+    return {
+        "response": final_text,
+        "state": result,
+        "schedule_updated": schedule_from_fast or schedule_from_tools,
+    }

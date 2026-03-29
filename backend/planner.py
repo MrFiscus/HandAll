@@ -8,10 +8,10 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from langchain_core.messages import HumanMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 
-from backend.llm_client import get_gemini_chat_model
-from backend.llm_usage import log_llm_chat_completion, log_llm_fallback
+from backend.llm_client import get_openai_chat_model
+from backend.llm_usage import invoke_openai_chat, log_llm_fallback
 
 
 def _get_timezone(timezone_name: str):
@@ -60,8 +60,8 @@ def _extract_json_object(text: str) -> Optional[Any]:
         return None
 
 
-def _get_planner_model() -> Optional[ChatGoogleGenerativeAI]:
-    return get_gemini_chat_model(temperature=0.28)
+def _get_planner_model() -> Optional[ChatOpenAI]:
+    return get_openai_chat_model(temperature=0.28)
 
 
 def _heuristic_assignment_hours(title: str, description: str) -> int:
@@ -99,7 +99,7 @@ def _estimate_assignment_hours(assignments: List[Dict[str, Any]]) -> Dict[str, D
     if not model:
         log_llm_fallback(
             "planner._estimate_assignment_hours",
-            "GOOGLE_API_KEY missing or Gemini chat model unavailable",
+            "OPENAI_API_KEY missing or OpenAI chat model unavailable",
         )
         return fallback
 
@@ -124,8 +124,7 @@ def _estimate_assignment_hours(assignments: List[Dict[str, Any]]) -> Dict[str, D
     )
 
     try:
-        response = model.invoke([HumanMessage(content=prompt)])
-        log_llm_chat_completion(response, "planner._estimate_assignment_hours")
+        response = invoke_openai_chat(model, [HumanMessage(content=prompt)], "planner._estimate_assignment_hours")
         parsed = _extract_json_object(str(response.content))
         if not isinstance(parsed, list):
             log_llm_fallback(
@@ -185,7 +184,7 @@ def _generate_ai_suggestions(side_goals: List[str], motivation: int) -> Dict[str
     if not model:
         log_llm_fallback(
             "planner._generate_ai_suggestions",
-            "GOOGLE_API_KEY missing or Gemini chat model unavailable",
+            "OPENAI_API_KEY missing or OpenAI chat model unavailable",
         )
         return {"goal": fallback_goal, "free_time": fallback_free}
 
@@ -201,8 +200,7 @@ def _generate_ai_suggestions(side_goals: List[str], motivation: int) -> Dict[str
     )
 
     try:
-        response = model.invoke([HumanMessage(content=prompt)])
-        log_llm_chat_completion(response, "planner._generate_ai_suggestions")
+        response = invoke_openai_chat(model, [HumanMessage(content=prompt)], "planner._generate_ai_suggestions")
         parsed = _extract_json_object(str(response.content))
         if not isinstance(parsed, dict):
             log_llm_fallback(

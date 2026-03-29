@@ -55,7 +55,8 @@ function inferGoogleEventType(title: string, description: string): CalendarEvent
   return "external";
 }
 
-async function getAuthHeaders() {
+/** Supabase session JWT for `/api/*` and `/agent-api/chat` (Python agent validates server-side). */
+export async function getAuthHeaders() {
   if (!supabase) return { 'Content-Type': 'application/json' };
 
   const { data: { session } } = await supabase.auth.getSession();

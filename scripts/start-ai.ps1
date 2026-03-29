@@ -58,7 +58,19 @@ if (-not (Test-Path $uvicornExe)) {
   & $pythonExe -m pip install -r "backend/requirements.txt"
 }
 else {
-  $pyProbe = 'import importlib; [importlib.import_module(m) for m in ("uvicorn","fastapi","google.oauth2","googleapiclient.discovery","langchain_google_genai","tzdata")]'
+  # Avoid PowerShell mangling of python -c one-liners (was causing NameError on probe).
+  $pyProbe = @'
+import importlib
+for _name in (
+    "uvicorn",
+    "fastapi",
+    "google.oauth2",
+    "googleapiclient.discovery",
+    "langchain_openai",
+    "tzdata",
+):
+    importlib.import_module(_name)
+'@
   & $pythonExe -c $pyProbe
   if ($LASTEXITCODE -ne 0) {
     Write-Host "Refreshing AI Python dependencies..." -ForegroundColor Yellow

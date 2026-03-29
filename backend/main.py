@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field
 from dotenv import load_dotenv
@@ -17,6 +17,63 @@ if not os.getenv("SUPABASE_KEY") and os.getenv("SUPABASE_ANON_KEY"):
     os.environ["SUPABASE_KEY"] = os.environ["SUPABASE_ANON_KEY"]
 
 logger = logging.getLogger(__name__)
+
+
+def _get_supabase_auth_client():
+    """Minimal Supabase client for JWT validation (same project as Node /api/tasks)."""
+    from supabase import create_client
+
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+    if not url or not key:
+        return None
+    return create_client(url, key)
+
+
+def _auth_user_id_from_jwt(token: str) -> Optional[str]:
+    client = _get_supabase_auth_client()
+    if not client:
+        return None
+    try:
+        res = client.auth.get_user(token)
+        if res is None:
+            return None
+        user = getattr(res, "user", None)
+        if user is not None:
+            uid = getattr(user, "id", None)
+            if uid:
+                return str(uid)
+    except Exception as exc:
+        logger.warning("chat auth: supabase.auth.get_user failed: %s", exc)
+        return None
+    return None
+
+
+def _resolve_chat_auth_user(
+    authorization: Optional[str],
+    body_auth_user_id: Optional[str],
+) -> Optional[str]:
+    """
+    Prefer Authorization: Bearer <Supabase access_token> (validated via Supabase Auth).
+    Fall back to JSON auth_user_id only when no Bearer token is sent.
+    """
+    if authorization:
+        raw = authorization.strip()
+        if raw.lower().startswith("bearer "):
+            token = raw[7:].strip()
+            if token:
+                uid = _auth_user_id_from_jwt(token)
+                if uid:
+                    return uid
+                logger.warning("POST /chat: Bearer token did not validate")
+                raise HTTPException(
+                    status_code=401,
+                    detail="Invalid or expired session. Please sign in again.",
+                )
+    if body_auth_user_id:
+        logger.warning("POST /chat: using auth_user_id from JSON (no Bearer token)")
+        return str(body_auth_user_id).strip() or None
+    return None
 
 
 def _expose_internal_errors() -> bool:
@@ -42,7 +99,7 @@ def _failure_frame(exc: BaseException) -> str:
 
 def classify_chat_exception(exc: BaseException) -> str:
     """
-    Rough bucket for support: llm (Gemini / API), tool (HandAll tools), graph (LangGraph), other.
+    Rough bucket for support: llm (OpenAI / API), tool (HandAll tools), graph (LangGraph), other.
     """
     try:
         from google.api_core import exceptions as google_api_exceptions
@@ -123,25 +180,46 @@ def classify_chat_exception(exc: BaseException) -> str:
     return "other"
 
 
-def _gemini_error_kind(exc: BaseException) -> Optional[str]:
-    """Best-effort: rate_limit | auth | not_found, or None."""
+def _llm_provider_error_kind(exc: BaseException) -> Optional[str]:
+    """Best-effort: rate_limit | auth | not_found (OpenAI first; Google API core as legacy)."""
+    try:
+        import openai
+
+        seen: set[int] = set()
+        cur: Optional[BaseException] = exc
+        while cur is not None and id(cur) not in seen:
+            seen.add(id(cur))
+            if isinstance(cur, openai.RateLimitError):
+                return "rate_limit"
+            if isinstance(cur, openai.AuthenticationError):
+                return "auth"
+            if isinstance(cur, openai.NotFoundError):
+                return "not_found"
+            if isinstance(cur, openai.BadRequestError):
+                low = str(cur).lower()
+                if "model" in low and ("not found" in low or "does not exist" in low or "invalid" in low):
+                    return "not_found"
+            cur = cur.__cause__
+    except ImportError:
+        pass
+
     try:
         from google.api_core import exceptions as g_exc
     except ImportError:
         g_exc = None  # type: ignore
 
-    seen: set[int] = set()
-    cur: Optional[BaseException] = exc
-    while cur is not None and id(cur) not in seen:
-        seen.add(id(cur))
+    seen2: set[int] = set()
+    cur2: Optional[BaseException] = exc
+    while cur2 is not None and id(cur2) not in seen2:
+        seen2.add(id(cur2))
         if g_exc:
-            if isinstance(cur, g_exc.ResourceExhausted):
+            if isinstance(cur2, g_exc.ResourceExhausted):
                 return "rate_limit"
-            if isinstance(cur, (g_exc.Unauthenticated, g_exc.PermissionDenied)):
+            if isinstance(cur2, (g_exc.Unauthenticated, g_exc.PermissionDenied)):
                 return "auth"
-            if isinstance(cur, g_exc.NotFound):
+            if isinstance(cur2, g_exc.NotFound):
                 return "not_found"
-        cur = cur.__cause__
+        cur2 = cur2.__cause__
     return None
 
 
@@ -156,10 +234,10 @@ def build_chat_error_payload(exc: BaseException) -> Tuple[str, Optional[str], Op
     source = classify_chat_exception(exc)
     frame = _failure_frame(exc)
     expose = _expose_internal_errors()
-    gemini_kind = _gemini_error_kind(exc)
+    llm_kind = _llm_provider_error_kind(exc)
 
     rate_limited = (
-        gemini_kind == "rate_limit"
+        llm_kind == "rate_limit"
         or "resource_exhausted" in low
         or "resource exhausted" in low
         or " 429" in raw
@@ -171,7 +249,7 @@ def build_chat_error_payload(exc: BaseException) -> Tuple[str, Optional[str], Op
         or "rate_limit" in low
     )
     auth_problem = (
-        gemini_kind == "auth"
+        llm_kind == "auth"
         or "api key" in low
         or "invalid_api_key" in low
         or "incorrect api key" in low
@@ -183,7 +261,7 @@ def build_chat_error_payload(exc: BaseException) -> Tuple[str, Optional[str], Op
         or "unauthenticated" in low
     )
     model_not_found = (
-        gemini_kind == "not_found"
+        llm_kind == "not_found"
         or ("404" in raw and ("model" in low or "not found" in low))
         or "is not found for api version" in low
         or "was not found" in low and "model" in low
@@ -191,23 +269,22 @@ def build_chat_error_payload(exc: BaseException) -> Tuple[str, Optional[str], Op
 
     if rate_limited:
         friendly = (
-            "Gemini API rate limit or quota was reached. Wait briefly and try again, or check usage "
-            "limits in Google AI Studio / Cloud console for this API key."
+            "OpenAI API rate limit or quota was reached. Wait briefly and try again, or check usage "
+            "limits in your OpenAI account dashboard."
         )
     elif auth_problem:
         friendly = (
-            "Google API key was rejected or lacks permission. Check `GOOGLE_API_KEY` in the root "
-            "`.env` file and that the Generative Language API is enabled for the key's project."
+            "OpenAI API key was rejected or lacks permission. Check `OPENAI_API_KEY` in the root "
+            "`.env` file."
         )
     elif model_not_found:
         friendly = (
-            "The configured Gemini model was not found or is not available for this key. "
-            "Set `GOOGLE_MODEL` in the root `.env` file to a model your project supports "
-            "(default: gemini-2.5-flash)."
+            "The configured OpenAI model was not found or is not available for this key. "
+            "Set `OPENAI_MODEL` in the root `.env` file (default: gpt-4o-mini)."
         )
     elif source == "llm":
         friendly = (
-            "The AI model request failed. Verify `GOOGLE_API_KEY` and `GOOGLE_MODEL` in the root `.env` file "
+            "The AI model request failed. Verify `OPENAI_API_KEY` and `OPENAI_MODEL` in the root `.env` file "
             "and try again."
         )
     else:
@@ -223,7 +300,7 @@ def build_chat_error_payload(exc: BaseException) -> Tuple[str, Optional[str], Op
 
     if expose:
         src_label = (
-            "LLM/API (Gemini)"
+            "LLM/API (OpenAI)"
             if source == "llm"
             else "tool/graph/app"
             if source in ("tool", "graph")
@@ -241,27 +318,33 @@ def build_chat_error_payload(exc: BaseException) -> Tuple[str, Optional[str], Op
     return friendly, source, None
 
 
+def user_safe_error_message(exc: BaseException) -> str:
+    """User-facing message for JSON responses (same shaping as /chat; no raw API dumps unless debug env)."""
+    text, _, _ = build_chat_error_payload(exc)
+    return text
+
+
 @asynccontextmanager
 async def _app_lifespan(app: FastAPI):
-    from backend.google_model import DEFAULT_GOOGLE_MODEL
-    from backend.llm_client import get_gemini_chat_model
+    from backend.llm_client import get_openai_chat_model
+    from backend.openai_model import DEFAULT_OPENAI_MODEL
 
-    active_model = os.getenv("GOOGLE_MODEL", DEFAULT_GOOGLE_MODEL)
-    key_ok = bool(os.getenv("GOOGLE_API_KEY"))
+    active_model = os.getenv("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
+    key_ok = bool(os.getenv("OPENAI_API_KEY"))
     logger.info(
-        "HandAll AI backend: llm_provider=gemini model=%s GOOGLE_API_KEY_configured=%s",
+        "HandAll AI backend: llm_provider=openai model=%s OPENAI_API_KEY_configured=%s",
         active_model,
         key_ok,
     )
-    # TEMPORARY startup debug: exact model string bound on ChatGoogleGenerativeAI (remove when stable).
     if key_ok:
-        _llm = get_gemini_chat_model(temperature=0.2)
+        _llm = get_openai_chat_model(temperature=0.2)
         if _llm is not None:
-            bound = getattr(_llm, "model", None) or active_model
-            logger.info(
-                "HandAll AI backend [debug]: gemini_runtime_model=%s (from ChatGoogleGenerativeAI.model)",
-                bound,
+            bound = (
+                getattr(_llm, "model_name", None)
+                or getattr(_llm, "model", None)
+                or active_model
             )
+            logger.info("HandAll AI backend: openai_runtime_model=%s", bound)
     yield
 
 
@@ -438,26 +521,69 @@ def sync_profile(request: ProfileSyncRequest) -> Dict[str, Any]:
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest) -> Dict[str, Any]:
+def chat(
+    request: ChatRequest,
+    authorization: Optional[str] = Header(default=None, alias="Authorization"),
+) -> Dict[str, Any]:
     schedule_updated = False
     error_source: Optional[str] = None
     error_detail: Optional[str] = None
+
+    auth_user_id: Optional[str]
     try:
-        if not os.getenv("GOOGLE_API_KEY"):
+        auth_user_id = _resolve_chat_auth_user(authorization, request.auth_user_id)
+    except HTTPException:
+        raise
+
+    effective_profile_id = auth_user_id or request.user_id
+    logger.info(
+        "POST /chat: user_id_param=%s resolved_auth_user_id=%s effective_profile_id=%s",
+        request.user_id,
+        auth_user_id,
+        effective_profile_id,
+    )
+
+    if auth_user_id:
+        try:
+            from backend.agent import _fetch_user_assignment_tasks, _resolve_local_user
+
+            lu = _resolve_local_user(auth_user_id, None)
+            if lu:
+                acount = len(_fetch_user_assignment_tasks(int(lu["id"])))
+                logger.info(
+                    "POST /chat: local_user_id=%s assignment_tasks_in_db=%s",
+                    lu["id"],
+                    acount,
+                )
+            else:
+                logger.info(
+                    "POST /chat: no SQLite users row for auth_user_id=%s (first visit)",
+                    auth_user_id,
+                )
+        except Exception as exc:
+            logger.warning("POST /chat: assignment count log failed: %s", exc)
+
+    try:
+        if not os.getenv("OPENAI_API_KEY"):
+            logger.warning(
+                "OPENAI NOT CALLED — using fallback site=%s reason=%s",
+                "POST /chat",
+                "no OPENAI_API_KEY",
+            )
             result = {
                 "response": (
-                    "The AI backend is connected, but `GOOGLE_API_KEY` is not configured yet. "
-                    "Add it to the root `.env` file to enable Gemini (and optionally `GOOGLE_MODEL`)."
+                    "The AI backend is connected, but `OPENAI_API_KEY` is not configured yet. "
+                    "Add it to the root `.env` file (and optionally `OPENAI_MODEL`, default gpt-4o-mini)."
                 )
             }
         else:
             from backend.agent import run_agent
 
             result = run_agent(
-                user_id=request.user_id,
+                user_id=effective_profile_id,
                 thread_id=request.thread_id,
                 message=request.message,
-                auth_user_id=request.auth_user_id,
+                auth_user_id=auth_user_id,
                 motivation=request.motivation,
             )
             schedule_updated = bool(result.get("schedule_updated"))
@@ -472,7 +598,7 @@ def chat(request: ChatRequest) -> Dict[str, Any]:
         schedule_updated = False
     return {
         "response": result["response"],
-        "user_id": request.user_id,
+        "user_id": effective_profile_id,
         "thread_id": request.thread_id,
         "schedule_updated": schedule_updated,
         "error_source": error_source,
@@ -503,9 +629,10 @@ def plan_week(request: WeeklyPlanRequest) -> Dict[str, Any]:
         )
         return {"success": True, **result}
     except Exception as exc:
+        logger.exception("POST /plan-week failed")
         return {
             "success": False,
-            "error": str(exc),
+            "error": user_safe_error_message(exc),
             "assignments": [],
             "suggested_tasks": [],
             "meta": {},
@@ -525,7 +652,8 @@ def ai_assignment_subtasks(request: AssignmentSubtasksRequest) -> Dict[str, Any]
         )
         return {"success": True, "subtasks": subtasks}
     except Exception as exc:
-        return {"success": False, "error": str(exc), "subtasks": []}
+        logger.exception("POST /ai/assignment-subtasks failed")
+        return {"success": False, "error": user_safe_error_message(exc), "subtasks": []}
 
 
 @app.post("/ai/classify-events")
@@ -538,7 +666,8 @@ def ai_classify_events(request: ClassifyEventsRequest) -> Dict[str, Any]:
         results = classify_calendar_events_batch(evs)
         return {"success": True, "results": results}
     except Exception as exc:
-        return {"success": False, "error": str(exc), "results": []}
+        logger.exception("POST /ai/classify-events failed")
+        return {"success": False, "error": user_safe_error_message(exc), "results": []}
 
 
 @app.post("/ai/assignment-subtasks-batch")
@@ -555,7 +684,8 @@ def ai_assignment_subtasks_batch(request: AssignmentSubtasksBatchRequest) -> Dic
         results = [{"assignment_key": k, "subtasks": v} for k, v in batch.items()]
         return {"success": True, "results": results}
     except Exception as exc:
-        return {"success": False, "error": str(exc), "results": []}
+        logger.exception("POST /ai/assignment-subtasks-batch failed")
+        return {"success": False, "error": user_safe_error_message(exc), "results": []}
 
 
 @app.post("/ai/goal-tasks")
@@ -566,4 +696,5 @@ def ai_goal_tasks(request: GoalTasksRequest) -> Dict[str, Any]:
         tasks = generate_goal_tasks(request.side_goals, request.motivation)
         return {"success": True, "tasks": tasks}
     except Exception as exc:
-        return {"success": False, "error": str(exc), "tasks": []}
+        logger.exception("POST /ai/goal-tasks failed")
+        return {"success": False, "error": user_safe_error_message(exc), "tasks": []}

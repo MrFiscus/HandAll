@@ -1,27 +1,7 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import { format, isAfter } from "date-fns";
+import { useNavigate } from "react-router";
+import { format, startOfWeek, addDays, isSameDay } from "date-fns";
 import { ScrollArea } from "./ui/scroll-area";
-import { useAppStore } from "../store/useAppStore";
-import { Card, CardHeader, CardTitle, CardContent } from "./ui/card";
-import { Button } from "./ui/button";
-import { 
-  Plus, 
-  MessageSquare, 
-  Send, 
-  Zap,
-  Sparkles
-} from "lucide-react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
-import { Input } from "./ui/input";
-import { Label } from "./ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
-import { Slider } from "./ui/slider";
-import { cn } from "./ui/utils";
-import { toast } from "sonner";
-import WelcomeGuide from "./WelcomeGuide";
-import WeeklyCalendar from "./WeeklyCalendar";
-import { supabase } from "../lib/supabase";
-import { normalizeChatResponseContent } from "../utils/chatResponse";
 
 const AGENT_API_BASE_URL =
   import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "/agent-api";
@@ -33,25 +13,36 @@ interface ChatMessage {
   content: string;
   timestamp: Date;
 }
+import { useAppStore } from "../store/useAppStore";
+import { supabase } from "../lib/supabase";
+import { getAuthHeaders } from "../utils/api";
+import { Card, CardHeader, CardTitle, CardContent } from "./ui/card";
+import { Button } from "./ui/button";
+import { Plus, CheckCircle2, Calendar as CalendarIcon, MessageSquare, Send } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
+import { Input } from "./ui/input";
+import { Label } from "./ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
+import { cn } from "./ui/utils";
+import { toast } from "sonner";
+import WelcomeGuide from "./WelcomeGuide";
+import WeeklyCalendar from "./WeeklyCalendar";
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   const {
     events,
     userProfile,
+    planningItems,
     addEvent,
+    updateEvent,
     loadAppData,
     apiLoaded,
     lastMotivation,
-    setMotivation,
-    pendingSuggestions,
-    runWeeklySync,
-    setPendingSuggestions,
   } = useAppStore();
-
-  const [viewMode, setViewMode] = useState<"day" | "week">("day");
+  const [selectedDate, setSelectedDate] = useState(new Date());
   const [showAddEvent, setShowAddEvent] = useState(false);
   const [showWelcome, setShowWelcome] = useState(false);
-  const [showChat, setShowChat] = useState(false);
   const [newEvent, setNewEvent] = useState({
     title: "",
     date: format(new Date(), "yyyy-MM-dd"),
@@ -64,13 +55,13 @@ export default function Dashboard() {
     {
       id: "1",
       role: "assistant",
-      content: "Hi! I'm here to help you manage your tasks. Ask me to add tasks, check your schedule, or adjust your calendar.",
+      content:
+        "Hi! I'm here to help you manage your tasks. Ask me to add tasks, check your schedule, or adjust your calendar.",
       timestamp: new Date(),
     },
   ]);
   const [inputMessage, setInputMessage] = useState("");
   const [isSending, setIsSending] = useState(false);
-  const [isSyncing, setIsSyncing] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const threadIdRef = useRef<string>(crypto.randomUUID());
   const chatSendGenRef = useRef(0);
@@ -83,12 +74,8 @@ export default function Dashboard() {
   }, [apiLoaded, loadAppData]);
 
   useEffect(() => {
-    if (showChat) {
-      setTimeout(() => {
-        chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-      }, 100);
-    }
-  }, [chatMessages, showChat]);
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages]);
 
   // Welcome guide logic
   useEffect(() => {
@@ -99,52 +86,11 @@ export default function Dashboard() {
     }
   }, []);
 
-  // Auto-trigger weekly sync if no suggestions but assignments exist
-  useEffect(() => {
-    const triggerAutoSync = async () => {
-      const activeAssignments = events.filter(e => e.type === "assignment" && !e.completed && isAfter(new Date(e.start), new Date()));
-      if (apiLoaded && activeAssignments.length > 0 && pendingSuggestions.length === 0 && !isSyncing) {
-        setIsSyncing(true);
-        try {
-          const authId = (await supabase?.auth.getSession())?.data?.session?.user?.id;
-          const userId = authId ?? localStorage.getItem(AGENT_USER_ID_KEY) ?? crypto.randomUUID();
-          
-          const result = await runWeeklySync({
-            userId,
-            name: userProfile.name || "Student",
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-            wakeTime: userProfile.wakeTime,
-            sleepTime: userProfile.sleepTime,
-            sideGoals: userProfile.sideGoals,
-            motivation: lastMotivation,
-            events,
-            assignments: activeAssignments.map(e => ({
-              id: e.id,
-              title: e.title,
-              description: e.description || "",
-              dueDate: new Date(e.start),
-              estimatedHours: 0,
-            })),
-          });
-
-          setPendingSuggestions(
-            result.suggested_tasks.map((task) => ({
-              ...task,
-              start: new Date(task.start),
-              end: new Date(task.end),
-              status: "pending",
-            }))
-          );
-        } catch (e) {
-          console.error("Auto-sync failed", e);
-        } finally {
-          setIsSyncing(false);
-        }
-      }
-    };
-
-    triggerAutoSync();
-  }, [apiLoaded, events, pendingSuggestions.length, runWeeklySync, userProfile, lastMotivation]);
+  const planningSummary = useMemo(() => {
+    const subs = planningItems.filter((p) => p.item_type === "assignment_subtask").length;
+    const goals = planningItems.filter((p) => p.item_type === "goal_task").length;
+    return { subs, goals };
+  }, [planningItems]);
 
   const handleAddEvent = async () => {
     if (!newEvent.title.trim()) {
@@ -166,7 +112,12 @@ export default function Dashboard() {
         start,
         end,
         type: newEvent.type,
-        xpValue: newEvent.type === "working" ? 50 : newEvent.type === "goal" ? 30 : 10,
+        xpValue:
+          newEvent.type === "working"
+            ? 50
+            : newEvent.type === "goal"
+              ? 30
+              : 10,
       });
 
       toast.success("Event added to calendar!");
@@ -179,7 +130,17 @@ export default function Dashboard() {
         type: "assignment",
       });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not save event.");
+      const message =
+        err instanceof Error ? err.message : "Could not save this event.";
+      toast.error(message);
+    }
+  };
+
+  const handleCompleteTask = async (eventId: string) => {
+    const event = events.find(e => e.id === eventId);
+    if (event && !event.completed) {
+      await updateEvent(eventId, { completed: true });
+      toast.success(`XP earned! 🎉`);
     }
   };
 
@@ -200,31 +161,34 @@ export default function Dashboard() {
     setIsSending(true);
 
     try {
-      const authId = (await supabase?.auth.getSession())?.data?.session?.user?.id ?? null;
+      const session = supabase
+        ? (await supabase.auth.getSession()).data.session
+        : null;
+      const authId = session?.user?.id;
       const userId = authId ?? localStorage.getItem(AGENT_USER_ID_KEY) ?? crypto.randomUUID();
-      if (authId) {
-        localStorage.setItem(AGENT_USER_ID_KEY, authId);
-      } else if (!localStorage.getItem(AGENT_USER_ID_KEY)) {
-        localStorage.setItem(AGENT_USER_ID_KEY, userId);
-      }
+      if (authId) localStorage.setItem(AGENT_USER_ID_KEY, authId);
+
+      const headers = await getAuthHeaders();
       const response = await fetch(`${AGENT_API_BASE_URL}/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           user_id: userId,
-          auth_user_id: authId,
+          auth_user_id: authId ?? null,
           thread_id: threadIdRef.current,
           message: trimmedMessage,
-          motivation: lastMotivation ?? null,
+          motivation: lastMotivation ?? 50,
         }),
       });
 
-      if (!response.ok) throw new Error(`Backend returned ${response.status}`);
+      if (!response.ok) {
+        throw new Error(`Backend returned ${response.status}`);
+      }
 
       const data = await response.json();
       if (sendGen !== chatSendGenRef.current) return;
 
-      const display = normalizeChatResponseContent(data.response);
+      const display = typeof data.response === "string" ? data.response : JSON.stringify(data.response);
 
       setChatMessages((prev) => [
         ...prev,
@@ -236,20 +200,37 @@ export default function Dashboard() {
         },
       ]);
 
-      if (data.schedule_updated) await loadAppData();
+      if (data.schedule_updated) {
+        await loadAppData();
+      }
     } catch (error) {
       if (sendGen !== chatSendGenRef.current) return;
+
+      const message = error instanceof Error ? error.message : "Unable to reach the AI backend right now.";
       setChatMessages((prev) => [
         ...prev,
         {
           id: (Date.now() + 1).toString(),
           role: "assistant",
-          content: "I couldn't reach the AI backend just now. Make sure the app is running.",
+          content: `I couldn't reach the AI backend just now (${message}). Make sure the app is running and try again.`,
           timestamp: new Date(),
         },
       ]);
     } finally {
-      if (sendGen === chatSendGenRef.current) setIsSending(false);
+      if (sendGen === chatSendGenRef.current) {
+        setIsSending(false);
+      }
+    }
+  };
+
+  const getEventColor = (type: string) => {
+    switch (type) {
+      case "class": return "bg-blue-500";
+      case "assignment": return "bg-red-500";
+      case "working": return "bg-orange-500";
+      case "goal": return "bg-green-500";
+      case "freetime": return "bg-purple-500";
+      default: return "bg-gray-500";
     }
   };
 
@@ -262,42 +243,75 @@ export default function Dashboard() {
         <div>
           <h1 className="text-3xl font-bold">Dashboard</h1>
           <p className="text-muted-foreground">
-            Welcome back, {userProfile.name}!
+            Welcome back! Here's your weekly overview.
           </p>
+          {(planningSummary.subs > 0 || planningSummary.goals > 0) && (
+            <p className="mt-1 text-sm text-muted-foreground">
+              AI planning queue:{" "}
+              <span className="font-medium text-foreground">{planningSummary.subs}</span> assignment
+              subtasks,{" "}
+              <span className="font-medium text-foreground">{planningSummary.goals}</span> personal-goal
+              tasks (used when you rebalance or run Weekly Sync).
+            </p>
+          )}
         </div>
         <div className="flex gap-2">
            <Dialog open={showAddEvent} onOpenChange={setShowAddEvent}>
             <DialogTrigger asChild>
-              <Button type="button" variant="outline" className="font-bold">
+              <Button type="button">
                 <Plus className="mr-2 h-4 w-4" />
                 Add Event
               </Button>
             </DialogTrigger>
             <DialogContent>
-              <DialogHeader><DialogTitle>Add New Event</DialogTitle></DialogHeader>
+              <DialogHeader>
+                <DialogTitle>Add New Event</DialogTitle>
+              </DialogHeader>
               <div className="space-y-4 py-4">
                 <div className="space-y-2">
                   <Label htmlFor="title">Title</Label>
-                  <Input id="title" value={newEvent.title} onChange={(e) => setNewEvent({ ...newEvent, title: e.target.value })} placeholder="Math assignment" />
+                  <Input
+                    id="title"
+                    value={newEvent.title}
+                    onChange={(e) => setNewEvent({ ...newEvent, title: e.target.value })}
+                    placeholder="Math assignment"
+                  />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="date">Date</Label>
-                  <Input id="date" type="date" value={newEvent.date} onChange={(e) => setNewEvent({ ...newEvent, date: e.target.value })} />
+                  <Input
+                    id="date"
+                    type="date"
+                    value={newEvent.date}
+                    onChange={(e) => setNewEvent({ ...newEvent, date: e.target.value })}
+                  />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="startTime">Start Time</Label>
-                    <Input id="startTime" type="time" value={newEvent.startTime} onChange={(e) => setNewEvent({ ...newEvent, startTime: e.target.value })} />
+                    <Input
+                      id="startTime"
+                      type="time"
+                      value={newEvent.startTime}
+                      onChange={(e) => setNewEvent({ ...newEvent, startTime: e.target.value })}
+                    />
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="endTime">End Time</Label>
-                    <Input id="endTime" type="time" value={newEvent.endTime} onChange={(e) => setNewEvent({ ...newEvent, endTime: e.target.value })} />
+                    <Input
+                      id="endTime"
+                      type="time"
+                      value={newEvent.endTime}
+                      onChange={(e) => setNewEvent({ ...newEvent, endTime: e.target.value })}
+                    />
                   </div>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="type">Type</Label>
                   <Select value={newEvent.type} onValueChange={(value: any) => setNewEvent({ ...newEvent, type: value })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="class">Class</SelectItem>
                       <SelectItem value="assignment">Assignment</SelectItem>
@@ -307,107 +321,89 @@ export default function Dashboard() {
                     </SelectContent>
                   </Select>
                 </div>
-                <Button type="button" onClick={handleAddEvent} className="w-full font-bold">Add Event</Button>
+                <Button type="button" onClick={handleAddEvent} className="w-full">
+                  Add Event
+                </Button>
               </div>
             </DialogContent>
           </Dialog>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 min-h-[800px]">
-        {/* Calendar Column */}
-        <div className="lg:col-span-4 space-y-4">
-          <WeeklyCalendar viewMode={viewMode} setViewMode={setViewMode} />
+      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 h-[800px]">
+        {/* Weekly Calendar - Major component */}
+        <div className="lg:col-span-3 h-full">
+          <WeeklyCalendar />
         </div>
 
-        {/* Right Sidebar */}
-        <div className="space-y-6 flex flex-col">
-          {/* Today's Vibe Section */}
-          <Card className="border-2 shadow-sm">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-lg flex items-center gap-2 font-bold">
-                <Zap className="h-5 w-5 text-yellow-500 fill-yellow-500" />
-                Today's Vibe
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-3">
-                <div className="flex justify-between text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-                  <span>Downtime</span>
-                  <span>Productive</span>
-                </div>
-                <Slider 
-                  value={[lastMotivation]} 
-                  onValueChange={(val) => setMotivation(val[0])} 
-                  max={100} 
-                  step={5}
-                />
-                <p className="text-xs text-center text-muted-foreground font-bold">
-                  Motivation: <span className="text-foreground text-sm">{lastMotivation}%</span>
-                </p>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* AI Chat Trigger Button */}
-          <Dialog open={showChat} onOpenChange={setShowChat}>
-            <DialogTrigger asChild>
-              <Button className="w-full h-16 rounded-xl border-2 shadow-md flex items-center justify-between px-6 group transition-all hover:scale-[1.02] active:scale-[0.98]">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-primary-foreground/20 rounded-lg group-hover:rotate-12 transition-transform">
-                    <Sparkles className="h-6 w-6 text-white" />
-                  </div>
-                  <div className="text-left">
-                    <p className="font-black uppercase tracking-widest text-[10px] opacity-70">HandAll AI</p>
-                    <p className="font-bold text-sm">Chat Assistant</p>
-                  </div>
-                </div>
-                <MessageSquare className="h-5 w-5 opacity-50" />
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="sm:max-w-[450px] h-[600px] flex flex-col p-0 overflow-hidden border-2 shadow-2xl">
-              <DialogHeader className="p-4 border-b bg-muted/30">
-                <DialogTitle className="flex items-center gap-2 font-bold">
-                  <Sparkles className="h-5 w-5 text-primary" />
-                  AI Planning Assistant
-                </DialogTitle>
-              </DialogHeader>
-              <div className="flex-1 flex flex-col overflow-hidden">
-                <ScrollArea className="flex-1">
-                  <div className="p-4 space-y-4">
-                    {chatMessages.map((message) => (
-                      <div key={message.id} className={cn("flex", message.role === "user" ? "justify-end" : "justify-start")}>
-                        <div className={cn(
-                          "max-w-[85%] p-3 rounded-2xl text-sm leading-relaxed shadow-sm",
-                          message.role === "user" ? "bg-primary text-primary-foreground rounded-tr-none" : "bg-muted text-muted-foreground rounded-tl-none"
-                        )}>
-                          {message.content}
+        {/* Sidebar: AI Chat */}
+        <div className="space-y-4 overflow-y-auto pr-2 relative">
+          <div className="absolute bottom-4 right-4 w-full max-w-[360px]">
+            <Card className="h-[60vh] overflow-hidden flex flex-col">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <MessageSquare className="h-4 w-4" />
+                  AI Assistant
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="flex-1 flex flex-col p-0">
+                <div className="flex-1 min-h-0">
+                  <ScrollArea className="h-full">
+                    <div className="p-4 space-y-4">
+                      {chatMessages.map((message) => (
+                        <div
+                          key={message.id}
+                          className={`flex ${
+                            message.role === "user" ? "justify-end" : "justify-start"
+                          }`}
+                        >
+                          <div
+                            className={`max-w-[85%] p-3 rounded-2xl shadow-sm ${
+                              message.role === "user"
+                                ? "bg-primary text-primary-foreground rounded-tr-none"
+                                : "bg-muted text-muted-foreground rounded-tl-none"
+                            }`}
+                          >
+                            <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
+                            <p
+                              className={`text-[9px] mt-1.5 font-bold uppercase tracking-widest ${
+                                message.role === "user"
+                                  ? "opacity-60"
+                                  : "text-muted-foreground/50"
+                              }`}
+                            >
+                              {format(message.timestamp, "h:mm a")}
+                            </p>
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                    <div ref={chatEndRef} />
-                  </div>
-                </ScrollArea>
-                <div className="p-4 border-t bg-background">
+                      ))}
+                      <div ref={chatEndRef} />
+                    </div>
+                  </ScrollArea>
+                </div>
+                <div className="p-4 border-t">
                   <div className="flex gap-2">
                     <Input
-                      placeholder="Ask me to adjust your schedule..."
+                      type="text"
+                      placeholder="Type a message..."
                       value={inputMessage}
                       onChange={(e) => setInputMessage(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-                      className="flex-1 h-12 text-sm border-2 rounded-xl focus:ring-primary"
+                      className="flex-1"
                       disabled={isSending}
                     />
-                    <Button onClick={handleSendMessage} size="icon" className="h-12 w-12 shrink-0 rounded-xl shadow-lg" disabled={isSending}>
-                      <Send className="h-5 w-5" />
+                    <Button onClick={handleSendMessage} size="icon" disabled={isSending}>
+                      <Send className="h-4 w-4" />
                     </Button>
                   </div>
+                  <p className="mt-2 text-xs text-muted-foreground">Connected to {AGENT_API_BASE_URL}</p>
                 </div>
-              </div>
-            </DialogContent>
-          </Dialog>
+              </CardContent>
+            </Card>
+          </div>
         </div>
       </div>
     </div>
   );
 }
+

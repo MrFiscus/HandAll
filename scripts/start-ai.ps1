@@ -58,8 +58,9 @@ if (-not (Test-Path $uvicornExe)) {
   & $pythonExe -m pip install -r "backend/requirements.txt"
 }
 else {
-  $pyProbe = 'import importlib; [importlib.import_module(m) for m in ("uvicorn","fastapi","google.oauth2","googleapiclient.discovery","langchain_google_genai","tzdata")]'
-  & $pythonExe -c $pyProbe
+  # Avoid PowerShell mangling python -c strings (stripped quotes → NameError: uvicorn).
+  $probeScript = Join-Path $repoRoot "scripts\ai_import_probe.py"
+  & $pythonExe $probeScript
   if ($LASTEXITCODE -ne 0) {
     Write-Host "Refreshing AI Python dependencies..." -ForegroundColor Yellow
     & $pythonExe -m pip install -r "backend/requirements.txt"

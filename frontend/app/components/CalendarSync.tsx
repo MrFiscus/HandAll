@@ -43,8 +43,10 @@ export default function CalendarSync({
   const {
     userProfile,
     setUserProfile,
+    syncCalendarEvents,
     removeExternalEvents,
     lastCalendarSync,
+    loadAppData,
   } = useAppStore();
   const [calendarUrl, setCalendarUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -156,7 +158,15 @@ export default function CalendarSync({
     setIsLoading(true);
     try {
       const events = await fetchCalendarEvents(url);
+      if (!url.startsWith("file://")) {
+        try {
+          await api.patchActiveCalendarSource(url);
+        } catch (e) {
+          console.warn("[CalendarSync] patchActiveCalendarSource:", e);
+        }
+      }
       await syncCalendarEvents(events, url);
+      await loadAppData();
       toast.success(`Resynced ${events.length} events!`);
     } catch (error) {
       console.error("Calendar resync error:", error);

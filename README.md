@@ -14,7 +14,7 @@ HandAll is a sophisticated time management application specifically designed for
 ### 🤖 AI-Powered Scheduling
 - **Task Decomposition:** Large projects and assignments are automatically broken down into smaller, actionable "Working Blocks" by the AI planner.
 - **The Motivation Engine:** Schedules are rebalanced using a "50% rule" logic—the app adjusts task density based on your current motivation level (0-100).
-- **AI Chat Assistant:** A built-in assistant powered by **LangGraph** and **Gemini** helps you manage tasks and check your schedule through natural conversation.
+- **AI Chat Assistant:** A built-in assistant powered by **LangGraph** and **OpenAI** helps you manage tasks and check your schedule through natural conversation.
 
 ### 🔄 Seamless Synchronization
 - **Google Calendar Integration:** Direct sync with your Google account.
@@ -45,7 +45,7 @@ HandAll is a sophisticated time management application specifically designed for
 ### AI Backend (Planner & Agent)
 - **Framework:** Python (FastAPI)
 - **AI Orchestration:** LangGraph
-- **LLM:** Google Gemini (via `langchain-google-genai`)
+- **LLM:** OpenAI (via `langchain-openai`; Google APIs used only for Calendar OAuth, not chat)
 - **Environment:** Uvicorn
 
 ---
@@ -56,7 +56,7 @@ HandAll is a sophisticated time management application specifically designed for
 - Node.js (v18 or higher recommended)
 - Python 3.9+
 - A Google Cloud Project (for Calendar API)
-- A Gemini API Key
+- An OpenAI API key (`OPENAI_API_KEY` in root `.env`)
 - A Supabase Project (for Auth)
 
 ### 1. Repository Setup
@@ -98,7 +98,8 @@ npm install
    ```
 2. Create a `.env` file in the root or `backend/` directory:
    ```env
-   GOOGLE_API_KEY=your_gemini_api_key
+   OPENAI_API_KEY=your_openai_api_key
+   OPENAI_MODEL=gpt-4o-mini
    ```
 3. Start the FastAPI server:
    ```bash

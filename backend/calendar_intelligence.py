@@ -11,8 +11,8 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage
 
-from backend.llm_client import get_gemini_chat_model
-from backend.llm_usage import log_llm_chat_completion, log_llm_fallback
+from backend.llm_client import get_openai_chat_model
+from backend.llm_usage import invoke_openai_chat, log_llm_fallback
 
 
 VALID_CLASSES = (
@@ -61,11 +61,11 @@ def classify_calendar_events_batch(
     if not events:
         return []
 
-    model = get_gemini_chat_model(temperature=0.12)
+    model = get_openai_chat_model(temperature=0.12)
     if not model:
         log_llm_fallback(
             "calendar_intelligence.classify_calendar_events_batch",
-            "GOOGLE_API_KEY missing",
+            "OPENAI_API_KEY missing",
         )
         return _heuristic_classify(events)
 
@@ -99,8 +99,7 @@ def classify_calendar_events_batch(
     )
 
     try:
-        response = model.invoke([HumanMessage(content=prompt)])
-        log_llm_chat_completion(response, "calendar_intelligence.classify_calendar_events_batch")
+        response = invoke_openai_chat(model, [HumanMessage(content=prompt)], "calendar_intelligence.classify_calendar_events_batch")
         parsed = _extract_json_object(str(response.content))
         if not isinstance(parsed, dict):
             log_llm_fallback(

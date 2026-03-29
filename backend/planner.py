@@ -8,10 +8,10 @@ from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from langchain_core.messages import HumanMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 
-from backend.llm_client import get_gemini_chat_model
-from backend.llm_usage import log_llm_chat_completion, log_llm_fallback
+from backend.llm_client import get_openai_chat_model
+from backend.llm_usage import invoke_openai_chat, log_llm_fallback
 
 
 def _get_timezone(timezone_name: str):
@@ -60,8 +60,8 @@ def _extract_json_object(text: str) -> Optional[Any]:
         return None
 
 
-def _get_planner_model() -> Optional[ChatGoogleGenerativeAI]:
-    return get_gemini_chat_model(temperature=0.28)
+def _get_planner_model() -> Optional[ChatOpenAI]:
+    return get_openai_chat_model(temperature=0.28)
 
 
 def _heuristic_assignment_hours(title: str, description: str) -> int:
@@ -99,7 +99,7 @@ def _estimate_assignment_hours(assignments: List[Dict[str, Any]]) -> Dict[str, D
     if not model:
         log_llm_fallback(
             "planner._estimate_assignment_hours",
-            "GOOGLE_API_KEY missing or Gemini chat model unavailable",
+            "OPENAI_API_KEY missing or OpenAI chat model unavailable",
         )
         return fallback
 
@@ -124,8 +124,7 @@ def _estimate_assignment_hours(assignments: List[Dict[str, Any]]) -> Dict[str, D
     )
 
     try:
-        response = model.invoke([HumanMessage(content=prompt)])
-        log_llm_chat_completion(response, "planner._estimate_assignment_hours")
+        response = invoke_openai_chat(model, [HumanMessage(content=prompt)], "planner._estimate_assignment_hours")
         parsed = _extract_json_object(str(response.content))
         if not isinstance(parsed, list):
             log_llm_fallback(
@@ -185,7 +184,7 @@ def _generate_ai_suggestions(side_goals: List[str], motivation: int) -> Dict[str
     if not model:
         log_llm_fallback(
             "planner._generate_ai_suggestions",
-            "GOOGLE_API_KEY missing or Gemini chat model unavailable",
+            "OPENAI_API_KEY missing or OpenAI chat model unavailable",
         )
         return {"goal": fallback_goal, "free_time": fallback_free}
 
@@ -201,8 +200,7 @@ def _generate_ai_suggestions(side_goals: List[str], motivation: int) -> Dict[str
     )
 
     try:
-        response = model.invoke([HumanMessage(content=prompt)])
-        log_llm_chat_completion(response, "planner._generate_ai_suggestions")
+        response = invoke_openai_chat(model, [HumanMessage(content=prompt)], "planner._generate_ai_suggestions")
         parsed = _extract_json_object(str(response.content))
         if not isinstance(parsed, dict):
             log_llm_fallback(
@@ -492,6 +490,21 @@ def _usable_gap_fraction(motivation: int) -> float:
     return 0.64
 
 
+def _normalize_scheduling_prefs(raw: Any) -> Dict[str, str]:
+    """Subset of keys: earliest_work_time, latest_work_time, sunday_earliest_work_time (HH:MM)."""
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, str] = {}
+    for k in ("earliest_work_time", "latest_work_time", "sunday_earliest_work_time"):
+        v = raw.get(k)
+        if isinstance(v, str) and re.match(r"^\d{1,2}:\d{2}$", v.strip()):
+            parts = v.strip().split(":")
+            h, m = int(parts[0]), int(parts[1])
+            if 0 <= h <= 23 and 0 <= m <= 59:
+                out[k] = f"{h:02d}:{m:02d}"
+    return out
+
+
 def _calculate_usable_slots(
     busy_intervals: List[Dict[str, datetime]],
     tz: ZoneInfo,
@@ -500,9 +513,11 @@ def _calculate_usable_slots(
     plan_start: datetime,
     horizon_days: int,
     motivation: int = 50,
+    scheduling_prefs: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     wake = _parse_time(wake_time, "07:00")
     sleep = _parse_time(sleep_time, "23:00")
+    sp = _normalize_scheduling_prefs(scheduling_prefs)
     slots: List[Dict[str, Any]] = []
     frac = _usable_gap_fraction(motivation)
 
@@ -512,8 +527,19 @@ def _calculate_usable_slots(
 
     for day_offset in range(horizon_days):
         day = (plan_start + timedelta(days=day_offset)).date()
-        day_start = datetime.combine(day, wake, tzinfo=tz)
+        day_weekday = day.weekday()  # Mon=0 .. Sun=6
+        effective_wake = wake
+        if sp.get("earliest_work_time"):
+            effective_wake = max(effective_wake, _parse_time(sp["earliest_work_time"], "07:00"))
+        if day_weekday == 6 and sp.get("sunday_earliest_work_time"):
+            effective_wake = max(effective_wake, _parse_time(sp["sunday_earliest_work_time"], "07:00"))
+
+        day_start = datetime.combine(day, effective_wake, tzinfo=tz)
         day_end = datetime.combine(day, sleep, tzinfo=tz)
+        if sp.get("latest_work_time"):
+            latest_t = _parse_time(sp["latest_work_time"], "23:00")
+            latest_dt = datetime.combine(day, latest_t, tzinfo=tz)
+            day_end = min(day_end, latest_dt)
 
         if day_offset == 0 and plan_start > day_start:
             day_start = plan_start
@@ -833,6 +859,7 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     busy_intervals = _build_busy_intervals(events, tz, plan_start, plan_end)
+    scheduling_prefs = _normalize_scheduling_prefs(payload.get("scheduling_prefs"))
     usable_slots = _calculate_usable_slots(
         busy_intervals,
         tz,
@@ -841,6 +868,7 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
         plan_start,
         horizon_days,
         motivation,
+        scheduling_prefs if scheduling_prefs else None,
     )
 
     suggestions: List[Dict[str, Any]] = []
@@ -1164,5 +1192,6 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
             "planner_recovery_gaps_skipped_no_slot": int(pacing_state.get("recovery_gaps_skipped_no_slot", 0)),
             "planner_recovery_gap_minutes_total": int(pacing_state.get("recovery_gap_minutes_total", 0)),
             "heavy_minutes_before_recovery_gap_rule": _heavy_work_minutes_before_recovery_gap(motivation),
+            "scheduling_prefs": scheduling_prefs,
         },
     }

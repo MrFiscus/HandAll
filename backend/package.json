@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
+    "cleanup-import-by-source": "node scripts/cleanup-import-by-source.mjs",
     "init-db": "node src/db.js",
     "reset-db": "node -e \"import fs from 'fs'; import { fileURLToPath } from 'url'; import { dirname, join } from 'path'; const __dirname = dirname(fileURLToPath(import.meta.url)); const db = join(__dirname, 'handall.db'); if (fs.existsSync(db)) { fs.unlinkSync(db); console.log('Database deleted.'); } else { console.log('Database not found.'); }\""
   },

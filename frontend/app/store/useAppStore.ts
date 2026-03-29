@@ -83,6 +83,9 @@ export interface UserProfile {
   calendarUrls: string[];
   motivation?: number;
   googleCalendarConnected: boolean;
+  /** Canonical URL: `file://...ics` or `google-oauth:primary` — single active feed for planning/AI */
+  activeCalendarSourceUrl?: string;
+  activeCalendarResolution?: string;
   setupComplete?: boolean;
   id?: string;
 }

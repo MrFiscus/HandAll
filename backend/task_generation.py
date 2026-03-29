@@ -11,10 +11,10 @@ import re
 from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 
-from backend.llm_client import get_gemini_chat_model
-from backend.llm_usage import log_llm_chat_completion, log_llm_fallback
+from backend.llm_client import get_openai_chat_model
+from backend.llm_usage import invoke_openai_chat, log_llm_fallback
 
 
 def _extract_json_object(text: str) -> Optional[Any]:
@@ -29,9 +29,9 @@ def _extract_json_object(text: str) -> Optional[Any]:
         return None
 
 
-def _get_planner_model() -> Optional[ChatGoogleGenerativeAI]:
+def _get_planner_model() -> Optional[ChatOpenAI]:
     # Slightly higher temperature for richer decomposition while keeping JSON parseable.
-    return get_gemini_chat_model(temperature=0.32)
+    return get_openai_chat_model(temperature=0.32)
 
 
 def _fallback_assignment_subtasks(parent_title: str, motivation: int) -> List[Dict[str, Any]]:
@@ -191,7 +191,7 @@ def generate_assignment_subtasks(
     if not model:
         log_llm_fallback(
             "task_generation.generate_assignment_subtasks",
-            "GOOGLE_API_KEY missing or Gemini chat model unavailable",
+            "OPENAI_API_KEY missing or OpenAI chat model unavailable",
         )
         return base
 
@@ -208,8 +208,7 @@ def generate_assignment_subtasks(
     )
 
     try:
-        response = model.invoke([HumanMessage(content=prompt)])
-        log_llm_chat_completion(response, "task_generation.generate_assignment_subtasks")
+        response = invoke_openai_chat(model, [HumanMessage(content=prompt)], "task_generation.generate_assignment_subtasks")
         parsed = _extract_json_object(str(response.content))
         if not isinstance(parsed, list) or not parsed:
             log_llm_fallback(
@@ -287,7 +286,7 @@ def generate_assignments_subtasks_batch(
     if not model:
         log_llm_fallback(
             "task_generation.generate_assignments_subtasks_batch",
-            "GOOGLE_API_KEY missing or Gemini chat model unavailable",
+            "OPENAI_API_KEY missing or OpenAI chat model unavailable",
         )
         return fallback_map
 
@@ -350,8 +349,7 @@ def generate_assignments_subtasks_batch(
         return cleaned if cleaned else fallback
 
     try:
-        response = model.invoke([HumanMessage(content=prompt)])
-        log_llm_chat_completion(response, "task_generation.generate_assignments_subtasks_batch")
+        response = invoke_openai_chat(model, [HumanMessage(content=prompt)], "task_generation.generate_assignments_subtasks_batch")
         parsed = _extract_json_object(str(response.content))
         out: Dict[str, List[Dict[str, Any]]] = dict(fallback_map)
         if isinstance(parsed, dict):
@@ -388,7 +386,7 @@ def generate_goal_tasks(side_goals: List[str], motivation: int) -> List[Dict[str
     if not model:
         log_llm_fallback(
             "task_generation.generate_goal_tasks",
-            "GOOGLE_API_KEY missing or Gemini chat model unavailable",
+            "OPENAI_API_KEY missing or OpenAI chat model unavailable",
         )
         return base
 
@@ -407,8 +405,7 @@ def generate_goal_tasks(side_goals: List[str], motivation: int) -> List[Dict[str
     )
 
     try:
-        response = model.invoke([HumanMessage(content=prompt)])
-        log_llm_chat_completion(response, "task_generation.generate_goal_tasks")
+        response = invoke_openai_chat(model, [HumanMessage(content=prompt)], "task_generation.generate_goal_tasks")
         parsed = _extract_json_object(str(response.content))
         if not isinstance(parsed, list) or not parsed:
             log_llm_fallback(

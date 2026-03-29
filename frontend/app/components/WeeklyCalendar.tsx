@@ -181,6 +181,7 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
 
   const onEventClick = (e: React.MouseEvent, item: PositionedItem) => {
     e.stopPropagation();
+    if (item.completed) return;
     if (item.isSuggestion) {
       const sug = pendingSuggestions.find(s => s.id === item.id);
       if (sug) { setSelectedSuggestion(sug); setShowSuggestionDialog(true); }
@@ -416,6 +417,14 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
             </div>
             <div className="flex gap-3 pt-6 border-t border-white/5">
               {dialogMode === "edit" && <Button variant="ghost" className="h-11 rounded-md text-destructive hover:bg-destructive/10" onClick={() => { removeEvent(selectedEventId!); setShowDialog(false); }}>Delete</Button>}
+              {dialogMode === "edit" && form.type !== "class" && form.type !== "working" && (() => {
+                const ev = events.find(e => e.id === selectedEventId);
+                return (
+                  <Button variant="ghost" className={cn("h-11 rounded-md", ev?.completed ? "text-green-400 hover:bg-green-400/10" : "text-green-400 hover:bg-green-400/10")} onClick={() => { if (selectedEventId) { updateEvent(selectedEventId, { completed: !ev?.completed }); setShowDialog(false); } }}>
+                    {ev?.completed ? "Completed" : "Mark done"}
+                  </Button>
+                );
+              })()}
               <div className="flex-1" />
               <Button variant="ghost" className="h-11 rounded-md px-6 font-normal" onClick={() => setShowDialog(false)}>Cancel</Button>
               <Button onClick={saveEvent} className="h-11 rounded-md px-8 font-medium bg-primary text-primary-foreground">Save</Button>

@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { useAppStore } from "../store/useAppStore";
 import WelcomeGuide from "./WelcomeGuide";
+import BurnoutDialog from "./BurnoutDialog";
 import { supabase } from "../lib/supabase";
 import { cn } from "./ui/utils";
 import Auth from "./Auth";
@@ -123,6 +124,7 @@ export default function Root() {
       </main>
 
       {showHelp && <WelcomeGuide onClose={() => setShowHelp(false)} />}
+      <BurnoutDialog />
     </div>
   );
 }

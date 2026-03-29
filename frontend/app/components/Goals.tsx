@@ -234,44 +234,41 @@ export default function Goals() {
           </CardContent>
         </Card>
 
-        <div className="space-y-6">
-          <Card>
-            <CardHeader>
-              <div className="flex items-center gap-2">
-                <Target className="h-5 w-5 text-primary" />
-                <CardTitle>Goal-Supporting Events</CardTitle>
+        <Card className="h-fit">
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Target className="h-5 w-5 text-primary" />
+              <CardTitle>Goal-Supporting Events</CardTitle>
+            </div>
+            <CardDescription>
+              Events, meetups, classes, and communities related to the goals you entered during setup.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {goalGroups.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                Search a location to load nearby events that support your goals.
+              </p>
+            ) : (
+              <div className="space-y-6">
+                {goalGroups.map((group) => (
+                  <Card key={group.goal}>
+                    <CardHeader>
+                      <CardTitle className="text-lg">{group.goal}</CardTitle>
+                      <CardDescription>{group.query}</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <EventList
+                        items={group.results}
+                        emptyText={`No goal-focused events were found for "${group.goal}" in this search.`}
+                      />
+                    </CardContent>
+                  </Card>
+                ))}
               </div>
-              <CardDescription>
-                Events, meetups, classes, and communities related to the goals you entered during setup.
-              </CardDescription>
-            </CardHeader>
-          </Card>
-
-          {goalGroups.length === 0 ? (
-            <Card>
-              <CardContent className="pt-6">
-                <p className="text-sm text-muted-foreground">
-                  Search a location to load nearby events that support your goals.
-                </p>
-              </CardContent>
-            </Card>
-          ) : (
-            goalGroups.map((group) => (
-              <Card key={group.goal}>
-                <CardHeader>
-                  <CardTitle className="text-lg">{group.goal}</CardTitle>
-                  <CardDescription>{group.query}</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <EventList
-                    items={group.results}
-                    emptyText={`No goal-focused events were found for "${group.goal}" in this search.`}
-                  />
-                </CardContent>
-              </Card>
-            ))
-          )}
-        </div>
+            )}
+          </CardContent>
+        </Card>
       </div>
     </div>
   );

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { toast } from "sonner";
 import { api } from "../utils/api";
 
 export interface CalendarAiMeta {
@@ -94,6 +95,14 @@ export interface AppState {
   lastMotivation: number;
   lastCalendarSync: Date | null;
   apiLoaded: boolean;
+  /** XP earned today (resets at midnight) */
+  dailyXp: number;
+  /** ISO date string "YYYY-MM-DD" for the last day dailyXp was incremented */
+  dailyXpDate: string;
+  /** Whether the burnout rest prompt is currently waiting to be shown */
+  burnoutPromptPending: boolean;
+  /** Timestamp — do not re-prompt until after this time (0 = not snoozed) */
+  burnoutSnoozedUntil: number;
   resetAppState: () => void;
 
   loadAppData: () => Promise<void>;
@@ -113,6 +122,9 @@ export interface AppState {
   clearPendingSuggestions: () => void;
   confirmAllSuggestions: () => Promise<void>;
   refreshSuggestion: (id: string) => Promise<void>;
+  dismissBurnoutPrompt: () => void;
+  snoozeBurnoutPrompt: () => void;
+  rescheduleTodayTasks: (taskIds: string[]) => Promise<void>;
   runWeeklySync: (payload: {
     userId: string;
     name: string;
@@ -174,6 +186,10 @@ export const useAppStore = create<AppState>()(
       lastMotivation: 50,
       lastCalendarSync: null,
       apiLoaded: false,
+      dailyXp: 0,
+      dailyXpDate: "",
+      burnoutPromptPending: false,
+      burnoutSnoozedUntil: 0,
       resetAppState: () =>
         set({
           userProfile: {
@@ -193,6 +209,10 @@ export const useAppStore = create<AppState>()(
           lastMotivation: 50,
           lastCalendarSync: null,
           apiLoaded: false,
+          dailyXp: 0,
+          dailyXpDate: "",
+          burnoutPromptPending: false,
+          burnoutSnoozedUntil: 0,
         }),
 
       loadAppData: async () => {
@@ -334,7 +354,7 @@ export const useAppStore = create<AppState>()(
       updateEvent: async (id, updates) => {
         const { events, userProfile, setUserProfile } = get();
         const event = events.find((e) => e.id === id);
-        
+
         const res = await api.updateTask(id, updates);
         if (res.success) {
           // If task is being marked as completed and it wasn't before
@@ -342,15 +362,32 @@ export const useAppStore = create<AppState>()(
             const xpGain = event.xpValue || 10;
             const newXp = userProfile.xp + xpGain;
             const newLevel = Math.floor(newXp / 100);
-            
+
             await setUserProfile({
               xp: newXp,
               level: newLevel,
             });
-            
+
             toast.success(`Task completed! +${xpGain} XP`);
+
+            // --- Burnout Calculator ---
+            const today = new Date().toISOString().slice(0, 10);
+            const state = get();
+            const currentDailyXp = state.dailyXpDate === today ? state.dailyXp : 0;
+            const newDailyXp = currentDailyXp + xpGain;
+            // Threshold scales with motivation: low energy → trigger sooner
+            const burnoutThreshold = 30 + state.lastMotivation * 0.4;
+            const shouldPrompt =
+              newDailyXp >= burnoutThreshold &&
+              Date.now() > state.burnoutSnoozedUntil &&
+              !state.burnoutPromptPending;
+            set({
+              dailyXp: newDailyXp,
+              dailyXpDate: today,
+              ...(shouldPrompt ? { burnoutPromptPending: true } : {}),
+            });
           }
-          
+
           const [user, tasks] = await Promise.all([api.fetchUser(), api.fetchTasks()]);
           set({ userProfile: user, events: tasks.map(normalizeCalendarEvent) });
         }
@@ -501,6 +538,29 @@ export const useAppStore = create<AppState>()(
         removePendingSuggestion(id);
         // Triggering rebalance by re-setting motivation
         await setMotivation(lastMotivation);
+      },
+
+      dismissBurnoutPrompt: () => set({ burnoutPromptPending: false }),
+
+      snoozeBurnoutPrompt: () =>
+        set({
+          burnoutPromptPending: false,
+          burnoutSnoozedUntil: Date.now() + 60 * 60 * 1000,
+        }),
+
+      rescheduleTodayTasks: async (taskIds) => {
+        const { events } = get();
+        const MS_PER_DAY = 24 * 60 * 60 * 1000;
+        for (const id of taskIds) {
+          const event = events.find((e) => e.id === id);
+          if (!event) continue;
+          await api.updateTask(id, {
+            start: new Date(event.start.getTime() + MS_PER_DAY),
+            end: new Date(event.end.getTime() + MS_PER_DAY),
+          });
+        }
+        const tasks = await api.fetchTasks();
+        set({ events: tasks.map(normalizeCalendarEvent) });
       },
 
       runWeeklySync: async (payload) => {

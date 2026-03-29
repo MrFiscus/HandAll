@@ -44,6 +44,7 @@ export async function initDB() {
       start_time DATETIME,
       end_time DATETIME,
       source_url TEXT,
+      planner_source_url TEXT,
       status TEXT DEFAULT 'Pending', -- 'Pending', 'Accepted', 'Completed', 'Rejected'
       FOREIGN KEY(user_id) REFERENCES users(id)
     );
@@ -80,6 +81,7 @@ export async function initDB() {
   await db.exec('ALTER TABLE tasks ADD COLUMN external_id TEXT').catch(() => {});
   await db.exec('ALTER TABLE tasks ADD COLUMN description TEXT').catch(() => {});
   await db.exec('ALTER TABLE tasks ADD COLUMN source_url TEXT').catch(() => {});
+  await db.exec('ALTER TABLE tasks ADD COLUMN planner_source_url TEXT').catch(() => {});
   await db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_sources_user_url ON calendar_sources(user_id, url)').catch(() => {});
 
   // Ensure only one legacy local user keeps NULL auth_user_id.

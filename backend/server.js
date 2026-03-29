@@ -120,6 +120,7 @@ function mapTaskRowToApi(t) {
     end: t.end_time,
     type: t.type ? t.type.toLowerCase() : 'working',
     sourceUrl: t.source_url || undefined,
+    plannerSourceUrl: t.planner_source_url || undefined,
     completed: t.status === 'Completed',
     xpValue:
       t.type?.toLowerCase() === 'working' ? 50 : t.type?.toLowerCase() === 'goal' ? 30 : 10,
@@ -254,6 +255,14 @@ async function runScheduleRebalanceCore(db, uid, options = {}) {
     nowIso,
     horizonIso,
   );
+  const assignmentSourceUrlById = new Map();
+  for (const row of allRows) {
+    const rowType = (row.type || '').toLowerCase();
+    const rowExternalId = row.external_id ? String(row.external_id) : '';
+    if (rowType === 'assignment' && rowExternalId && row.source_url) {
+      assignmentSourceUrlById.set(rowExternalId, row.source_url);
+    }
+  }
 
   const currentEvents = [];
   for (const row of allRows) {
@@ -337,9 +346,17 @@ async function runScheduleRebalanceCore(db, uid, options = {}) {
   const suggested = planData.suggested_tasks || [];
   for (const task of suggested) {
     const ttype = normalizePlannerTaskType(task.type);
+    let plannerSourceUrl = null;
+    if (ttype === 'working' && typeof task.id === 'string') {
+      const assignmentIdMatch = task.id.match(/^(.*?)-(?:sub-[^-]+-w\d+|working-\d+)$/);
+      const assignmentId = assignmentIdMatch?.[1];
+      if (assignmentId && assignmentSourceUrlById.has(assignmentId)) {
+        plannerSourceUrl = assignmentSourceUrlById.get(assignmentId);
+      }
+    }
     await db.run(
-      `INSERT INTO tasks (user_id, external_id, title, description, start_time, end_time, type, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'Accepted')`,
+      `INSERT INTO tasks (user_id, external_id, title, description, start_time, end_time, type, planner_source_url, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Accepted')`,
       uid,
       task.id || null,
       task.title,
@@ -347,6 +364,7 @@ async function runScheduleRebalanceCore(db, uid, options = {}) {
       task.start,
       task.end,
       ttype,
+      plannerSourceUrl,
     );
   }
 
@@ -1400,9 +1418,45 @@ app.delete('/api/tasks/source', async (req, res) => {
   }
 
   const db = await getDB();
-  await db.run(
-    'DELETE FROM tasks WHERE user_id = ? AND source_url = ?',
+  const sourcedTasks = await db.all(
+    'SELECT id, external_id, type FROM tasks WHERE user_id = ? AND source_url = ?',
     req.localUser.id,
+    sourceUrl
+  );
+  const assignmentKeys = sourcedTasks
+    .filter((task) => String(task.type || '').toLowerCase() === 'assignment')
+    .map((task) =>
+      task?.external_id && String(task.external_id).trim()
+        ? String(task.external_id).trim()
+        : `handall-db-${task.id}`
+    );
+
+  if (assignmentKeys.length > 0) {
+    const placeholders = assignmentKeys.map(() => '?').join(', ');
+    await db.run(
+      `DELETE FROM ai_planning_items
+       WHERE user_id = ?
+         AND assignment_external_id IN (${placeholders})`,
+      req.localUser.id,
+      ...assignmentKeys
+    );
+
+    const derivedTaskConditions = assignmentKeys
+      .map(() => '(external_id = ? OR external_id LIKE ? OR external_id LIKE ?)')
+      .join(' OR ');
+    await db.run(
+      `DELETE FROM tasks
+       WHERE user_id = ?
+         AND lower(type) = 'working'
+         AND (${derivedTaskConditions})`,
+      req.localUser.id,
+      ...assignmentKeys.flatMap((key) => [key, `${key}-working-%`, `${key}-sub-%`])
+    );
+  }
+  await db.run(
+    'DELETE FROM tasks WHERE user_id = ? AND (source_url = ? OR planner_source_url = ?)',
+    req.localUser.id,
+    sourceUrl,
     sourceUrl
   );
   res.json({ success: true });

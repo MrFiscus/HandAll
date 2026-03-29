@@ -30,6 +30,7 @@ export async function initDB() {
       google_calendar_access_token TEXT DEFAULT '',
       google_calendar_refresh_token TEXT DEFAULT '',
       google_calendar_token_expiry TEXT DEFAULT '',
+      setup_completed INTEGER DEFAULT 0,
       level INTEGER DEFAULT 0,
       xp INTEGER DEFAULT 0
     );
@@ -76,6 +77,7 @@ export async function initDB() {
   await db.exec("ALTER TABLE users ADD COLUMN google_calendar_access_token TEXT DEFAULT ''").catch(() => {});
   await db.exec("ALTER TABLE users ADD COLUMN google_calendar_refresh_token TEXT DEFAULT ''").catch(() => {});
   await db.exec("ALTER TABLE users ADD COLUMN google_calendar_token_expiry TEXT DEFAULT ''").catch(() => {});
+  await db.exec('ALTER TABLE users ADD COLUMN setup_completed INTEGER DEFAULT 0').catch(() => {});
   
   // Migration for external_id on tasks
   await db.exec('ALTER TABLE tasks ADD COLUMN external_id TEXT').catch(() => {});

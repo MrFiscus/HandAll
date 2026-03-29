@@ -8,6 +8,7 @@ import {
   setHours,
   setMinutes,
   differenceInMinutes,
+  differenceInDays,
   addMinutes,
   isPast,
 } from "date-fns";
@@ -18,7 +19,9 @@ import {
   Sparkles,
   Check,
   X,
-  RefreshCw
+  RefreshCw,
+  Maximize2,
+  Minimize2
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useAppStore, CalendarEvent, SuggestedTask } from "../store/useAppStore";
@@ -40,10 +43,6 @@ import {
   SelectValue,
 } from "./ui/select";
 import { toast } from "sonner";
-
-// --- Constants ---
-const DAYS_IN_WEEK = 7;
-const HOUR_HEIGHT = 52; // GCal vertical density
 
 // --- Types ---
 interface PositionedItem extends CalendarEvent {
@@ -72,7 +71,9 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
     updatePendingSuggestionStatus,
     updatePendingSuggestion,
     refreshSuggestion,
-    confirmAllSuggestions
+    confirmAllSuggestions,
+    isFullScreen,
+    setIsFullScreen
   } = useAppStore();
   
   const [internalViewMode, internalSetViewMode] = useState<"week" | "day">("week");
@@ -82,16 +83,41 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
   const [currentWeekStart, setCurrentWeekStart] = useState(startOfWeek(new Date(), { weekStartsOn: 0 }));
   const [focusedDay, setFocusedDay] = useState(new Date());
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const [winHeight, setWinHeight] = useState(typeof window !== "undefined" ? window.innerHeight : 800);
 
-  const { startHour, visibleHours } = useMemo(() => {
+  useEffect(() => {
+    const handleResize = () => setWinHeight(window.innerHeight);
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  // --- Layout Configuration ---
+  const { startHour, hoursData } = useMemo(() => {
+    // FULL SCREEN: 12 AM Start, 24 Hours
+    if (isFullScreen) {
+      const data = [];
+      for (let i = 0; i < 24; i++) {
+        data.push({ index: i, hour: i });
+      }
+      return { startHour: 0, hoursData: data };
+    }
+
+    // DASHBOARD: Custom range (Wake - 1 to Sleep + 1)
     const wakeH = parseInt(userProfile.wakeTime?.split(":")[0]) || 7;
     const sleepH = parseInt(userProfile.sleepTime?.split(":")[0]) || 23;
     const start = Math.max(0, wakeH - 1);
     const end = Math.min(24, sleepH + 1);
-    const hours = [];
-    for (let i = start; i < end; i++) hours.push(i);
-    return { startHour: start, visibleHours: hours };
-  }, [userProfile.wakeTime, userProfile.sleepTime]);
+    const data = [];
+    for (let i = start; i <= end; i++) {
+      data.push({ index: i - start, hour: i % 24 });
+    }
+    return { startHour: start, hoursData: data };
+  }, [userProfile.wakeTime, userProfile.sleepTime, isFullScreen]);
+// Fixed Height for consistency
+const HOUR_HEIGHT = 100;
+
+
+  const showText = true;
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragPreview, setDragPreview] = useState<DragState | null>(null);
@@ -105,16 +131,16 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
 
   const visibleDays = useMemo(() => {
     if (viewMode === "day") return [focusedDay];
-    return Array.from({ length: DAYS_IN_WEEK }, (_, i) => addDays(currentWeekStart, i));
+    return Array.from({ length: 7 }, (_, i) => addDays(currentWeekStart, i));
   }, [currentWeekStart, focusedDay, viewMode]);
 
   useEffect(() => {
-    if (scrollContainerRef.current) {
+    if (scrollContainerRef.current && !isFullScreen) {
       const now = new Date();
       const scrollPos = Math.max(0, (now.getHours() - 2 - startHour) * HOUR_HEIGHT);
       scrollContainerRef.current.scrollTop = scrollPos;
     }
-  }, [startHour]);
+  }, [startHour, HOUR_HEIGHT, isFullScreen]);
 
   const navigate = (dir: "prev" | "next" | "today") => {
     if (dir === "today") {
@@ -173,7 +199,7 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
     if ((e.target as HTMLElement).closest(".event-block")) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const minutes = ((e.clientY - rect.top) / HOUR_HEIGHT) * 60;
-    const snapped = Math.floor(minutes / 30) * 30 + (startHour * 60);
+    const snapped = Math.floor(minutes / 15) * 15 + (startHour * 60);
     setDialogMode("create");
     setForm({ title: "", date: format(day, "yyyy-MM-dd"), startTime: format(setMinutes(setHours(new Date(), Math.floor(snapped/60)), snapped%60), "HH:mm"), endTime: format(setMinutes(setHours(new Date(), Math.floor((snapped+60)/60)), (snapped+60)%60), "HH:mm"), type: "assignment" });
     setShowDialog(true);
@@ -181,6 +207,7 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
 
   const onEventClick = (e: React.MouseEvent, item: PositionedItem) => {
     e.stopPropagation();
+    if (item.completed) return;
     if (item.isSuggestion) {
       const sug = pendingSuggestions.find(s => s.id === item.id);
       if (sug) { setSelectedSuggestion(sug); setShowSuggestionDialog(true); }
@@ -223,7 +250,7 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
 
   const saveEvent = async () => {
     const start = new Date(`${form.date}T${form.startTime}`), end = new Date(`${form.date}T${form.endTime}`);
-    if (end <= start) return toast.error("End time must be after start time.");
+    if (end <= start) return toast.error("Time must flow forward.");
     if (dialogMode === "create") await addEvent({ title: form.title, start, end, type: form.type, xpValue: 10, completed: false });
     else if (selectedEventId) await updateEvent(selectedEventId, { title: form.title, start, end, type: form.type });
     setShowDialog(false);
@@ -233,7 +260,7 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
     const start = new Date(item.start), end = new Date(item.end);
     const dayStart = startOfDay(day);
     const top = (differenceInMinutes(start, addMinutes(dayStart, startHour * 60)) / 60) * HOUR_HEIGHT;
-    const height = (differenceInMinutes(end, start) / 60) * HOUR_HEIGHT;
+    const height = ((differenceInMinutes(end, start) / 60) * HOUR_HEIGHT) - 2;
     
     const col = 'column' in item ? item.column : 0;
     const totalColumns = 'totalColumns' in item ? item.totalColumns : 1;
@@ -241,8 +268,7 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
     const offset = col * width;
 
     return {
-      top: `${top}px`,
-      height: `${height}px`,
+      top: `${top}px`, height: `${height}px`,
       left: `${offset}%`,
       width: `calc(${width}% - 2px)`,
       zIndex: 10 + col,
@@ -263,32 +289,46 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
     const visuals = map[type] || { bg: "#475569", text: "#DAF1DE" };
     return {
       style: { backgroundColor: visuals.bg, color: visuals.text },
-      className: cn(
-        "border border-black/5", // GCal style very subtle borders
-        (isPastEvent || completed) && "opacity-50 grayscale"
-      )
+      className: cn("border border-black/5", (isPastEvent || completed) && "opacity-50 grayscale")
     };
   };
 
   const acceptedCount = pendingSuggestions.filter(s => s.status === "accepted").length;
 
   return (
-    <div className="flex flex-col h-full bg-transparent font-sans">
+    <div className={cn(
+      "flex flex-col h-full bg-transparent transition-all duration-1000 ease-in-out font-sans",
+      isFullScreen ? "p-4 lg:p-6" : ""
+    )}>
       
       {/* Header Toolbar */}
-      <div className="flex items-center justify-between mb-6">
+      <div className={cn(
+        "flex items-center justify-between mb-0 transition-all shrink-0",
+        isFullScreen ? "mb-6" : "px-4 py-3 border border-white/10 border-b-0 rounded-t-lg bg-black/20"
+      )}>
         <div className="flex items-center gap-4">
           <Button variant="ghost" size="sm" onClick={() => navigate("today")} className="font-medium uppercase tracking-widest text-[10px] text-primary hover:bg-white/5 border border-white/10 rounded-md h-8 px-4">Today</Button>
           <div className="flex items-center gap-1">
             <button onClick={() => navigate("prev")} className="p-2 rounded-full hover:bg-white/5 transition-all"><ChevronLeft className="h-5 w-5 text-primary opacity-60" /></button>
             <button onClick={() => navigate("next")} className="p-2 rounded-full hover:bg-white/5 transition-all"><ChevronRight className="h-5 w-5 text-primary opacity-60" /></button>
           </div>
-          <h2 className="text-2xl font-normal tracking-tight text-foreground ml-2">
+          <h2 className={cn(
+            "font-normal tracking-tight text-foreground ml-2 transition-all",
+            isFullScreen ? "text-5xl" : "text-xl"
+          )}>
             {viewMode === "week" ? format(currentWeekStart, "MMMM yyyy") : format(focusedDay, "MMMM d, yyyy")}
           </h2>
         </div>
         
         <div className="flex items-center gap-4">
+          <button 
+            onClick={() => setIsFullScreen(!isFullScreen)}
+            className="p-2 rounded-md border border-white/10 text-primary hover:bg-white/5 transition-all"
+            title={isFullScreen ? "Exit Full Screen" : "Full Screen View"}
+          >
+            {isFullScreen ? <Minimize2 className="h-5 w-5" /> : <Maximize2 className="h-5 w-5" />}
+          </button>
+
           {acceptedCount > 0 && (
             <Button size="sm" onClick={confirmAllSuggestions} className="rounded-md font-bold uppercase text-[9px] h-8 bg-primary text-primary-foreground px-4">
               Confirm ({acceptedCount})
@@ -296,38 +336,31 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
           )}
           
           <div className="flex bg-white/[0.03] p-1 rounded-md border border-white/5">
-            <button 
-              onClick={() => setViewMode("day")} 
-              className={cn(
-                "h-7 px-4 text-[10px] font-bold uppercase tracking-wider transition-all rounded-[4px]",
-                viewMode === "day" ? "bg-[#DAF1DE] text-[#0F2027]" : "text-[#DAF1DE]/40 hover:text-[#DAF1DE]"
-              )}
-            >
-              Day
-            </button>
-            <button 
-              onClick={() => setViewMode("week")} 
-              className={cn(
-                "h-7 px-4 text-[10px] font-bold uppercase tracking-wider transition-all rounded-[4px]",
-                viewMode === "week" ? "bg-[#DAF1DE] text-[#0F2027]" : "text-[#DAF1DE]/40 hover:text-[#DAF1DE]"
-              )}
-            >
-              Week
-            </button>
+            <button onClick={() => setViewMode("day")} className={cn("h-7 px-4 text-[10px] font-bold uppercase tracking-wider transition-all rounded-[4px]", viewMode === "day" ? "bg-[#DAF1DE] text-[#0F2027]" : "text-[#DAF1DE]/40 hover:text-[#DAF1DE]")}>Day</button>
+            <button onClick={() => setViewMode("week")} className={cn("h-7 px-4 text-[10px] font-bold uppercase tracking-wider transition-all rounded-[4px]", viewMode === "week" ? "bg-[#DAF1DE] text-[#0F2027]" : "text-[#DAF1DE]/40 hover:text-[#DAF1DE]")}>Week</button>
           </div>
         </div>
       </div>
 
-      <div className="flex flex-1 overflow-hidden relative">
+      <div className={cn(
+        "flex flex-1 overflow-hidden relative border-white/10 min-h-0 mb-16",
+        isFullScreen ? "" : "border rounded-b-lg shadow-2xl"
+      )}>
         
         {/* Time Axis (Left) */}
-        <div className="w-[65px] flex-shrink-0 border-r border-white/5 bg-transparent z-20">
-          <div className="h-[70px]" /> {/* Header spacer */}
+        <div className={cn(
+          "w-[65px] flex-shrink-0 border-r border-white/5 z-20 shrink-0",
+          isFullScreen ? "bg-transparent" : "bg-black/10"
+        )}>
+          <div className="h-[70px] shrink-0" /> 
           <div className="relative overflow-hidden" style={{ height: `calc(100% - 70px)` }}>
             <div className="absolute w-full transition-none" style={{ top: `-${scrollContainerRef.current?.scrollTop || 0}px` }}>
-              {visibleHours.map(h => (
-                <div key={h} className="absolute w-full text-right pr-3 text-[10px] font-normal text-muted-foreground/40 uppercase" style={{ top: `${(h - startHour) * HOUR_HEIGHT - 7}px` }}>
-                  {format(setHours(new Date(), h), "h a")}
+              {hoursData.map(d => (
+                <div key={d.index} className="absolute w-full text-right pr-3 text-[10px] font-normal text-muted-foreground/40 uppercase" style={{ top: `${d.index * HOUR_HEIGHT}px`, transform: 'translateY(-50%)' }}>
+                  {isFullScreen 
+                    ? format(setMinutes(setHours(startOfDay(new Date()), d.hour), 0), "HH:mm") 
+                    : format(setMinutes(setHours(startOfDay(new Date()), d.hour), 0), "h a")
+                  }
                 </div>
               ))}
             </div>
@@ -335,10 +368,13 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
         </div>
 
         {/* Main Calendar Area */}
-        <div className="flex-1 flex flex-col overflow-hidden relative">
+        <div className="flex-1 flex flex-col overflow-hidden relative min-h-0">
           
           {/* Day Headers */}
-          <div className="flex-shrink-0 grid border-b border-white/5 z-20 bg-transparent" style={{ gridTemplateColumns: `repeat(${viewMode === "week" ? 7 : 1}, minmax(0, 1fr))` }}>
+          <div className={cn(
+            "flex-shrink-0 grid border-b border-white/5 z-20 shrink-0",
+            isFullScreen ? "bg-transparent" : "bg-black/20"
+          )} style={{ gridTemplateColumns: `repeat(${viewMode === "week" ? 7 : 1}, minmax(0, 1fr))` }}>
             {visibleDays.map(day => (
               <div key={day.toISOString()} className={cn("flex flex-col items-center justify-center h-[70px] border-r border-white/5 last:border-r-0")}>
                 <span className={cn("text-[10px] font-medium uppercase tracking-wider mb-1", isSameDay(day, new Date()) ? "text-primary" : "text-muted-foreground/60")}>{format(day, "EEE")}</span>
@@ -350,7 +386,10 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
           </div>
 
           {/* Scrollable Grid Area */}
-          <div ref={scrollContainerRef} className="flex-1 overflow-y-auto overflow-x-hidden relative bg-transparent" onScroll={(e) => { 
+          <div ref={scrollContainerRef} className={cn(
+            "flex-1 relative transition-colors custom-scrollbar overflow-y-auto",
+            isFullScreen ? "bg-black/10" : "bg-black/5"
+          )} onScroll={(e) => { 
             const target = e.target as HTMLDivElement;
             const timeAxis = target.parentElement?.previousElementSibling?.children[1]?.children[0] as HTMLDivElement;
             if (timeAxis) timeAxis.style.top = `-${target.scrollTop}px`;
@@ -358,17 +397,18 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
             
             {/* Horizontal Grid Lines */}
             <div className="absolute inset-0 pointer-events-none z-0">
-               {visibleHours.map(h => (
-                  <div key={h} className="border-b border-white/[0.03] w-full" style={{ height: `${HOUR_HEIGHT}px` }} />
+               {hoursData.map(d => (
+                  <div key={d.index} className="border-b border-white/[0.03] w-full" style={{ height: `${HOUR_HEIGHT}px` }} />
                ))}
             </div>
 
             {/* Vertical Columns and Events */}
-            <div className="absolute inset-0 grid" style={{ gridTemplateColumns: `repeat(${viewMode === "week" ? 7 : 1}, minmax(0, 1fr))`, height: `${visibleHours.length * HOUR_HEIGHT}px` }}>
+            <div className="absolute inset-0 grid" style={{ gridTemplateColumns: `repeat(${viewMode === "week" ? 7 : 1}, minmax(0, 1fr))`, height: `${hoursData.length * HOUR_HEIGHT}px` }}>
               {visibleDays.map(day => {
                 const items = getPositionedItems(day);
                 return (
                   <div key={day.toISOString()} className={cn("relative h-full border-r border-white/5 last:border-r-0 transition-all", isSameDay(day, new Date()) ? "bg-white/[0.01]" : "")} onClick={(e) => onGridClick(day, e)} onDragOver={(e) => onDragOver(e, day)} onDrop={onDrop}>
+
                     
                     {items.map(item => {
                       const style = getEventStyle(item, day);
@@ -377,28 +417,24 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
                         <div key={item.id} draggable onDragStart={(e) => onDragStart(e, item.id)} onDragEnd={() => {setDraggingId(null); setDragPreview(null);}}
                              className={cn("event-block absolute rounded-[4px] px-2 py-1 text-[11px] leading-tight cursor-pointer overflow-hidden group select-none transition-all", visuals.className, item.isSuggestion && "border-2 border-dashed border-white/30 bg-transparent! text-white/60")}
                              style={{ ...style, ...visuals.style }} onClick={(e) => onEventClick(e, item)}>
-                          <div className={cn("font-medium truncate mb-0.5", item.completed && "line-through")}>{item.title}</div>
-                          <div className="text-[10px] font-normal opacity-70 truncate">{format(new Date(item.start), "h:mm a")}</div>
-                          
-                          {item.isSuggestion && item.status === "pending" && viewMode === "day" && (
-                            <div className="absolute top-1 right-1 flex gap-1 opacity-0 group-hover:opacity-100 transition-all bg-black/40 rounded p-0.5">
-                              <button onClick={(e) => { e.stopPropagation(); updatePendingSuggestionStatus(item.id, "accepted"); }} className="p-0.5 hover:text-green-400"><Check className="h-3 w-3" /></button>
-                              <button onClick={(e) => { e.stopPropagation(); updatePendingSuggestionStatus(item.id, "rejected"); }} className="p-0.5 hover:text-red-400"><X className="h-3 w-3" /></button>
-                            </div>
+                          {showText && (
+                            <>
+                              <div className={cn("font-medium truncate mb-0.5", item.completed && "line-through")}>{item.title}</div>
+                              <div className="text-[10px] font-normal opacity-70 truncate">
+                                {isFullScreen 
+                                  ? `${format(new Date(item.start), "HH:mm")} - ${format(new Date(item.end), "HH:mm")}`
+                                  : format(new Date(item.start), "h:mm a")
+                                }
+                              </div>
+                            </>
                           )}
                         </div>
                       );
                     })}
-
-                    {dragPreview && isSameDay(dragPreview.day, day) && (
-                      <div className="absolute rounded-[4px] border-2 border-dashed border-white/30 bg-white/5 p-2 text-[11px] z-50 opacity-40 pointer-events-none" style={getEventStyle(dragPreview, day)}>
-                         <div className="font-normal">{(events.find(e => e.id === draggingId) || pendingSuggestions.find(s => s.id === draggingId))?.title}</div>
-                      </div>
-                    )}
                   </div>
                 );
               })}
-              <TimeIndicator currentWeekStart={currentWeekStart} focusedDay={focusedDay} viewMode={viewMode} startHour={startHour} />
+              <TimeIndicator currentWeekStart={currentWeekStart} focusedDay={focusedDay} viewMode={viewMode} startHour={startHour} hourHeight={HOUR_HEIGHT} hoursCount={hoursData.length} />
             </div>
           </div>
         </div>
@@ -406,7 +442,7 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
 
       {/* Dialogs */}
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="sm:max-w-[450px] border border-white/10 rounded-xl bg-card shadow-2xl p-8">
+        <DialogContent className="sm:max-w-[450px] border border-white/10 rounded-xl bg-[#1a3a2a] shadow-2xl p-8">
           <DialogHeader><DialogTitle className="text-2xl font-medium tracking-tight mb-6">{dialogMode === "create" ? "Add event" : "Edit event"}</DialogTitle></DialogHeader>
           <div className="space-y-6">
             <Input value={form.title} onChange={e => setForm({...form, title: e.target.value})} className="h-12 bg-white/[0.02] border-white/10 rounded-md text-lg px-4 text-foreground" placeholder="Add title" autoFocus/>
@@ -416,6 +452,14 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
             </div>
             <div className="flex gap-3 pt-6 border-t border-white/5">
               {dialogMode === "edit" && <Button variant="ghost" className="h-11 rounded-md text-destructive hover:bg-destructive/10" onClick={() => { removeEvent(selectedEventId!); setShowDialog(false); }}>Delete</Button>}
+              {dialogMode === "edit" && form.type !== "class" && form.type !== "working" && (() => {
+                const ev = events.find(e => e.id === selectedEventId);
+                return (
+                  <Button variant="ghost" className={cn("h-11 rounded-md", ev?.completed ? "text-green-400 hover:bg-green-400/10" : "text-green-400 hover:bg-green-400/10")} onClick={() => { if (selectedEventId) { updateEvent(selectedEventId, { completed: !ev?.completed }); setShowDialog(false); } }}>
+                    {ev?.completed ? "Completed" : "Mark done"}
+                  </Button>
+                );
+              })()}
               <div className="flex-1" />
               <Button variant="ghost" className="h-11 rounded-md px-6 font-normal" onClick={() => setShowDialog(false)}>Cancel</Button>
               <Button onClick={saveEvent} className="h-11 rounded-md px-8 font-medium bg-primary text-primary-foreground">Save</Button>
@@ -425,7 +469,7 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
       </Dialog>
 
       <Dialog open={showSuggestionDialog} onOpenChange={setShowSuggestionDialog}>
-        <DialogContent className="sm:max-w-[450px] border border-white/10 rounded-xl bg-card shadow-2xl p-8">
+        <DialogContent className="sm:max-w-[450px] border border-white/10 rounded-xl bg-[#1a3a2a] shadow-2xl p-8">
           <DialogHeader className="mb-6">
             <div className="flex items-center gap-2 text-primary mb-2">
               <Sparkles className="h-4 w-4" />
@@ -437,8 +481,8 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
             <p className="text-base opacity-60 leading-relaxed font-normal">A recommended task to help you maintain balance and focus.</p>
             <div className="flex gap-3">
               <Button className="flex-1 h-12 rounded-md font-medium bg-primary text-primary-foreground" onClick={() => { if (selectedSuggestion) { updatePendingSuggestionStatus(selectedSuggestion.id, "accepted"); setShowSuggestionDialog(false); } }}>Add to day</Button>
-              <Button variant="outline" className="h-12 rounded-md border-white/10 text-foreground hover:bg-white/5" onClick={() => { if (selectedSuggestion) { refreshSuggestion(selectedSuggestion.id); setShowSuggestionDialog(false); } }}>Refresh</Button>
-              <Button variant="outline" className="h-12 rounded-md border-white/10 text-destructive hover:bg-destructive/10" onClick={() => { if (selectedSuggestion) { updatePendingSuggestionStatus(selectedSuggestion.id, "rejected"); setShowSuggestionDialog(false); } }}>Skip</Button>
+              <Button variant="outline" className="flex-1 h-12 rounded-md border-white/10 text-foreground hover:bg-white/5" onClick={() => { if (selectedSuggestion) { refreshSuggestion(selectedSuggestion.id); setShowSuggestionDialog(false); } }}>Refresh</Button>
+              <Button variant="outline" className="flex-1 h-12 rounded-md border-white/10 text-destructive hover:bg-destructive/10" onClick={() => { if (selectedSuggestion) { updatePendingSuggestionStatus(selectedSuggestion.id, "rejected"); setShowSuggestionDialog(false); } }}>Skip</Button>
             </div>
           </div>
         </DialogContent>
@@ -447,12 +491,44 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
   );
 }
 
-function TimeIndicator({ currentWeekStart, focusedDay, viewMode, startHour }: { currentWeekStart: Date, focusedDay: Date, viewMode: "week" | "day", startHour: number }) {
-  const [now, setNow] = useState(new Date()); useEffect(() => { const i = setInterval(() => setNow(new Date()), 60000); return () => clearInterval(i); }, []);
-  const top = ((now.getHours() * 60 + now.getMinutes()) / 60 - startHour) * HOUR_HEIGHT;
-  if (top < 0 || top > 24 * HOUR_HEIGHT) return null; 
-  const left = viewMode === "week" ? (now.getDay() * (100/7)) : 0, width = viewMode === "week" ? (100/7) : 100;
-  if (viewMode === "week" && (now < currentWeekStart || now >= addDays(currentWeekStart, 7))) return null;
-  if (viewMode === "day" && !isSameDay(now, focusedDay)) return null;
-  return (<div className="absolute right-0 pointer-events-none z-40 flex items-center" style={{ top: `${top}px`, left: `${left}%`, width: `${width}%` }}><div className="h-2 w-2 rounded-full bg-red-500 shadow-xl -ml-1" /><div className="h-[1.5px] flex-1 bg-red-500/60" /></div>);
+function TimeIndicator({ currentWeekStart, focusedDay, viewMode, startHour, hourHeight, hoursCount }: { currentWeekStart: Date, focusedDay: Date, viewMode: "week" | "day", startHour: number, hourHeight: number, hoursCount: number }) {
+  const [now, setNow] = useState(new Date()); 
+  useEffect(() => { 
+    const i = setInterval(() => setNow(new Date()), 60000); 
+    return () => clearInterval(i); 
+  }, []);
+
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const startMinutes = startHour * 60;
+  const top = ((nowMinutes - startMinutes) / 60) * hourHeight;
+  
+  if (top < 0 || top > hoursCount * hourHeight) return null;
+
+  let left = 0;
+  let width = 100;
+
+  if (viewMode === "week") {
+    // Check if "now" is in the currently visible week
+    const endOfWeekDate = addDays(currentWeekStart, 7);
+    if (now < currentWeekStart || now >= endOfWeekDate) return null;
+    
+    // Calculate how many days from the currentWeekStart 'now' is
+    const dayDiff = differenceInDays(startOfDay(now), startOfDay(currentWeekStart));
+    if (dayDiff < 0 || dayDiff >= 7) return null;
+    
+    left = dayDiff * (100 / 7);
+    width = 100 / 7;
+  } else {
+    if (!isSameDay(now, focusedDay)) return null;
+  }
+
+  return (
+    <div 
+      className="absolute pointer-events-none z-40 flex items-center transition-all duration-1000" 
+      style={{ top: `${top}px`, left: `${left}%`, width: `${width}%` }}
+    >
+      <div className="h-2 w-2 rounded-full bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.8)] -ml-1" />
+      <div className="h-[1.5px] flex-1 bg-red-500 shadow-[0_0_5px_rgba(239,68,68,0.5)]" />
+    </div>
+  );
 }

@@ -46,6 +46,7 @@ function mapUserProfile(data: any): UserProfile {
       typeof data.active_calendar_resolution === "string"
         ? data.active_calendar_resolution
         : undefined,
+    setupComplete: !!data.setup_completed,
   };
 }
 

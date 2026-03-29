@@ -1,13 +1,11 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { format } from "date-fns";
 import { ScrollArea } from "./ui/scroll-area";
 import { useAppStore } from "../store/useAppStore";
 import { Button } from "./ui/button";
 import {
   Plus,
-  MessageSquare,
   Send,
-  Zap,
   Sparkles,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
@@ -34,12 +32,12 @@ interface ChatMessage {
 export default function Dashboard() {
   const {
     userProfile,
-    planningItems,
     addEvent,
     loadAppData,
     apiLoaded,
     lastMotivation,
     setMotivation,
+    isFullScreen,
   } = useAppStore();
 
   const [viewMode, setViewMode] = useState<"day" | "week">("day");
@@ -67,12 +65,6 @@ export default function Dashboard() {
   const threadIdRef = useRef<string>(crypto.randomUUID());
   const chatSendGenRef = useRef(0);
 
-  const planningSummary = useMemo(() => {
-    const subs = planningItems.filter((p) => p.item_type === "assignment_subtask").length;
-    const goals = planningItems.filter((p) => p.item_type === "goal_task").length;
-    return { subs, goals };
-  }, [planningItems]);
-
   useEffect(() => {
     if (!apiLoaded) loadAppData();
   }, [apiLoaded, loadAppData]);
@@ -89,20 +81,17 @@ export default function Dashboard() {
     const end = new Date(`${newEvent.date}T${newEvent.endTime}`);
     if (end <= start) return toast.error("Time must flow forward.");
     try {
-      const xpValue =
-        newEvent.type === "working" ? 50 : newEvent.type === "goal" ? 30 : 10;
       await addEvent({
         title: newEvent.title,
         start,
         end,
         type: newEvent.type,
-        xpValue,
+        xpValue: 10,
       });
       toast.success("Added to your path.");
       setShowAddEvent(false);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Flow interrupted.";
-      toast.error(message);
+    } catch {
+      toast.error("Flow interrupted.");
     }
   };
 
@@ -181,156 +170,204 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="min-h-screen p-8 lg:p-12 flex flex-col gap-10 max-w-[1800px] mx-auto transition-all duration-1000">
-      <header className="flex items-end justify-between">
-        <div className="space-y-1">
-          <h1 className="text-6xl font-black tracking-tighter text-foreground leading-none">Focus.</h1>
-          <p className="text-lg font-medium text-muted-foreground/40">Good morning, {userProfile.name}.</p>
-          {(planningSummary.subs > 0 || planningSummary.goals > 0) && (
-            <p className="text-sm text-muted-foreground/60 max-w-xl">
-              AI planning queue:{" "}
-              <span className="font-medium text-foreground">{planningSummary.subs}</span> assignment subtasks,{" "}
-              <span className="font-medium text-foreground">{planningSummary.goals}</span> goal tasks.
-            </p>
-          )}
-        </div>
+    <div
+      className={cn(
+        "h-screen transition-all duration-1000 ease-in-out mx-auto flex flex-col overflow-hidden",
+        isFullScreen ? "p-0 max-w-full" : "p-8 lg:p-12 max-w-[1800px] gap-10",
+      )}
+    >
+      {!isFullScreen && (
+        <header className="flex items-end justify-between transition-all duration-500 animate-in fade-in slide-in-from-top-8 shrink-0">
+          <div className="space-y-8">
+            <h1 className="text-2xl font-normal tracking-tight text-foreground lowercase mb-0">
+              <span className="text-sm font-medium text-muted-foreground/60 mr-2">welcome,</span>
+              {userProfile.name}
+            </h1>
 
-        <Dialog open={showAddEvent} onOpenChange={setShowAddEvent}>
-          <DialogTrigger asChild>
-            <button
-              type="button"
-              className="h-14 px-8 rounded-full bg-white/[0.03] hover:bg-white/[0.06] border border-white/5 text-base font-bold transition-all hover:scale-105 active:scale-95 flex items-center gap-3"
-            >
-              <Plus className="h-5 w-5 text-primary" />
-              <span>Add to Day</span>
-            </button>
-          </DialogTrigger>
-          <DialogContent className="rounded-[3rem] border-none p-10 bg-card/95 backdrop-blur-3xl shadow-4xl sm:max-w-[500px]">
-            <DialogHeader>
-              <DialogTitle className="text-4xl font-black tracking-tighter mb-6">New Entry</DialogTitle>
-            </DialogHeader>
-            <div className="space-y-8">
-              <div className="space-y-2">
-                <Label>Activity</Label>
-                <Input
-                  value={newEvent.title}
-                  onChange={(e) => setNewEvent({ ...newEvent, title: e.target.value })}
-                  placeholder="What's next?"
-                  className="h-14 bg-white/[0.02] border-none rounded-2xl text-lg px-6"
+            <div className="w-48 space-y-1.5">
+              <div className="h-1 bg-white/5 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-primary transition-all duration-1000"
+                  style={{ width: `${userProfile.xp % 100}%` }}
                 />
               </div>
-              <div className="grid grid-cols-2 gap-6">
-                <div className="space-y-2">
-                  <Label>Start</Label>
-                  <Input
-                    type="time"
-                    value={newEvent.startTime}
-                    onChange={(e) => setNewEvent({ ...newEvent, startTime: e.target.value })}
-                    className="h-14 bg-white/[0.02] border-none rounded-2xl px-6 font-bold"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>End</Label>
-                  <Input
-                    type="time"
-                    value={newEvent.endTime}
-                    onChange={(e) => setNewEvent({ ...newEvent, endTime: e.target.value })}
-                    className="h-14 bg-white/[0.02] border-none rounded-2xl px-6 font-bold"
-                  />
-                </div>
+              <div className="flex justify-between text-[10px] font-medium uppercase tracking-widest text-muted-foreground/40">
+                <span>Level {userProfile.level}</span>
+                <span>{userProfile.xp % 100}%</span>
               </div>
-              <Button
-                type="button"
-                onClick={handleAddEvent}
-                className="w-full h-14 rounded-3xl font-black uppercase tracking-widest shadow-2xl"
-              >
-                Confirm Entry
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-      </header>
-
-      <div className="grid grid-cols-12 gap-10 flex-1">
-        <div className="col-span-12 lg:col-span-10 min-h-[800px] transition-all duration-1000 animate-in fade-in slide-in-from-bottom-12">
-          <WeeklyCalendar viewMode={viewMode} setViewMode={setViewMode} />
-        </div>
-
-        <div className="col-span-12 lg:col-span-2 flex flex-col gap-8 py-4 h-full">
-          <div className="p-8 rounded-[2rem] bg-white/[0.01] border border-white/[0.03] space-y-8 backdrop-blur-sm">
-            <div className="flex items-center gap-3">
-              <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-primary">
-                <Zap className="h-4 w-4 fill-current" />
-              </div>
-              <span className="font-bold tracking-tight text-lg">Energy</span>
-            </div>
-            <Slider value={[lastMotivation]} onValueChange={(v) => setMotivation(v[0])} max={100} step={5} />
-            <div className="text-center font-black">
-              <span className="text-3xl text-primary">{lastMotivation}%</span>
             </div>
           </div>
 
-          <Dialog open={showChat} onOpenChange={setShowChat}>
+          <Dialog open={showAddEvent} onOpenChange={setShowAddEvent}>
             <DialogTrigger asChild>
               <button
                 type="button"
-                className="w-full h-24 rounded-[2rem] bg-primary text-primary-foreground shadow-[0_20px_40px_rgba(221,251,92,0.1)] flex flex-col items-center justify-center gap-2 group hover:scale-[1.02] transition-all duration-500 border-none"
+                className="h-14 px-8 rounded-full bg-white/[0.03] hover:bg-white/[0.06] border border-white/5 text-base font-bold transition-all hover:scale-105 active:scale-95 flex items-center gap-3"
               >
-                <Sparkles className="h-6 w-6 transition-transform group-hover:rotate-12" />
-                <span className="font-black uppercase tracking-widest text-[9px]">Assistant</span>
+                <Plus className="h-5 w-5 text-primary" />
+                <span>Add to Day</span>
               </button>
             </DialogTrigger>
-            <DialogContent className="sm:max-w-[600px] h-[800px] border-none rounded-[3rem] bg-card/98 backdrop-blur-3xl shadow-4xl flex flex-col p-0 overflow-hidden">
-              <div className="p-12 border-b border-white/5 bg-white/2">
-                <h2 className="text-4xl font-black tracking-tighter">Guide.</h2>
-                <p className="opacity-40 font-medium">Let&apos;s refine your flow.</p>
-              </div>
-              <ScrollArea className="flex-1 p-12 space-y-10">
-                {chatMessages.map((m) => (
-                  <div key={m.id} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
-                    <div
-                      className={cn(
-                        "max-w-[85%] p-8 rounded-[2rem] text-lg font-medium leading-relaxed whitespace-pre-wrap break-words",
-                        m.role === "user"
-                          ? "bg-primary text-primary-foreground rounded-tr-none"
-                          : "bg-white/[0.03] border border-white/5 rounded-tl-none",
-                      )}
-                    >
-                      {m.content}
-                    </div>
-                  </div>
-                ))}
-                <div ref={chatEndRef} />
-              </ScrollArea>
-              <div className="p-12 pt-0">
-                <div className="flex gap-4 p-3 rounded-[2rem] bg-white/[0.03] border border-white/5 focus-within:border-primary/20 transition-all">
+            <DialogContent className="rounded-[3rem] border-none p-10 bg-[#1a3a2a] shadow-4xl sm:max-w-[500px]">
+              <DialogHeader>
+                <DialogTitle className="text-4xl font-black tracking-tighter mb-6">New Entry</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-8">
+                <div className="space-y-2">
+                  <Label>Activity</Label>
                   <Input
-                    value={inputMessage}
-                    onChange={(e) => setInputMessage(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-                    placeholder="Type something..."
-                    className="flex-1 h-14 bg-transparent border-none text-lg px-6 focus:ring-0"
-                    disabled={isSending}
+                    value={newEvent.title}
+                    onChange={(e) => setNewEvent({ ...newEvent, title: e.target.value })}
+                    placeholder="What's next?"
+                    className="h-14 bg-white/[0.02] border-none rounded-2xl text-lg px-6"
                   />
-                  <Button
-                    type="button"
-                    onClick={handleSendMessage}
-                    className="h-14 w-14 rounded-2xl transition-all hover:scale-105"
-                    disabled={isSending}
-                  >
-                    <Send className="h-6 w-6" />
-                  </Button>
                 </div>
-                <p className="mt-3 text-xs text-muted-foreground flex items-center gap-2">
-                  <MessageSquare className="h-3 w-3 shrink-0" />
-                  {AGENT_API_BASE_URL}
-                </p>
+                <div className="grid grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <Label>Start</Label>
+                    <Input
+                      type="time"
+                      value={newEvent.startTime}
+                      onChange={(e) => setNewEvent({ ...newEvent, startTime: e.target.value })}
+                      className="h-14 bg-white/[0.02] border-none rounded-2xl px-6 font-bold"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>End</Label>
+                    <Input
+                      type="time"
+                      value={newEvent.endTime}
+                      onChange={(e) => setNewEvent({ ...newEvent, endTime: e.target.value })}
+                      className="h-14 bg-white/[0.02] border-none rounded-2xl px-6 font-bold"
+                    />
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  onClick={handleAddEvent}
+                  className="w-full h-14 rounded-3xl font-black uppercase tracking-widest shadow-2xl"
+                >
+                  Confirm Entry
+                </Button>
               </div>
             </DialogContent>
           </Dialog>
+        </header>
+      )}
 
-          <div className="flex-1" />
+      <div
+        className={cn("grid gap-10 flex-1 min-h-0", isFullScreen ? "grid-cols-1" : "grid-cols-12")}
+      >
+        <div
+          className={cn(
+            "transition-all duration-1000 ease-in-out h-full min-h-0",
+            isFullScreen ? "col-span-1" : "col-span-12 lg:col-span-10",
+          )}
+        >
+          <WeeklyCalendar viewMode={viewMode} setViewMode={setViewMode} />
         </div>
+
+        {!isFullScreen && (
+          <div className="col-span-12 lg:col-span-2 flex flex-col gap-8 py-4 h-full animate-in fade-in slide-in-from-right-8 duration-700">
+            <div className="p-8 rounded-[2rem] bg-white/[0.01] border border-white/[0.03] flex flex-col items-center gap-6 backdrop-blur-sm">
+              <div className="flex flex-col items-center">
+                <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center text-3xl">
+                  {lastMotivation <= 20
+                    ? "😴"
+                    : lastMotivation <= 40
+                      ? "☕"
+                      : lastMotivation <= 60
+                        ? "🧘"
+                        : lastMotivation <= 80
+                          ? "🚀"
+                          : "⚡"}
+                </div>
+              </div>
+
+              <div className="h-32 flex items-center justify-center mt-4">
+                <Slider
+                  orientation="vertical"
+                  value={[lastMotivation]}
+                  onValueChange={(v) => setMotivation(v[0])}
+                  max={100}
+                  step={5}
+                  className="h-full"
+                />
+              </div>
+
+              <div className="text-center font-black h-8 flex items-center mt-4">
+                <span className="text-lg text-primary uppercase tracking-tighter leading-tight">
+                  {lastMotivation <= 20
+                    ? "Deep Chill"
+                    : lastMotivation <= 40
+                      ? "Chill"
+                      : lastMotivation <= 60
+                        ? "Balanced"
+                        : lastMotivation <= 80
+                          ? "Lock-in"
+                          : "Deep Lock-in"}
+                </span>
+              </div>
+            </div>
+
+            <Dialog open={showChat} onOpenChange={setShowChat}>
+              <DialogTrigger asChild>
+                <button
+                  type="button"
+                  className="w-full h-24 rounded-[2rem] bg-primary text-primary-foreground shadow-[0_20px_40px_rgba(221,251,92,0.1)] flex flex-col items-center justify-center gap-2 group hover:scale-[1.02] transition-all duration-500 border-none"
+                >
+                  <Sparkles className="h-6 w-6 transition-transform group-hover:rotate-12" />
+                  <span className="font-black uppercase tracking-widest text-[9px]">Assistant</span>
+                </button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-[500px] h-[600px] border-none rounded-[3rem] bg-card/98 backdrop-blur-3xl shadow-4xl flex flex-col p-0 overflow-hidden">
+                <div className="p-10 border-b border-white/5 bg-white/2">
+                  <h2 className="text-3xl font-black tracking-tighter">Let&apos;s Chat.</h2>
+                  <p className="opacity-40 font-medium text-sm">Refine your experience.</p>
+                </div>
+                <ScrollArea className="flex-1 p-10 space-y-6 custom-scrollbar">
+                  {chatMessages.map((m) => (
+                    <div key={m.id} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+                      <div
+                        className={cn(
+                          "max-w-[85%] p-5 rounded-[1.5rem] text-base font-medium leading-relaxed",
+                          m.role === "user"
+                            ? "bg-primary text-primary-foreground rounded-tr-none"
+                            : "bg-white/[0.03] border border-white/5 rounded-tl-none",
+                        )}
+                      >
+                        {m.content}
+                      </div>
+                    </div>
+                  ))}
+                  <div ref={chatEndRef} />
+                </ScrollArea>
+                <div className="p-12 pt-0">
+                  <div className="flex gap-4 p-3 rounded-[2rem] bg-white/[0.03] border border-white/5 focus-within:border-primary/20 transition-all">
+                    <Input
+                      value={inputMessage}
+                      onChange={(e) => setInputMessage(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
+                      placeholder="Type something..."
+                      className="flex-1 h-14 bg-transparent border-none text-lg px-6 focus:ring-0"
+                      disabled={isSending}
+                    />
+                    <Button
+                      type="button"
+                      onClick={handleSendMessage}
+                      className="h-14 w-14 rounded-2xl transition-all hover:scale-105"
+                      disabled={isSending}
+                    >
+                      <Send className="h-6 w-6" />
+                    </Button>
+                  </div>
+                </div>
+              </DialogContent>
+            </Dialog>
+
+            <div className="flex-1" />
+          </div>
+        )}
       </div>
     </div>
   );

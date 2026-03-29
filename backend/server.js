@@ -1761,7 +1761,7 @@ app.post('/api/user/setup', async (req, res) => {
 
   await db.run(
     `UPDATE users
-     SET username = ?, wake_time = ?, sleep_time = ?, side_goal = ?, side_goals_json = ?, motivation = ?, google_calendar_url = ?
+     SET username = ?, wake_time = ?, sleep_time = ?, side_goal = ?, side_goals_json = ?, motivation = ?, google_calendar_url = ?, setup_completed = 1
      WHERE id = ?`,
     nextUsername,
     nextWake,

@@ -363,7 +363,7 @@ export default function Setup() {
 
               {step === 3 && (
                 <div className="h-full min-h-0">
-                  <div className="h-full overflow-y-auto rounded-[2rem] border border-border/60 bg-card/80 p-6 shadow-[0_18px_40px_rgba(15,23,42,0.12)] sm:p-7">
+                  <div className="h-full overflow-y-auto rounded-[2rem] border border-white/5 bg-white/[0.01] backdrop-blur-sm p-6 sm:p-7 custom-scrollbar">
                     <CalendarSync redirectPath="/setup" compact />
                   </div>
                 </div>

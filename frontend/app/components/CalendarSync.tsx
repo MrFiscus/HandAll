@@ -9,6 +9,7 @@ import {
   RefreshCw,
   Upload,
   X,
+  Plus,
 } from "lucide-react";
 import { useNavigate } from "react-router";
 import { toast } from "sonner";
@@ -21,12 +22,18 @@ import {
   resolveCalendarImportUrl,
 } from "../utils/calendarSync";
 import { saveCalendarImportPreviewState } from "../utils/calendarImportPreview";
-import { Alert, AlertDescription } from "./ui/alert";
 import { Button } from "./ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
+import { cn } from "./ui/utils";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
+
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "./ui/dialog";
 
 const GOOGLE_CALENDAR_CONNECT_QUERY = "google_calendar_connect";
 
@@ -264,189 +271,148 @@ export default function CalendarSync({
     }
   };
   return (
-    <div className="space-y-4">
-      <Card className="rounded-[1.45rem] border border-border/70 bg-card/75 shadow-[0_18px_40px_rgba(15,23,42,0.12)]">
-        <CardHeader className="px-5 pb-2 pt-5">
-          <CardTitle
-            className="text-base font-semibold tracking-tight text-foreground"
-            style={{ fontFamily: "'Space Grotesk', sans-serif" }}
-          >
-            Add your calendar
-          </CardTitle>
-          <CardDescription className="text-sm text-muted-foreground">
-            Connect Google or import an `.ical` file or link.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3 px-5 pb-5">
-          <div className="rounded-[1.2rem] border border-border/70 bg-background/45 p-3.5">
-            <div className="mb-2.5 flex items-start justify-between gap-3">
-              <div className="space-y-1">
-                <p className="text-sm font-semibold text-foreground">
-                  Google Calendar
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Connect once and sync later.
-                </p>
-              </div>
-              <div
-                className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                  isGoogleCalendarConnected
-                    ? "bg-green-100 text-green-700"
-                    : "bg-slate-100 text-slate-700"
-                }`}
-              >
-                {isGoogleCalendarConnected ? "Connected" : "Not connected"}
-              </div>
-            </div>
+    <div className="space-y-6">
+      <div className="p-8 rounded-[2.5rem] bg-white/[0.01] border border-white/[0.03] backdrop-blur-sm space-y-8">
+        <div className="space-y-1.5">
+          <label>Google Connection</label>
+          <p className="text-sm text-muted-foreground font-medium">
+            Connect once and sync your Google events automatically.
+          </p>
+        </div>
 
-            <div className="rounded-xl border border-border/70 bg-black/10 p-3">
-              <p className="text-xs font-medium uppercase tracking-[0.18em] text-foreground/70">
-                Connection status
-              </p>
-              <p className="text-sm leading-5 text-muted-foreground">
-                {isGoogleCalendarConnected
-                  ? "Connected and ready to sync."
-                  : "Not connected yet."}
-              </p>
+        <div className="p-6 rounded-[1.5rem] bg-white/[0.02] border border-white/[0.03] flex items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div className={cn(
+              "h-12 w-12 rounded-2xl flex items-center justify-center transition-all duration-500",
+              isGoogleCalendarConnected ? "bg-primary/20 text-primary" : "bg-white/5 text-muted-foreground/40"
+            )}>
+              <Calendar className="h-6 w-6" />
             </div>
-
-            <div className="mt-3 flex gap-2">
-              {!isGoogleCalendarConnected ? (
-                <Button
-                  onClick={handleConnectGoogleCalendar}
-                  className="h-11 flex-1 rounded-xl"
-                >
-                  <Calendar className="mr-2 h-4 w-4" />
-                  Connect Google Calendar
-                </Button>
-              ) : (
-                <>
-                  <Button
-                    onClick={handleSyncConnectedGoogleCalendar}
-                    disabled={isLoading}
-                    className="h-11 flex-1 rounded-xl"
-                  >
-                    {isLoading ? (
-                      <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="mr-2 h-4 w-4" />
-                    )}
-                    Sync Connected Calendar
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={handleDisconnectGoogleCalendar}
-                    disabled={isLoading}
-                    className="h-11 rounded-xl"
-                  >
-                    Disconnect
-                  </Button>
-                </>
-              )}
+            <div>
+              <p className="font-bold text-foreground">Google Calendar</p>
+              <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground/40 mt-0.5">
+                {isGoogleCalendarConnected ? "Synced & Active" : "Not Linked"}
+              </p>
             </div>
           </div>
+          <div className={cn(
+            "h-2 w-2 rounded-full",
+            isGoogleCalendarConnected ? "bg-primary shadow-[0_0_10px_var(--color-primary)]" : "bg-white/10"
+          )} />
+        </div>
 
-          <button
-            type="button"
-            onClick={() => setShowDialog(true)}
-            className="group flex w-full items-center justify-between rounded-[1.2rem] border border-border/70 bg-background/45 p-3.5 text-left transition-colors hover:bg-background/60"
-          >
-            <div className="flex items-start gap-4">
-              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-primary/14 text-primary">
-                <Upload className="h-4.5 w-4.5" />
-              </div>
-              <div className="space-y-1">
-                <p className="text-sm font-semibold text-foreground">
-                  Import `.ical` file or link
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  Upload a file or paste a private iCal URL.
-                </p>
-              </div>
-            </div>
-            <div className="rounded-full border border-border/70 bg-background/75 px-3 py-1 text-xs font-semibold text-foreground transition-colors group-hover:border-primary/30 group-hover:text-primary">
-              Import
-            </div>
-          </button>
-        </CardContent>
-      </Card>
-
-      {showDialog ? (
-        <div className="fixed inset-0 z-[140] flex items-center justify-center bg-[#163f28] p-4">
-          <div className="w-full max-w-2xl rounded-[1.75rem] border border-white/10 bg-[#1f5a36] p-6 shadow-[0_28px_80px_rgba(15,23,42,0.35)]">
-            <div className="mb-4 flex items-start justify-between gap-4">
-              <div className="space-y-1">
-                <h3 className="text-xl font-semibold text-foreground">
-                  Import Calendar Events
-                </h3>
-                <p className="text-sm text-muted-foreground">
-                  Choose how you'd like to import your external events.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowDialog(false)}
-                className="rounded-full p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        <div className="flex gap-3 pt-2">
+          {!isGoogleCalendarConnected ? (
+            <Button
+              onClick={handleConnectGoogleCalendar}
+              className="h-14 flex-1 rounded-2xl font-black uppercase tracking-widest bg-primary text-primary-foreground shadow-2xl"
+            >
+              Connect Account
+            </Button>
+          ) : (
+            <>
+              <Button
+                onClick={handleSyncConnectedGoogleCalendar}
+                disabled={isLoading}
+                className="h-14 flex-1 rounded-2xl font-black uppercase tracking-widest bg-primary text-primary-foreground shadow-2xl"
               >
-                <span className="sr-only">Close</span>
-                <X className="h-4 w-4" />
-              </button>
-            </div>
+                {isLoading ? <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+                Sync Now
+              </Button>
+              <Button
+                variant="outline"
+                onClick={handleDisconnectGoogleCalendar}
+                disabled={isLoading}
+                className="h-14 rounded-2xl font-bold border-white/5 hover:bg-destructive/10 hover:text-destructive hover:border-destructive/20 transition-all px-6"
+              >
+                Disconnect
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
 
+      <button
+        type="button"
+        onClick={() => setShowDialog(true)}
+        className="group w-full p-8 rounded-[2.5rem] bg-white/[0.01] border border-white/[0.03] backdrop-blur-sm flex items-center justify-between transition-all hover:bg-white/[0.03] hover:border-primary/20"
+      >
+        <div className="flex items-center gap-6">
+          <div className="h-14 w-14 rounded-3xl bg-white/5 flex items-center justify-center text-muted-foreground group-hover:text-primary transition-colors">
+            <Upload className="h-6 w-6" />
+          </div>
+          <div className="text-left space-y-1">
+            <p className="text-lg font-bold text-foreground">Import .ical</p>
+            <p className="text-sm text-muted-foreground font-medium">Upload a file or paste a private link.</p>
+          </div>
+        </div>
+        <div className="h-10 w-10 rounded-full border border-white/5 flex items-center justify-center group-hover:bg-primary group-hover:border-none transition-all">
+          <Plus className="h-4 w-4 group-hover:text-primary-foreground" />
+        </div>
+      </button>
+
+      <Dialog open={showDialog} onOpenChange={setShowDialog}>
+        <DialogContent className="sm:max-w-[600px] border-none rounded-[3rem] bg-card/98 backdrop-blur-3xl shadow-4xl flex flex-col p-0 overflow-hidden">
+          <div className="p-10 pb-0">
+            <h2 className="text-3xl font-black tracking-tighter text-foreground">Import Calendar.</h2>
+            <p className="opacity-40 font-medium text-sm">Choose how you'd like to sync your events.</p>
+          </div>
+
+          <div className="p-10 flex-1 overflow-y-auto custom-scrollbar">
             <Tabs defaultValue="url" className="w-full">
-              <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="url">
+              <TabsList className="grid w-full grid-cols-2 bg-white/5 rounded-2xl p-1">
+                <TabsTrigger value="url" className="rounded-xl data-[state=active]:bg-primary data-[state=active]:text-primary-foreground font-bold text-[10px] uppercase tracking-widest py-3">
                   <Link className="mr-2 h-4 w-4" />
                   URL Sync
                 </TabsTrigger>
-                <TabsTrigger value="file">
+                <TabsTrigger value="file" className="rounded-xl data-[state=active]:bg-primary data-[state=active]:text-primary-foreground font-bold text-[10px] uppercase tracking-widest py-3">
                   <Upload className="mr-2 h-4 w-4" />
                   File Upload
                 </TabsTrigger>
               </TabsList>
 
-              <TabsContent value="url" className="space-y-4 pt-4">
-                <Alert>
-                  <Info className="h-4 w-4" />
-                  <AlertDescription className="text-xs">
-                    <strong>Google Calendar:</strong> Settings → Your calendar
-                    → Integrate calendar → Copy "Secret address in iCal format"
-                  </AlertDescription>
-                </Alert>
-                <div className="space-y-2">
-                  <Label htmlFor="calendarUrl">iCal URL</Label>
+              <TabsContent value="url" className="space-y-8 pt-8 animate-in fade-in zoom-in-95 duration-500">
+                <div className="p-6 rounded-[1.5rem] bg-white/[0.03] border border-white/[0.05] flex gap-4">
+                  <div className="h-10 w-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+                    <Info className="h-5 w-5 text-primary" />
+                  </div>
+                  <p className="text-xs leading-relaxed text-muted-foreground font-medium">
+                    <strong>Quick Tip:</strong> In Google Calendar, go to Settings → Integrate calendar → Copy "Secret address in iCal format".
+                  </p>
+                </div>
+                <div className="space-y-3">
+                  <Label htmlFor="calendarUrl" className="text-[10px] font-black uppercase tracking-widest opacity-40">iCal Private Link</Label>
                   <Input
                     id="calendarUrl"
-                    placeholder="https://calendar.google.com/calendar/ical/..."
+                    placeholder="https://calendar.google.com/..."
                     value={calendarUrl}
                     onChange={(e) => setCalendarUrl(e.target.value)}
+                    className="h-16 rounded-2xl bg-white/[0.02] border-white/5 px-6 text-lg font-bold focus:border-primary/20 transition-all"
                   />
                 </div>
                 <Button
                   onClick={handleSyncUrl}
                   disabled={isLoading}
-                  className="w-full"
+                  className="w-full h-16 rounded-2xl font-black uppercase tracking-widest bg-primary text-primary-foreground shadow-2xl hover:scale-[1.02] transition-all"
                 >
-                  {isLoading ? (
-                    <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <CheckCircle2 className="mr-2 h-4 w-4" />
-                  )}
-                  {isLoading ? "Syncing..." : "Sync from URL"}
+                  {isLoading ? <RefreshCw className="mr-2 h-5 w-5 animate-spin" /> : <CheckCircle2 className="mr-2 h-5 w-5" />}
+                  Confirm Link
                 </Button>
               </TabsContent>
 
-              <TabsContent value="file" className="space-y-4 pt-4">
+              <TabsContent value="file" className="space-y-8 pt-8 animate-in fade-in zoom-in-95 duration-500">
                 <div
-                  className="flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed p-12 transition-colors hover:bg-muted/50"
+                  className="flex cursor-pointer flex-col items-center justify-center rounded-[2.5rem] border-2 border-dashed border-white/5 bg-white/[0.01] p-16 transition-all hover:bg-white/[0.03] hover:border-primary/20 group"
                   onClick={() => fileInputRef.current?.click()}
                 >
-                  <Upload className="mb-4 h-12 w-12 text-muted-foreground" />
-                  <p className="text-sm font-medium">
-                    Click to upload or drag and drop
+                  <div className="h-20 w-20 rounded-[2rem] bg-primary/10 flex items-center justify-center mb-6 group-hover:scale-110 transition-transform duration-500">
+                    <Upload className="h-10 w-10 text-primary" />
+                  </div>
+                  <p className="text-xl font-black tracking-tight text-foreground">
+                    Drop .ics here
                   </p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Supports .ics, .ical files
+                  <p className="mt-2 text-sm text-muted-foreground font-medium opacity-40">
+                    or click to browse files
                   </p>
                   <input
                     type="file"
@@ -457,66 +423,68 @@ export default function CalendarSync({
                   />
                 </div>
                 {isLoading && (
-                  <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-                    <RefreshCw className="h-4 w-4 animate-spin" />
-                    Parsing file...
+                  <div className="flex items-center justify-center gap-3 text-sm font-bold text-primary animate-pulse">
+                    <RefreshCw className="h-5 w-5 animate-spin" />
+                    Processing Calendar...
                   </div>
                 )}
               </TabsContent>
             </Tabs>
-
           </div>
-        </div>
-      ) : null}
+        </DialogContent>
+      </Dialog>
 
       {!compact && userProfile.calendarUrls.length > 0 && (
-        <Card className="rounded-[1.6rem] border border-border/70 bg-card/70">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm">Active Imports</CardTitle>
-            <CardDescription className="text-xs">
-              {lastCalendarSync &&
-                `Last sync: ${format(new Date(lastCalendarSync), "PPp")}`}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2">
+        <div className="p-8 rounded-[2.5rem] bg-white/[0.01] border border-white/[0.03] backdrop-blur-sm space-y-6">
+          <div className="space-y-1">
+            <p className="text-[10px] font-black uppercase tracking-widest text-muted-foreground/40">Active Syncs</p>
+            {lastCalendarSync && (
+              <p className="text-xs text-muted-foreground font-medium">
+                Last updated {format(new Date(lastCalendarSync), "PPp")}
+              </p>
+            )}
+          </div>
+          <div className="space-y-3">
             {userProfile.calendarUrls.map((url, index) => (
               <div
                 key={index}
-                className="flex items-center justify-between gap-2 rounded-lg border bg-muted/20 p-2"
+                className="flex items-center justify-between gap-4 p-4 rounded-2xl bg-white/[0.02] border border-white/[0.03] transition-all hover:bg-white/[0.04]"
               >
-                <div className="flex min-w-0 items-center gap-2">
-                  <Calendar className="h-4 w-4 flex-shrink-0 text-blue-500" />
-                  <span className="text-xs truncate">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="h-8 w-8 rounded-lg bg-blue-500/10 flex items-center justify-center text-blue-400">
+                    <Calendar className="h-4 w-4" />
+                  </div>
+                  <span className="text-sm font-bold truncate">
                     {url.startsWith("file://")
-                      ? url.replace("file://", "Uploaded: ")
+                      ? url.replace("file://", "File: ")
                       : url}
                   </span>
                 </div>
-                <div className="flex gap-1">
+                <div className="flex gap-2">
                   {!url.startsWith("file://") && (
                     <Button
                       size="sm"
                       variant="ghost"
-                      className="h-7 w-7 p-0"
+                      className="h-9 w-9 p-0 rounded-xl hover:bg-white/5"
                       onClick={() => handleResync(url)}
                       disabled={isLoading}
                     >
-                      <RefreshCw className="h-3 w-3" />
+                      <RefreshCw className="h-4 w-4" />
                     </Button>
                   )}
                   <Button
                     size="sm"
                     variant="ghost"
-                    className="h-7 w-7 p-0 text-red-500 hover:bg-red-50 hover:text-red-600"
+                    className="h-9 w-9 p-0 rounded-xl hover:bg-destructive/10 text-destructive/40 hover:text-destructive"
                     onClick={() => handleRemoveCalendar(url)}
                   >
-                    <AlertCircle className="h-3 w-3" />
+                    <X className="h-4 w-4" />
                   </Button>
                 </div>
               </div>
             ))}
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       )}
     </div>
   );

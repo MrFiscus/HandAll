@@ -26,6 +26,7 @@ import {
 import { Button } from "./ui/button";
 import { useAppStore, CalendarEvent, SuggestedTask } from "../store/useAppStore";
 import { cn } from "./ui/utils";
+import { TimePickerField } from "./ui/time-picker";
 import {
   Dialog,
   DialogContent,
@@ -83,13 +84,9 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
   const [currentWeekStart, setCurrentWeekStart] = useState(startOfWeek(new Date(), { weekStartsOn: 0 }));
   const [focusedDay, setFocusedDay] = useState(new Date());
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const [winHeight, setWinHeight] = useState(typeof window !== "undefined" ? window.innerHeight : 800);
-
-  useEffect(() => {
-    const handleResize = () => setWinHeight(window.innerHeight);
-    window.addEventListener("resize", handleResize);
-    return () => window.removeEventListener("resize", handleResize);
-  }, []);
+  const scrollbarTrackRef = useRef<HTMLDivElement>(null);
+  const dragMetaRef = useRef<{ startY: number; startScrollTop: number } | null>(null);
+  const [scrollMetrics, setScrollMetrics] = useState({ top: 0, clientHeight: 1, scrollHeight: 1 });
 
   // --- Layout Configuration ---
   const { startHour, hoursData } = useMemo(() => {
@@ -115,6 +112,22 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
   }, [userProfile.wakeTime, userProfile.sleepTime, isFullScreen]);
 // Fixed Height for consistency
 const HOUR_HEIGHT = 100;
+  const contentHeight = hoursData.length * HOUR_HEIGHT;
+
+  useEffect(() => {
+    const handleResize = () => {
+      const el = scrollContainerRef.current;
+      if (!el) return;
+      setScrollMetrics({
+        top: el.scrollTop,
+        clientHeight: el.clientHeight || 1,
+        scrollHeight: contentHeight || 1,
+      });
+    };
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, [contentHeight]);
 
 
   const showText = true;
@@ -139,8 +152,29 @@ const HOUR_HEIGHT = 100;
       const now = new Date();
       const scrollPos = Math.max(0, (now.getHours() - 2 - startHour) * HOUR_HEIGHT);
       scrollContainerRef.current.scrollTop = scrollPos;
+      setScrollMetrics({
+        top: scrollContainerRef.current.scrollTop,
+        clientHeight: scrollContainerRef.current.clientHeight || 1,
+        scrollHeight: contentHeight || 1,
+      });
     }
-  }, [startHour, HOUR_HEIGHT, isFullScreen]);
+  }, [startHour, HOUR_HEIGHT, isFullScreen, contentHeight]);
+
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(() => {
+      setScrollMetrics({
+        top: el.scrollTop,
+        clientHeight: el.clientHeight || 1,
+        scrollHeight: contentHeight || 1,
+      });
+    });
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [contentHeight, viewMode, isFullScreen]);
 
   const navigate = (dir: "prev" | "next" | "today") => {
     if (dir === "today") {
@@ -198,7 +232,8 @@ const HOUR_HEIGHT = 100;
   const onGridClick = (day: Date, e: React.MouseEvent) => {
     if ((e.target as HTMLElement).closest(".event-block")) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const minutes = ((e.clientY - rect.top) / HOUR_HEIGHT) * 60;
+    const scrollTop = scrollContainerRef.current?.scrollTop || 0;
+    const minutes = (((e.clientY - rect.top) + scrollTop) / HOUR_HEIGHT) * 60;
     const snapped = Math.floor(minutes / 15) * 15 + (startHour * 60);
     setDialogMode("create");
     setForm({ title: "", date: format(day, "yyyy-MM-dd"), startTime: format(setMinutes(setHours(new Date(), Math.floor(snapped/60)), snapped%60), "HH:mm"), endTime: format(setMinutes(setHours(new Date(), Math.floor((snapped+60)/60)), (snapped+60)%60), "HH:mm"), type: "assignment" });
@@ -231,7 +266,8 @@ const HOUR_HEIGHT = 100;
     const item = pendingSuggestions.find(s => s.id === draggingId) || events.find(ev => ev.id === draggingId);
     if (!item) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const minutes = ((e.clientY - rect.top) / HOUR_HEIGHT) * 60;
+    const scrollTop = scrollContainerRef.current?.scrollTop || 0;
+    const minutes = (((e.clientY - rect.top) + scrollTop) / HOUR_HEIGHT) * 60;
     const snapped = Math.round(minutes / 15) * 15 + (startHour * 60);
     const duration = differenceInMinutes(new Date(item.end), new Date(item.start));
     const newStart = startOfDay(day); newStart.setHours(Math.floor(snapped / 60)); newStart.setMinutes(snapped % 60);
@@ -249,6 +285,7 @@ const HOUR_HEIGHT = 100;
   };
 
   const saveEvent = async () => {
+    if (!form.title.trim()) return toast.error("What are we working on?");
     const start = new Date(`${form.date}T${form.startTime}`), end = new Date(`${form.date}T${form.endTime}`);
     if (end <= start) return toast.error("Time must flow forward.");
     if (dialogMode === "create") await addEvent({ title: form.title, start, end, type: form.type, xpValue: 10, completed: false });
@@ -294,6 +331,83 @@ const HOUR_HEIGHT = 100;
   };
 
   const acceptedCount = pendingSuggestions.filter(s => s.status === "accepted").length;
+
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+
+    const onWheel = (event: WheelEvent) => {
+      if (contentHeight <= el.clientHeight + 1) return;
+      el.scrollTop += event.deltaY;
+      event.preventDefault();
+    };
+
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+    };
+  }, [viewMode, isFullScreen, hoursData.length, contentHeight]);
+
+  useEffect(() => {
+    const onPointerMove = (event: PointerEvent) => {
+      const el = scrollContainerRef.current;
+      const track = scrollbarTrackRef.current;
+      const dragMeta = dragMetaRef.current;
+      if (!el || !track || !dragMeta) return;
+
+      const maxScroll = Math.max(1, contentHeight - el.clientHeight);
+      const thumbHeight = Math.max(48, (scrollMetrics.clientHeight / Math.max(contentHeight, 1)) * track.clientHeight);
+      const maxTrackTravel = Math.max(1, track.clientHeight - thumbHeight);
+      const deltaY = event.clientY - dragMeta.startY;
+      const nextScrollTop = dragMeta.startScrollTop + (deltaY / maxTrackTravel) * maxScroll;
+      el.scrollTop = Math.max(0, Math.min(maxScroll, nextScrollTop));
+    };
+
+    const stopDrag = () => {
+      dragMetaRef.current = null;
+      document.body.style.userSelect = "";
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", stopDrag);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", stopDrag);
+    };
+  }, [scrollMetrics.clientHeight, contentHeight]);
+
+  const handleScrollbarTrackPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    const el = scrollContainerRef.current;
+    const track = scrollbarTrackRef.current;
+    if (!el || !track) return;
+
+    const rect = track.getBoundingClientRect();
+    const thumbHeight = Math.max(48, (el.clientHeight / Math.max(contentHeight, 1)) * rect.height);
+    const clickOffset = event.clientY - rect.top - thumbHeight / 2;
+    const maxTrackTravel = Math.max(1, rect.height - thumbHeight);
+    const ratio = Math.max(0, Math.min(1, clickOffset / maxTrackTravel));
+    el.scrollTop = ratio * Math.max(0, contentHeight - el.clientHeight);
+  };
+
+  const handleScrollbarThumbPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    dragMetaRef.current = { startY: event.clientY, startScrollTop: el.scrollTop };
+    document.body.style.userSelect = "none";
+  };
+
+  const scrollbarThumbHeight = useMemo(() => {
+    if (contentHeight <= scrollMetrics.clientHeight) return 0;
+    return Math.max(48, (scrollMetrics.clientHeight / contentHeight) * scrollMetrics.clientHeight);
+  }, [scrollMetrics.clientHeight, contentHeight]);
+
+  const scrollbarThumbTop = useMemo(() => {
+    if (contentHeight <= scrollMetrics.clientHeight || scrollbarThumbHeight <= 0) return 0;
+    const maxScroll = contentHeight - scrollMetrics.clientHeight;
+    const maxTrackTravel = scrollMetrics.clientHeight - scrollbarThumbHeight;
+    return (scrollMetrics.top / maxScroll) * maxTrackTravel;
+  }, [scrollMetrics.top, scrollMetrics.clientHeight, contentHeight, scrollbarThumbHeight]);
 
   return (
     <div className={cn(
@@ -343,7 +457,7 @@ const HOUR_HEIGHT = 100;
       </div>
 
       <div className={cn(
-        "flex flex-1 overflow-hidden relative border-white/10 min-h-0 mb-16",
+        "flex flex-1 overflow-hidden relative border-white/10 min-h-0",
         isFullScreen ? "" : "border rounded-b-lg shadow-2xl"
       )}>
         
@@ -386,56 +500,84 @@ const HOUR_HEIGHT = 100;
           </div>
 
           {/* Scrollable Grid Area */}
-          <div ref={scrollContainerRef} className={cn(
-            "flex-1 relative transition-colors custom-scrollbar overflow-y-auto",
-            isFullScreen ? "bg-black/10" : "bg-black/5"
-          )} onScroll={(e) => { 
-            const target = e.target as HTMLDivElement;
-            const timeAxis = target.parentElement?.previousElementSibling?.children[1]?.children[0] as HTMLDivElement;
-            if (timeAxis) timeAxis.style.top = `-${target.scrollTop}px`;
-          }}>
-            
-            {/* Horizontal Grid Lines */}
-            <div className="absolute inset-0 pointer-events-none z-0">
-               {hoursData.map(d => (
-                  <div key={d.index} className="border-b border-white/[0.03] w-full" style={{ height: `${HOUR_HEIGHT}px` }} />
-               ))}
+          <div className="flex-1 min-h-0 relative">
+            <div
+              ref={scrollContainerRef}
+              data-calendar-scroll-area="true"
+              className={cn(
+                "absolute inset-0 transition-colors no-scrollbar overflow-y-auto overflow-x-hidden overscroll-y-contain touch-pan-y pr-4",
+                isFullScreen ? "bg-black/10" : "bg-black/5"
+              )}
+              onScroll={(e) => { 
+                const target = e.target as HTMLDivElement;
+                const timeAxis = target.parentElement?.parentElement?.previousElementSibling?.children[1]?.children[0] as HTMLDivElement;
+                if (timeAxis) timeAxis.style.top = `-${target.scrollTop}px`;
+                setScrollMetrics({
+                  top: target.scrollTop,
+                  clientHeight: target.clientHeight || 1,
+                  scrollHeight: contentHeight || 1,
+                });
+              }}>
+              <div className="relative min-h-full" style={{ height: `${hoursData.length * HOUR_HEIGHT}px` }}>
+              {/* Horizontal Grid Lines */}
+                <div className="absolute inset-0 pointer-events-none z-0">
+                  {hoursData.map(d => (
+                    <div key={d.index} className="border-b border-white/[0.03] w-full" style={{ height: `${HOUR_HEIGHT}px` }} />
+                  ))}
+                </div>
+
+                {/* Vertical Columns and Events */}
+                <div className="relative z-10 grid h-full" style={{ gridTemplateColumns: `repeat(${viewMode === "week" ? 7 : 1}, minmax(0, 1fr))` }}>
+                  {visibleDays.map(day => {
+                    const items = getPositionedItems(day);
+                    return (
+                      <div key={day.toISOString()} className={cn("relative h-full border-r border-white/5 last:border-r-0 transition-all", isSameDay(day, new Date()) ? "bg-white/[0.01]" : "")} onClick={(e) => onGridClick(day, e)} onDragOver={(e) => onDragOver(e, day)} onDrop={onDrop}>
+                        {items.map(item => {
+                          const style = getEventStyle(item, day);
+                          const visuals = getTaskVisuals(item.type, item.start, item.completed);
+                          return (
+                            <div key={item.id} draggable onDragStart={(e) => onDragStart(e, item.id)} onDragEnd={() => {setDraggingId(null); setDragPreview(null);}}
+                                className={cn("event-block absolute rounded-[4px] px-2 py-1 text-[11px] leading-tight cursor-pointer overflow-hidden group select-none transition-all", visuals.className, item.isSuggestion && "border-2 border-dashed border-white/30 bg-transparent! text-white/60")}
+                                style={{ ...style, ...visuals.style }} onClick={(e) => onEventClick(e, item)}>
+                              {showText && (
+                                <>
+                                  <div className={cn("font-medium truncate mb-0.5", item.completed && "line-through")}>{item.title}</div>
+                                  <div className="text-[10px] font-normal opacity-70 truncate">
+                                    {isFullScreen 
+                                      ? `${format(new Date(item.start), "HH:mm")} - ${format(new Date(item.end), "HH:mm")}` 
+                                      : format(new Date(item.start), "h:mm a")
+                                    }
+                                  </div>
+                                </>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                  <TimeIndicator currentWeekStart={currentWeekStart} focusedDay={focusedDay} viewMode={viewMode} startHour={startHour} hourHeight={HOUR_HEIGHT} hoursCount={hoursData.length} />
+                </div>
+              </div>
+
             </div>
 
-            {/* Vertical Columns and Events */}
-            <div className="absolute inset-0 grid" style={{ gridTemplateColumns: `repeat(${viewMode === "week" ? 7 : 1}, minmax(0, 1fr))`, height: `${hoursData.length * HOUR_HEIGHT}px` }}>
-              {visibleDays.map(day => {
-                const items = getPositionedItems(day);
-                return (
-                  <div key={day.toISOString()} className={cn("relative h-full border-r border-white/5 last:border-r-0 transition-all", isSameDay(day, new Date()) ? "bg-white/[0.01]" : "")} onClick={(e) => onGridClick(day, e)} onDragOver={(e) => onDragOver(e, day)} onDrop={onDrop}>
-
-                    
-                    {items.map(item => {
-                      const style = getEventStyle(item, day);
-                      const visuals = getTaskVisuals(item.type, item.start, item.completed);
-                      return (
-                        <div key={item.id} draggable onDragStart={(e) => onDragStart(e, item.id)} onDragEnd={() => {setDraggingId(null); setDragPreview(null);}}
-                             className={cn("event-block absolute rounded-[4px] px-2 py-1 text-[11px] leading-tight cursor-pointer overflow-hidden group select-none transition-all", visuals.className, item.isSuggestion && "border-2 border-dashed border-white/30 bg-transparent! text-white/60")}
-                             style={{ ...style, ...visuals.style }} onClick={(e) => onEventClick(e, item)}>
-                          {showText && (
-                            <>
-                              <div className={cn("font-medium truncate mb-0.5", item.completed && "line-through")}>{item.title}</div>
-                              <div className="text-[10px] font-normal opacity-70 truncate">
-                                {isFullScreen 
-                                  ? `${format(new Date(item.start), "HH:mm")} - ${format(new Date(item.end), "HH:mm")}`
-                                  : format(new Date(item.start), "h:mm a")
-                                }
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                );
-              })}
-              <TimeIndicator currentWeekStart={currentWeekStart} focusedDay={focusedDay} viewMode={viewMode} startHour={startHour} hourHeight={HOUR_HEIGHT} hoursCount={hoursData.length} />
-            </div>
+            {contentHeight > scrollMetrics.clientHeight + 1 && (
+              <div
+                ref={scrollbarTrackRef}
+                className="absolute right-1 top-2 bottom-2 w-2 rounded-full bg-white/[0.06] border border-white/[0.04]"
+                onPointerDown={handleScrollbarTrackPointerDown}
+              >
+                <div
+                  className="absolute left-0 right-0 rounded-full bg-primary/80 shadow-[0_0_12px_rgba(218,241,222,0.18)] cursor-grab active:cursor-grabbing"
+                  style={{
+                    top: `${scrollbarThumbTop}px`,
+                    height: `${scrollbarThumbHeight}px`,
+                  }}
+                  onPointerDown={handleScrollbarThumbPointerDown}
+                />
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -447,8 +589,18 @@ const HOUR_HEIGHT = 100;
           <div className="space-y-6">
             <Input value={form.title} onChange={e => setForm({...form, title: e.target.value})} className="h-12 bg-white/[0.02] border-white/10 rounded-md text-lg px-4 text-foreground" placeholder="Add title" autoFocus/>
             <div className="grid grid-cols-2 gap-6">
-              <div className="space-y-2"><Label className="text-xs font-normal opacity-60">Start</Label><Input type="time" value={form.startTime} onChange={e => setForm({...form, startTime: e.target.value})} className="h-11 bg-white/[0.02] border-white/10 rounded-md px-4 font-normal" /></div>
-              <div className="space-y-2"><Label className="text-xs font-normal opacity-60">End</Label><Input type="time" value={form.endTime} onChange={e => setForm({...form, endTime: e.target.value})} className="h-11 bg-white/[0.02] border-white/10 rounded-md px-4 font-normal" /></div>
+              <TimePickerField
+                id="cal-startTime"
+                label="Start"
+                value={form.startTime}
+                onChange={(next) => setForm({ ...form, startTime: next })}
+              />
+              <TimePickerField
+                id="cal-endTime"
+                label="End"
+                value={form.endTime}
+                onChange={(next) => setForm({ ...form, endTime: next })}
+              />
             </div>
             <div className="flex gap-3 pt-6 border-t border-white/5">
               {dialogMode === "edit" && <Button variant="ghost" className="h-11 rounded-md text-destructive hover:bg-destructive/10" onClick={() => { removeEvent(selectedEventId!); setShowDialog(false); }}>Delete</Button>}

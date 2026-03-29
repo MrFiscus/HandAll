@@ -234,7 +234,7 @@ export default function Root() {
       )}
 
       <main className="flex-1 overflow-hidden relative">
-        <div className="h-full w-full overflow-auto">
+        <div className="h-full min-h-0 w-full overflow-hidden">
           <Outlet />
         </div>
       </main>

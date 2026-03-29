@@ -128,8 +128,12 @@ function parseAiMetaColumn(raw) {
 
 function taskRowToApiPayload(t) {
   const typ = t.type ? t.type.toLowerCase() : 'working';
-  const xp =
-    typ === 'working' ? 50 : typ === 'goal' ? 30 : 10;
+  
+  const startMs = new Date(t.start_time).getTime();
+  const endMs = new Date(t.end_time).getTime();
+  const durationHours = Math.max(0.25, (endMs - startMs) / (1000 * 60 * 60));
+  const xp = Math.round(durationHours * 10);
+
   const o = {
     id: t.external_id || t.id.toString(),
     db_id: t.id,
@@ -1918,19 +1922,20 @@ app.get('/api/tasks', async (req, res) => {
     'SELECT * FROM tasks WHERE user_id = ? ORDER BY start_time ASC',
     uid
   );
-  const tasks = activeUrl
-    ? all.filter((t) => taskMatchesActiveCalendar(t, activeUrl))
-    : [];
+  const tasks = all.filter((t) => {
+    if (!t.source_url && !t.planner_source_url) return true;
+    if (!activeUrl) return false;
+    return taskMatchesActiveCalendar(t, activeUrl);
+  });
   if (!activeUrl) {
-    console.log('[handall:calendar] GET /api/tasks returning 0 rows (no active source)');
+    console.log('[handall:calendar] GET /api/tasks returning only manual tasks (no active source)');
   } else {
     console.log(
       '[handall:calendar] GET /api/tasks filtered %s/%s',
       tasks.length,
       all.length,
     );
-  }
-  res.json(tasks.map((t) => taskRowToApiPayload(t)));
+  }  res.json(tasks.map((t) => taskRowToApiPayload(t)));
 });
 
 app.post('/api/tasks/bulk', async (req, res) => {
@@ -2055,19 +2060,22 @@ app.post('/api/tasks', async (req, res) => {
     }
 
     const db = await getDB();
+    const resolved = await resolveActiveCalendarSource(db, localUserId);
+    const activeUrl = resolved.activeUrl || null;
+
     const externalId = randomUUID();
-    console.log('Adding task:', title, 'for user:', localUserId);
+    console.log('Adding task:', title, 'for user:', localUserId, 'active_source:', activeUrl);
     const result = await db.run(
-      'INSERT INTO tasks (user_id, external_id, title, description, start_time, end_time, type, status) VALUES (?, ?, ?, ?, ?, ?, ?, "Accepted")',
+      'INSERT INTO tasks (user_id, external_id, title, description, start_time, end_time, type, status, source_url) VALUES (?, ?, ?, ?, ?, ?, ?, "Accepted", ?)',
       localUserId,
       externalId,
       title,
       description,
       start,
       end,
-      type
-    );
-    const newId = result?.lastID ?? result?.lastInsertRowid;
+      type,
+      activeUrl
+    );    const newId = result?.lastID ?? result?.lastInsertRowid;
     console.log('Task added with ID:', newId, 'external_id:', externalId);
     res.json({ success: true, id: newId, external_id: externalId });
   } catch (err) {
@@ -2109,10 +2117,10 @@ app.patch('/api/tasks/:id', async (req, res) => {
         );
 
         if (completed === true && task.status !== 'Completed') {
-            let xpGained = 10;
-            const tlower = String(nextType || '').toLowerCase();
-            if (tlower === 'working') xpGained = 50;
-            else if (tlower === 'goal') xpGained = 30;
+            const startMs = new Date(nextStart).getTime();
+            const endMs = new Date(nextEnd).getTime();
+            const durationHours = Math.max(0.25, (endMs - startMs) / (1000 * 60 * 60));
+            const xpGained = Math.round(durationHours * 10);
 
             const user = await db.get('SELECT * FROM users WHERE id = ?', req.localUser.id);
             const newXp = (user.xp || 0) + xpGained;

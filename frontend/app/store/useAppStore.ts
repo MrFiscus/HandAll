@@ -363,22 +363,15 @@ export const useAppStore = create<AppState>()(
       },
 
       updateEvent: async (id, updates) => {
-        const { events, userProfile, setUserProfile } = get();
+        const { events, userProfile } = get();
         const event = events.find((e) => e.id === id);
 
         const res = await api.updateTask(id, updates);
         if (res.success) {
           // If task is being marked as completed and it wasn't before
           if (updates.completed === true && event && !event.completed) {
-            const xpGain = event.xpValue || 10;
-            const newXp = userProfile.xp + xpGain;
-            const newLevel = Math.floor(newXp / 100);
-
-            await setUserProfile({
-              xp: newXp,
-              level: newLevel,
-            });
-
+            const xpGain = res.xpGained || 10;
+            
             toast.success(`Task completed! +${xpGain} XP`);
 
             // --- Burnout Calculator ---
@@ -392,6 +385,7 @@ export const useAppStore = create<AppState>()(
               newDailyXp >= burnoutThreshold &&
               Date.now() > state.burnoutSnoozedUntil &&
               !state.burnoutPromptPending;
+            
             set({
               dailyXp: newDailyXp,
               dailyXpDate: today,

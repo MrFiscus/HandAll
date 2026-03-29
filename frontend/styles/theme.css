@@ -109,7 +109,6 @@
   }
 
   .sheet {
-    background: var(--sheet-bg);
     @apply border border-white/10 shadow-[0_40px_80px_rgba(0,0,0,0.3)] backdrop-blur-3xl;
   }
 }

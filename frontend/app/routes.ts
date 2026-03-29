@@ -4,6 +4,7 @@ import Dashboard from "./components/Dashboard";
 import Setup from "./components/Setup";
 import WeeklySync from "./components/WeeklySync";
 import DailyCheckIn from "./components/DailyCheckIn";
+import Goals from "./components/Goals";
 import Settings from "./components/Settings";
 import NotFound from "./components/NotFound";
 import Auth from "./components/Auth";
@@ -21,6 +22,7 @@ export const router = createBrowserRouter([
       { path: "setup", Component: Setup },
       { path: "weekly-sync", Component: WeeklySync },
       { path: "daily-check-in", Component: DailyCheckIn },
+      { path: "goals", Component: Goals },
       { path: "settings", Component: Settings },
       { path: "*", Component: NotFound },
     ],

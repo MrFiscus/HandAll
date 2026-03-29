@@ -10,6 +10,7 @@ import {
   CheckSquare,
   LogOut,
   AlertTriangle,
+  Target,
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useAppStore } from "../store/useAppStore";
@@ -359,6 +360,14 @@ export default function Root() {
           >
             <CheckSquare className="mr-2 h-4 w-4" />
             Daily Check-in
+          </Button>
+          <Button
+            variant={location.pathname === "/goals" ? "secondary" : "ghost"}
+            className="w-full justify-start"
+            onClick={() => navigate("/goals")}
+          >
+            <Target className="mr-2 h-4 w-4" />
+            Goals
           </Button>
           <Button
             variant={location.pathname === "/settings" ? "secondary" : "ghost"}

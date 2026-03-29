@@ -58,6 +58,8 @@ if (hasFrontendBuild) {
 fs.mkdirSync(calendarImportsDir, { recursive: true });
 
 const PLANNER_URL = (process.env.HANDALL_PLANNER_URL || 'http://127.0.0.1:8011').replace(/\/$/, '');
+const FIRECRAWL_API_KEY = process.env.FIRECRAWL_API_KEY || '';
+const GOALS_FIRECRAWL_MAX_RESULTS_PER_USE = 25;
 
 async function postPlanner(subPath, body) {
   const res = await fetch(`${PLANNER_URL}${subPath}`, {
@@ -460,6 +462,84 @@ function buildCalendarSyncRange(start, end) {
   };
 }
 
+async function clearGeneratedScheduleCore(db, userId) {
+  const generatedTypes = ['working', 'goal', 'freetime', 'free'];
+  const placeholders = generatedTypes.map(() => '?').join(', ');
+
+  const taskResult = await db.run(
+    `DELETE FROM tasks
+     WHERE user_id = ?
+       AND lower(type) IN (${placeholders})
+       AND lower(COALESCE(status, '')) != 'completed'`,
+    userId,
+    ...generatedTypes
+  );
+  const planningResult = await db.run(
+    'DELETE FROM ai_planning_items WHERE user_id = ?',
+    userId
+  );
+
+  return {
+    deletedTasks: Number(taskResult?.changes || 0),
+    deletedPlanningItems: Number(planningResult?.changes || 0),
+  };
+}
+
+function normalizeFirecrawlSearchResult(item, kind, goal = null) {
+  const metadata = item?.metadata || {};
+  return {
+    title: item?.title || metadata?.title || 'Untitled result',
+    description: item?.description || metadata?.description || '',
+    url: item?.url || metadata?.url || metadata?.sourceURL || '',
+    kind,
+    goal,
+  };
+}
+
+function dedupeFirecrawlResults(items) {
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = `${item.url}::${item.title}`.toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function searchFirecrawlEvents({ query, location, country = 'US', limit = 5 }) {
+  if (!FIRECRAWL_API_KEY) {
+    throw new Error('FIRECRAWL_API_KEY is not configured on the server.');
+  }
+
+  const response = await fetch('https://api.firecrawl.dev/v2/search', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${FIRECRAWL_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      query,
+      limit,
+      location,
+      country,
+      timeout: 45000,
+      ignoreInvalidURLs: true,
+      sources: ['web'],
+    }),
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data?.success === false) {
+    throw new Error(
+      data?.error ||
+        data?.message ||
+        `Firecrawl search failed (${response.status})`,
+    );
+  }
+
+  return Array.isArray(data?.data?.web) ? data.data.web : [];
+}
+
 async function getOrCreateLocalUser(authUser) {
   const db = await getDB();
   console.log('Fetching/Creating user for auth_id:', authUser.id);
@@ -580,6 +660,122 @@ app.get('/api/public/config', (req, res) => {
 });
 
 app.use('/api', requireAuth);
+
+app.post('/api/location/reverse-geocode', async (req, res) => {
+  const lat = Number(req.body?.lat);
+  const lon = Number(req.body?.lon);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return res.status(400).json({ error: 'lat and lon are required numbers' });
+  }
+
+  try {
+    const url = new URL('https://nominatim.openstreetmap.org/reverse');
+    url.searchParams.set('format', 'jsonv2');
+    url.searchParams.set('lat', String(lat));
+    url.searchParams.set('lon', String(lon));
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        'User-Agent': 'HandAll/1.0 (student planner)',
+        Accept: 'application/json',
+      },
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(`Reverse geocoding failed (${response.status})`);
+    }
+
+    const address = data?.address || {};
+    const city =
+      address.city ||
+      address.town ||
+      address.village ||
+      address.municipality ||
+      address.county ||
+      '';
+    const state = address.state || address.region || '';
+    const country = address.country || '';
+    const parts = [city, state, country].filter(Boolean);
+
+    res.json({
+      success: true,
+      location: parts.join(', '),
+      displayName: data?.display_name || parts.join(', '),
+    });
+  } catch (error) {
+    console.error('Reverse geocode error:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to resolve location',
+    });
+  }
+});
+
+app.post('/api/goals/nearby-events', async (req, res) => {
+  const location = typeof req.body?.location === 'string' ? req.body.location.trim() : '';
+  const country = typeof req.body?.country === 'string' ? req.body.country.trim() || 'US' : 'US';
+
+  if (!location) {
+    return res.status(400).json({ error: 'location is required' });
+  }
+
+  try {
+    const db = await getDB();
+    const user = await db.get('SELECT * FROM users WHERE id = ?', req.localUser.id);
+    const sideGoals = sideGoalsListFromUserRow(user);
+    const cappedGoals = sideGoals.slice(0, 5);
+    const funLimit = Math.min(10, GOALS_FIRECRAWL_MAX_RESULTS_PER_USE);
+    const remainingBudget = Math.max(0, GOALS_FIRECRAWL_MAX_RESULTS_PER_USE - funLimit);
+    const perGoalLimit = cappedGoals.length > 0
+      ? Math.max(1, Math.floor(remainingBudget / cappedGoals.length))
+      : 0;
+
+    const funQuery = `fun events, festivals, live music, student activities, things to do near ${location} this week`;
+    const funRawResults = await searchFirecrawlEvents({
+      query: funQuery,
+      location,
+      country,
+      limit: funLimit,
+    });
+
+    const goalEventGroups = [];
+    for (const goal of cappedGoals) {
+      const goalQuery = `events, meetups, classes, workshops, competitions, communities near ${location} for ${goal}`;
+      const goalRawResults = await searchFirecrawlEvents({
+        query: goalQuery,
+        location,
+        country,
+        limit: perGoalLimit,
+      });
+      goalEventGroups.push({
+        goal,
+        query: goalQuery,
+        results: dedupeFirecrawlResults(
+          goalRawResults.map((item) => normalizeFirecrawlSearchResult(item, 'goal', goal)),
+        ),
+      });
+    }
+
+    res.json({
+      success: true,
+      location,
+      country,
+      goals: sideGoals,
+      cappedGoals,
+      resultBudget: GOALS_FIRECRAWL_MAX_RESULTS_PER_USE,
+      funQuery,
+      funEvents: dedupeFirecrawlResults(
+        funRawResults.map((item) => normalizeFirecrawlSearchResult(item, 'fun')),
+      ),
+      goalEventGroups,
+    });
+  } catch (error) {
+    console.error('Nearby goals/events search error:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to search nearby events',
+    });
+  }
+});
 
 app.get('/api/proxy/ical', async (req, res) => {
   const { url } = req.query;
@@ -1155,6 +1351,19 @@ app.post('/api/schedule/rebalance', async (req, res) => {
   }
 });
 
+app.post('/api/schedule/clear-generated', async (req, res) => {
+  try {
+    const db = await getDB();
+    const result = await clearGeneratedScheduleCore(db, req.localUser.id);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    console.error('clear-generated schedule:', err);
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Failed to clear generated schedule',
+    });
+  }
+});
+
 // --- Task Management Endpoints ---
 app.get('/api/tasks', async (req, res) => {
   const db = await getDB();
@@ -1419,10 +1628,70 @@ app.delete('/api/tasks/source', async (req, res) => {
 
   const db = await getDB();
   const sourcedTasks = await db.all(
-    'SELECT id, external_id, type FROM tasks WHERE user_id = ? AND source_url = ?',
+    `SELECT id, external_id, type, title, start_time
+     FROM tasks
+     WHERE user_id = ?
+       AND (source_url = ? OR planner_source_url = ?)`,
     req.localUser.id,
+    sourceUrl,
     sourceUrl
   );
+
+  const matchedTasks = [...sourcedTasks];
+  const seenTaskIds = new Set(sourcedTasks.map((task) => Number(task.id)));
+
+  if (matchedTasks.length === 0) {
+    const importRows = await db.all(
+      `SELECT payload_json
+       FROM calendar_imports
+       WHERE user_id = ? AND source_url = ?
+       ORDER BY created_at DESC, id DESC`,
+      req.localUser.id,
+      sourceUrl
+    );
+
+    for (const row of importRows) {
+      let payload;
+      try {
+        payload = JSON.parse(row.payload_json);
+      } catch {
+        continue;
+      }
+
+      const importedEvents = Array.isArray(payload?.events) ? payload.events : [];
+      for (const event of importedEvents) {
+        const externalId = event?.id != null ? String(event.id) : '';
+        const title = event?.title != null ? String(event.title) : '';
+        const start = event?.start != null ? String(event.start) : '';
+        if (!externalId && (!title || !start)) {
+          continue;
+        }
+
+        const task = await db.get(
+          `SELECT id, external_id, type, title, start_time
+           FROM tasks
+           WHERE user_id = ?
+             AND (
+               external_id = ?
+               OR (title = ? AND start_time = ?)
+             )
+           ORDER BY id DESC
+           LIMIT 1`,
+          req.localUser.id,
+          externalId,
+          title,
+          start
+        );
+
+        if (task && !seenTaskIds.has(Number(task.id))) {
+          seenTaskIds.add(Number(task.id));
+          matchedTasks.push(task);
+        }
+      }
+    }
+  }
+
+  const sourcedTaskIds = matchedTasks.map((task) => Number(task.id)).filter(Number.isFinite);
   const assignmentKeys = sourcedTasks
     .filter((task) => String(task.type || '').toLowerCase() === 'assignment')
     .map((task) =>
@@ -1430,18 +1699,26 @@ app.delete('/api/tasks/source', async (req, res) => {
         ? String(task.external_id).trim()
         : `handall-db-${task.id}`
     );
+  const fallbackAssignmentKeys = matchedTasks
+    .filter((task) => String(task.type || '').toLowerCase() === 'assignment')
+    .map((task) =>
+      task?.external_id && String(task.external_id).trim()
+        ? String(task.external_id).trim()
+        : `handall-db-${task.id}`
+    );
+  const allAssignmentKeys = [...new Set([...assignmentKeys, ...fallbackAssignmentKeys])];
 
-  if (assignmentKeys.length > 0) {
-    const placeholders = assignmentKeys.map(() => '?').join(', ');
+  if (allAssignmentKeys.length > 0) {
+    const placeholders = allAssignmentKeys.map(() => '?').join(', ');
     await db.run(
       `DELETE FROM ai_planning_items
        WHERE user_id = ?
          AND assignment_external_id IN (${placeholders})`,
       req.localUser.id,
-      ...assignmentKeys
+      ...allAssignmentKeys
     );
 
-    const derivedTaskConditions = assignmentKeys
+    const derivedTaskConditions = allAssignmentKeys
       .map(() => '(external_id = ? OR external_id LIKE ? OR external_id LIKE ?)')
       .join(' OR ');
     await db.run(
@@ -1450,16 +1727,47 @@ app.delete('/api/tasks/source', async (req, res) => {
          AND lower(type) = 'working'
          AND (${derivedTaskConditions})`,
       req.localUser.id,
-      ...assignmentKeys.flatMap((key) => [key, `${key}-working-%`, `${key}-sub-%`])
+      ...allAssignmentKeys.flatMap((key) => [key, `${key}-working-%`, `${key}-sub-%`])
     );
   }
+
+  if (sourcedTaskIds.length > 0) {
+    const idPlaceholders = sourcedTaskIds.map(() => '?').join(', ');
+    await db.run(
+      `DELETE FROM tasks
+       WHERE user_id = ?
+         AND id IN (${idPlaceholders})`,
+      req.localUser.id,
+      ...sourcedTaskIds
+    );
+  }
+
   await db.run(
     'DELETE FROM tasks WHERE user_id = ? AND (source_url = ? OR planner_source_url = ?)',
     req.localUser.id,
     sourceUrl,
     sourceUrl
   );
-  res.json({ success: true });
+  await db.run(
+    'DELETE FROM calendar_imports WHERE user_id = ? AND source_url = ?',
+    req.localUser.id,
+    sourceUrl
+  );
+  const remainingSources = await db.get(
+    'SELECT COUNT(*) AS count FROM calendar_sources WHERE user_id = ?',
+    req.localUser.id
+  );
+  const user = await db.get('SELECT * FROM users WHERE id = ?', req.localUser.id);
+  let clearedGenerated = null;
+  if (Number(remainingSources?.count || 0) === 0 && sideGoalsListFromUserRow(user).length === 0) {
+    clearedGenerated = await clearGeneratedScheduleCore(db, req.localUser.id);
+  }
+
+  res.json({
+    success: true,
+    deletedTaskCount: sourcedTaskIds.length,
+    clearedGenerated,
+  });
 });
 
 app.delete('/api/tasks/:id', async (req, res) => {
@@ -1481,6 +1789,31 @@ app.delete('/api/tasks/:id', async (req, res) => {
     }
     await db.run('DELETE FROM tasks WHERE user_id = ? AND (id = ? OR external_id = ?)', req.localUser.id, id, id);
     res.json({ success: true });
+});
+
+app.delete('/api/tasks', async (req, res) => {
+  try {
+    const db = await getDB();
+    const tasksResult = await db.run(
+      'DELETE FROM tasks WHERE user_id = ?',
+      req.localUser.id,
+    );
+    const planningResult = await db.run(
+      'DELETE FROM ai_planning_items WHERE user_id = ?',
+      req.localUser.id,
+    );
+
+    res.json({
+      success: true,
+      deletedTasks: Number(tasksResult?.changes || 0),
+      deletedPlanningItems: Number(planningResult?.changes || 0),
+    });
+  } catch (err) {
+    console.error('delete all tasks:', err);
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Failed to remove all events',
+    });
+  }
 });
 
 app.get('/api/planning-items', async (req, res) => {

@@ -66,6 +66,20 @@ async function getAuthHeaders() {
   return headers;
 }
 
+export interface NearbyGoalEventResult {
+  title: string;
+  description: string;
+  url: string;
+  kind: "fun" | "goal";
+  goal: string | null;
+}
+
+export interface NearbyGoalEventGroup {
+  goal: string;
+  query: string;
+  results: NearbyGoalEventResult[];
+}
+
 export const api = {
   async fetchUser(): Promise<UserProfile> {
     const headers = await getAuthHeaders();
@@ -168,6 +182,29 @@ export const api = {
     throw new Error(
       typeof data.error === "string" ? data.error : "Schedule rebalance failed",
     );
+  },
+
+  async clearGeneratedSchedule(): Promise<{
+    success: boolean;
+    deletedTasks: number;
+    deletedPlanningItems: number;
+  }> {
+    const headers = await getAuthHeaders();
+    if (!headers.Authorization) {
+      throw new Error(supabase ? "Not signed in." : "Supabase is not configured.");
+    }
+    const res = await fetch("/api/schedule/clear-generated", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({}),
+    });
+    const data = (await res.json().catch(() => null)) ?? {};
+    if (!res.ok) {
+      throw new Error(
+        typeof data.error === "string" ? data.error : "Failed to clear generated schedule",
+      );
+    }
+    return data;
   },
 
   async pushAgentProfile(profile: {
@@ -386,6 +423,69 @@ export const api = {
       headers,
     });
     return res.json();
+  },
+
+  async deleteAllEvents(): Promise<{
+    success: boolean;
+    deletedTasks: number;
+    deletedPlanningItems: number;
+  }> {
+    const headers = await getAuthHeaders();
+    if (!headers.Authorization) {
+      throw new Error(supabase ? "Not signed in." : "Supabase is not configured.");
+    }
+    const res = await fetch('/api/tasks', {
+      method: 'DELETE',
+      headers,
+    });
+    const data = (await res.json().catch(() => null)) ?? {};
+    if (!res.ok) {
+      throw new Error(typeof data.error === 'string' ? data.error : 'Failed to remove all events');
+    }
+    return data;
+  },
+
+  async reverseGeocode(lat: number, lon: number): Promise<{
+    success: boolean;
+    location: string;
+    displayName?: string;
+  }> {
+    const headers = await getAuthHeaders();
+    const res = await fetch('/api/location/reverse-geocode', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ lat, lon }),
+    });
+    const data = (await res.json().catch(() => null)) ?? {};
+    if (!res.ok) {
+      throw new Error(typeof data.error === 'string' ? data.error : 'Failed to resolve your location');
+    }
+    return data;
+  },
+
+  async fetchNearbyGoalEvents(params: {
+    location: string;
+    country?: string;
+  }): Promise<{
+    success: boolean;
+    location: string;
+    country: string;
+    goals: string[];
+    funQuery: string;
+    funEvents: NearbyGoalEventResult[];
+    goalEventGroups: NearbyGoalEventGroup[];
+  }> {
+    const headers = await getAuthHeaders();
+    const res = await fetch('/api/goals/nearby-events', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(params),
+    });
+    const data = (await res.json().catch(() => null)) ?? {};
+    if (!res.ok) {
+      throw new Error(typeof data.error === 'string' ? data.error : 'Failed to search nearby events');
+    }
+    return data;
   },
 
   async saveCalendarImportBreakdown(payload: {

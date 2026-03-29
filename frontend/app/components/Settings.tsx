@@ -5,20 +5,33 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Separator } from "./ui/separator";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "./ui/alert-dialog";
 import { Badge } from "./ui/badge";
 import CalendarSync from "./CalendarSync";
 import { Camera, Loader2, Upload, User, Clock, Target, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "../lib/supabase";
+import { api } from "../utils/api";
 
 export default function Settings() {
-  const { userProfile, setUserProfile, lastMotivation } = useAppStore();
+  const { userProfile, setUserProfile, lastMotivation, loadAppData, clearPendingSuggestions } = useAppStore();
   const [name, setName] = useState(userProfile.name);
   const [wakeTime, setWakeTime] = useState(userProfile.wakeTime);
   const [sleepTime, setSleepTime] = useState(userProfile.sleepTime);
   const [newGoal, setNewGoal] = useState("");
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [isClearingEvents, setIsClearingEvents] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [profileName, setProfileName] = useState(userProfile.name || "Student");
 
@@ -145,6 +158,22 @@ export default function Settings() {
     } finally {
       setIsUploadingAvatar(false);
       e.target.value = "";
+    }
+  };
+
+  const handleRemoveAllEvents = async () => {
+    setIsClearingEvents(true);
+    try {
+      const result = await api.deleteAllEvents();
+      clearPendingSuggestions();
+      await loadAppData();
+      toast.success(
+        `Removed ${result.deletedTasks} event${result.deletedTasks === 1 ? "" : "s"} from your calendar.`,
+      );
+    } catch (error: any) {
+      toast.error(error.message || "Failed to remove all events.");
+    } finally {
+      setIsClearingEvents(false);
     }
   };
 
@@ -332,6 +361,43 @@ export default function Settings() {
         </CardHeader>
         <CardContent>
           <CalendarSync />
+        </CardContent>
+      </Card>
+
+      <Card className="border-red-200">
+        <CardHeader>
+          <CardTitle className="text-red-700">Danger Zone</CardTitle>
+          <CardDescription>
+            Remove every event currently stored in your calendar. This does not change your profile settings.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="destructive" disabled={isClearingEvents}>
+                {isClearingEvents ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                Remove All Events
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Remove all calendar events?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This will delete all currently stored events and generated planning blocks from your HandAll calendar.
+                  This action cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={handleRemoveAllEvents}
+                  className="bg-red-600 hover:bg-red-700"
+                >
+                  Yes, remove everything
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </CardContent>
       </Card>
     </div>

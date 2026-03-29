@@ -184,6 +184,22 @@ export const useAppStore = create<AppState>()(
       setUserProfile: async (profile) => {
         const current = get().userProfile;
         const prevGoals = JSON.stringify(current.sideGoals);
+        const maybeClearGeneratedIfFullyDetached = async (mergedProfile: UserProfile) => {
+          if (
+            mergedProfile.sideGoals.length === 0 &&
+            mergedProfile.calendarUrls.length === 0
+          ) {
+            await api.clearGeneratedSchedule();
+            const [tasks, planningItems] = await Promise.all([
+              api.fetchTasks(),
+              api.fetchPlanningItems().catch(() => [] as PlanningItemRow[]),
+            ]);
+            set({
+              events: tasks.map(normalizeCalendarEvent),
+              planningItems,
+            });
+          }
+        };
         set({
           userProfile: {
             ...current,
@@ -215,6 +231,7 @@ export const useAppStore = create<AppState>()(
               .then(() => get().refreshPlanningItems())
               .catch(() => {});
           }
+          await maybeClearGeneratedIfFullyDetached(merged);
           return;
         }
 
@@ -236,6 +253,7 @@ export const useAppStore = create<AppState>()(
             .then(() => get().refreshPlanningItems())
             .catch(() => {});
         }
+        await maybeClearGeneratedIfFullyDetached(merged);
       },
 
       addEvent: async (event) => {

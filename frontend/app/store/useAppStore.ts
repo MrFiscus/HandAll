@@ -96,6 +96,7 @@ export interface AppState {
   lastMotivation: number;
   lastCalendarSync: Date | null;
   apiLoaded: boolean;
+  isFullScreen: boolean;
   /** XP earned today (resets at midnight) */
   dailyXp: number;
   /** ISO date string "YYYY-MM-DD" for the last day dailyXp was incremented */
@@ -123,6 +124,7 @@ export interface AppState {
   clearPendingSuggestions: () => void;
   confirmAllSuggestions: () => Promise<void>;
   refreshSuggestion: (id: string) => Promise<void>;
+  setIsFullScreen: (val: boolean) => void;
   dismissBurnoutPrompt: () => void;
   snoozeBurnoutPrompt: () => void;
   rescheduleTodayTasks: (taskIds: string[]) => Promise<void>;
@@ -188,6 +190,7 @@ export const useAppStore = create<AppState>()(
       lastMotivation: 50,
       lastCalendarSync: null,
       apiLoaded: false,
+      isFullScreen: false,
       dailyXp: 0,
       dailyXpDate: "",
       burnoutPromptPending: false,
@@ -212,6 +215,7 @@ export const useAppStore = create<AppState>()(
           lastMotivation: 50,
           lastCalendarSync: null,
           apiLoaded: false,
+          isFullScreen: false,
           dailyXp: 0,
           dailyXpDate: "",
           burnoutPromptPending: false,
@@ -550,6 +554,8 @@ export const useAppStore = create<AppState>()(
         // Triggering rebalance by re-setting motivation
         await setMotivation(lastMotivation);
       },
+
+      setIsFullScreen: (val) => set({ isFullScreen: val }),
 
       dismissBurnoutPrompt: () => set({ burnoutPromptPending: false }),
 

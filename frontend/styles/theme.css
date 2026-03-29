@@ -5,7 +5,7 @@
   /* Deep Forest Palette */
   --background: transparent;
   --foreground: #DAF1DE;
-  --card: #28623A; 
+  --card: rgba(40, 98, 58, 0.2); 
   --card-foreground: #DAF1DE;
   --popover: #0F2027;
   --popover-foreground: #DAF1DE;
@@ -112,27 +112,26 @@
     @apply border border-white/10 shadow-[0_40px_80px_rgba(0,0,0,0.3)] backdrop-blur-3xl;
   }
 
-  .handall-scrollbar {
+  .custom-scrollbar, .handall-scrollbar {
     scrollbar-width: thin;
-    scrollbar-color: rgba(218, 241, 222, 0.28) rgba(15, 32, 39, 0.38);
+    scrollbar-color: rgba(218, 241, 222, 0.2) transparent;
   }
 
-  .handall-scrollbar::-webkit-scrollbar {
-    width: 10px;
+  .custom-scrollbar::-webkit-scrollbar, .handall-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
   }
 
-  .handall-scrollbar::-webkit-scrollbar-track {
-    background: rgba(15, 32, 39, 0.42);
-    border-radius: 9999px;
+  .custom-scrollbar::-webkit-scrollbar-track, .handall-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
   }
 
-  .handall-scrollbar::-webkit-scrollbar-thumb {
-    background: linear-gradient(180deg, rgba(218, 241, 222, 0.42), rgba(120, 181, 138, 0.5));
-    border-radius: 9999px;
-    border: 2px solid rgba(15, 32, 39, 0.18);
+  .custom-scrollbar::-webkit-scrollbar-thumb, .handall-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(218, 241, 222, 0.2);
+    border-radius: 10px;
   }
 
-  .handall-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: linear-gradient(180deg, rgba(218, 241, 222, 0.55), rgba(120, 181, 138, 0.62));
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover, .handall-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(218, 241, 222, 0.4);
   }
 }

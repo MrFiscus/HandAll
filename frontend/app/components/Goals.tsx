@@ -31,7 +31,7 @@ function EventList({
   return (
     <div className="space-y-3">
       {items.map((item, index) => (
-        <div key={`${item.url}-${index}`} className="rounded-xl border bg-card p-4">
+        <div key={`${item.url}-${index}`} className="p-4 rounded-2xl bg-white/[0.02] border border-white/[0.03] backdrop-blur-sm">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0 space-y-2">
               <div className="flex flex-wrap items-center gap-2">
@@ -136,26 +136,25 @@ export default function Goals() {
   };
 
   return (
-    <div className="p-6 space-y-6 max-w-6xl mx-auto">
+    <div className="p-6 space-y-6 max-w-4xl mx-auto">
       <div className="space-y-2">
-        <h1 className="text-3xl font-bold">Goals</h1>
-        <p className="text-muted-foreground max-w-3xl">
+        <h1 className="text-3xl font-bold">Goals.</h1>
+        <p className="text-muted-foreground">
           Find nearby events in two lanes: fun things to do, and events that help you move your side goals forward.
-          HandAll uses Firecrawl search results plus the goals from your setup.
         </p>
       </div>
 
-      <Card>
-        <CardHeader>
+      <div className="p-8 rounded-[2rem] bg-white/[0.01] border border-white/[0.03] space-y-4 backdrop-blur-sm">
+        <div className="space-y-1.5">
           <div className="flex items-center gap-2">
             <Compass className="h-5 w-5" />
-            <CardTitle>Search Near You</CardTitle>
+            <h3 className="text-xl font-bold">Search Near You</h3>
           </div>
-          <CardDescription>
+          <p className="text-sm text-muted-foreground">
             Use your current location or type a city/state manually.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
+          </p>
+        </div>
+        <div className="space-y-4">
           <div className="grid gap-4 md:grid-cols-[1fr_auto_auto]">
             <div className="space-y-2">
               <Label htmlFor="goals-location">Location</Label>
@@ -212,63 +211,58 @@ export default function Goals() {
               Showing results for <span className="font-medium text-foreground">{resolvedLocation || lastSearchedLocation}</span>
             </p>
           ) : null}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
       <div className="grid gap-6 xl:grid-cols-[1.05fr_1fr]">
-        <Card className="h-fit">
-          <CardHeader>
+        <div className="h-fit p-8 rounded-[2rem] bg-white/[0.01] border border-white/[0.03] space-y-8 backdrop-blur-sm">
+          <div className="space-y-1.5">
             <div className="flex items-center gap-2">
               <PartyPopper className="h-5 w-5 text-primary" />
-              <CardTitle>Fun Events Near You</CardTitle>
+              <h3 className="text-xl font-bold">Fun Events Near You</h3>
             </div>
-            <CardDescription>
+            <p className="text-sm text-muted-foreground">
               Casual things to do nearby when you want something enjoyable on the calendar.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <EventList
-              items={funEvents}
-              emptyText="Search a location to load nearby fun events."
-            />
-          </CardContent>
-        </Card>
-
-        <Card className="h-fit">
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Target className="h-5 w-5 text-primary" />
-              <CardTitle>Goal-Supporting Events</CardTitle>
+            </p>
+          </div>
+          {funEvents.length > 0 && (
+            <div>
+              <EventList
+                items={funEvents}
+                emptyText=""
+              />
             </div>
-            <CardDescription>
-              Events, meetups, classes, and communities related to the goals you entered during setup.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {goalGroups.length === 0 ? (
-              <p className="text-sm text-muted-foreground">
-                Search a location to load nearby events that support your goals.
-              </p>
-            ) : (
-              <div className="space-y-6">
-                {goalGroups.map((group) => (
-                  <Card key={group.goal}>
-                    <CardHeader>
-                      <CardTitle className="text-lg">{group.goal}</CardTitle>
-                      <CardDescription>{group.query}</CardDescription>
-                    </CardHeader>
-                    <CardContent>
-                      <EventList
-                        items={group.results}
-                        emptyText={`No goal-focused events were found for "${group.goal}" in this search.`}
-                      />
-                    </CardContent>
-                  </Card>
-                ))}
+          )}
+        </div>
+
+        <div className="space-y-6">
+          <div className="p-8 rounded-[2rem] bg-white/[0.01] border border-white/[0.03] space-y-4 backdrop-blur-sm">
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2">
+                <Target className="h-5 w-5 text-primary" />
+                <h3 className="text-xl font-bold">Goal-Supporting Events</h3>
               </div>
-            )}
-          </CardContent>
-        </Card>
+              <p className="text-sm text-muted-foreground">
+                Events, meetups, classes, and communities related to the goals you entered during setup.
+              </p>
+            </div>
+          </div>
+
+          {goalGroups.length > 0 && goalGroups.map((group) => (
+              <div key={group.goal} className="p-8 rounded-[2rem] bg-white/[0.01] border border-white/[0.03] space-y-8 backdrop-blur-sm">
+                <div className="space-y-1.5">
+                  <h3 className="text-lg font-bold">{group.goal}</h3>
+                  <p className="text-sm text-muted-foreground">{group.query}</p>
+                </div>
+                <div>
+                  <EventList
+                    items={group.results}
+                    emptyText={`No goal-focused events were found for "${group.goal}" in this search.`}
+                  />
+                </div>
+              </div>
+            ))}
+        </div>
       </div>
     </div>
   );

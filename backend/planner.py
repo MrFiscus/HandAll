@@ -42,8 +42,8 @@ def _parse_datetime(value: str, tz: ZoneInfo) -> Optional[datetime]:
     return dt.astimezone(tz)
 
 
-def _round_down_to_30(minutes: float) -> int:
-    return max(0, int(minutes // 30) * 30)
+def _round_down_to_15(minutes: float) -> int:
+    return max(0, int(minutes // 15) * 15)
 
 
 def _extract_json_object(text: str) -> Optional[Any]:
@@ -372,8 +372,8 @@ def _calculate_usable_slots(
             gap_end = min(interval["start"], day_end)
             if gap_end > cursor:
                 gap_minutes = (gap_end - cursor).total_seconds() / 60
-                usable_minutes = _round_down_to_30(gap_minutes * frac)
-                if usable_minutes >= 30:
+                usable_minutes = _round_down_to_15(gap_minutes * frac)
+                if usable_minutes >= 15:
                     slots.append(
                         {
                             "day_key": day.isoformat(),
@@ -386,8 +386,8 @@ def _calculate_usable_slots(
 
         if day_end > cursor:
             gap_minutes = (day_end - cursor).total_seconds() / 60
-            usable_minutes = _round_down_to_30(gap_minutes * frac)
-            if usable_minutes >= 30:
+            usable_minutes = _round_down_to_15(gap_minutes * frac)
+            if usable_minutes >= 15:
                 slots.append(
                     {
                         "day_key": day.isoformat(),
@@ -427,7 +427,7 @@ def _working_block_minutes(motivation: int, remaining_minutes: int, slot_remaini
 def _goal_block_minutes(motivation: int, remaining_minutes: int, slot_remaining: int) -> int:
     """Chunk personal-goal work; slightly shorter than deadline blocks when tired."""
     cap = min(remaining_minutes, slot_remaining)
-    cap = max(15, _round_down_to_30(cap) or 15)
+    cap = max(15, _round_down_to_15(cap) or 15)
     if motivation <= 35:
         return min(30, cap)
     if motivation <= 55:
@@ -923,7 +923,7 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
                 continue
             duration = 30 if motivation <= 40 else (60 if slot["remaining_minutes"] >= 60 else 30)
             duration = min(duration, slot["remaining_minutes"])
-            duration = max(15, _round_down_to_30(duration) or 15)
+            duration = max(15, _round_down_to_15(duration) or 15)
             suggestions.append(
                 _make_task(
                     task_id=f"extra-freetime-{extra_counter + 1}",

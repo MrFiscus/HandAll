@@ -17,7 +17,11 @@ import { supabase } from "../lib/supabase";
 
 const GOOGLE_CALENDAR_CONNECT_QUERY = "google_calendar_connect";
 
-export default function CalendarSync() {
+interface CalendarSyncProps {
+  redirectPath?: string;
+}
+
+export default function CalendarSync({ redirectPath = "/settings" }: CalendarSyncProps) {
   const { userProfile, setUserProfile, syncCalendarEvents, removeExternalEvents, lastCalendarSync } = useAppStore();
   const [calendarUrl, setCalendarUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -193,7 +197,7 @@ export default function CalendarSync() {
       return;
     }
 
-    const redirectUrl = new URL(`${window.location.origin}/settings`);
+    const redirectUrl = new URL(`${window.location.origin}${redirectPath}`);
     redirectUrl.searchParams.set(GOOGLE_CALENDAR_CONNECT_QUERY, "1");
 
     const { error } = await supabase.auth.signInWithOAuth({

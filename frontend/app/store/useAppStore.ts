@@ -82,6 +82,7 @@ export interface UserProfile {
   calendarUrls: string[];
   motivation?: number;
   googleCalendarConnected: boolean;
+  id?: string;
 }
 
 export interface AppState {
@@ -106,8 +107,11 @@ export interface AppState {
   removeExternalEvents: (sourceUrl?: string) => Promise<void>;
   setPendingSuggestions: (suggestions: SuggestedTask[]) => void;
   updatePendingSuggestionStatus: (id: string, status: SuggestedTask["status"]) => void;
+  updatePendingSuggestion: (id: string, updates: Partial<SuggestedTask>) => void;
   removePendingSuggestion: (id: string) => void;
   clearPendingSuggestions: () => void;
+  confirmAllSuggestions: () => Promise<void>;
+  refreshSuggestion: (id: string) => Promise<void>;
   runWeeklySync: (payload: {
     userId: string;
     name: string;
@@ -420,12 +424,46 @@ export const useAppStore = create<AppState>()(
           ),
         })),
 
+      updatePendingSuggestion: (id, updates) =>
+        set((state) => ({
+          pendingSuggestions: state.pendingSuggestions.map((suggestion) =>
+            suggestion.id === id ? { ...suggestion, ...updates } : suggestion,
+          ),
+        })),
+
       removePendingSuggestion: (id) =>
         set((state) => ({
           pendingSuggestions: state.pendingSuggestions.filter((suggestion) => suggestion.id !== id),
         })),
 
       clearPendingSuggestions: () => set({ pendingSuggestions: [] }),
+
+      confirmAllSuggestions: async () => {
+        const { pendingSuggestions, addEvent } = get();
+        const acceptedTasks = pendingSuggestions.filter((t) => t.status === "accepted");
+        
+        for (const task of acceptedTasks) {
+          await addEvent({
+            title: task.title,
+            start: task.start,
+            end: task.end,
+            type: task.type,
+            description: task.description,
+            xpValue: task.xpValue,
+          });
+        }
+        
+        set({ pendingSuggestions: [] });
+      },
+
+      refreshSuggestion: async (id) => {
+        // For now, refreshing just removes the current one and triggers a rebalance
+        // or we could just simulate a refresh by showing a toast
+        const { removePendingSuggestion, lastMotivation, setMotivation } = get();
+        removePendingSuggestion(id);
+        // Triggering rebalance by re-setting motivation
+        await setMotivation(lastMotivation);
+      },
 
       runWeeklySync: async (payload) => {
         return await api.runWeeklySync(payload);

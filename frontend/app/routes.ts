@@ -5,13 +5,12 @@ import Setup from "./components/Setup";
 import Goals from "./components/Goals";
 import Settings from "./components/Settings";
 import NotFound from "./components/NotFound";
-import Auth from "./components/Auth";
 import SignInForm from "./components/SignInForm";
 
 export const router = createBrowserRouter([
   {
     path: "/login",
-    Component: Auth,
+    Component: SignInForm,
   },
   {
     path: "/signin",

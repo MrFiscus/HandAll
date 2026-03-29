@@ -7,16 +7,16 @@ import {
   Target,
   HelpCircle,
 } from "lucide-react";
-import { Button } from "./ui/button";
 import { useAppStore } from "../store/useAppStore";
 import WelcomeGuide from "./WelcomeGuide";
 import { supabase } from "../lib/supabase";
 import { cn } from "./ui/utils";
+import Auth from "./Auth";
 
 export default function Root() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { userProfile, apiLoaded, loadAppData, resetAppState } = useAppStore();
+  const { loadAppData, resetAppState } = useAppStore();
   const [showHelp, setShowHelp] = useState(false);
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -29,20 +29,20 @@ export default function Root() {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setLoading(false);
-      if (!session) {
+      if (!session && location.pathname !== "/" && location.pathname !== "/login" && location.pathname !== "/signin") {
         resetAppState();
         navigate("/login");
       }
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
-      if (!session) {
+      if (!session && location.pathname !== "/" && location.pathname !== "/login" && location.pathname !== "/signin") {
         resetAppState();
         navigate("/login");
       }
     });
     return () => subscription.unsubscribe();
-  }, [navigate, resetAppState]);
+  }, [location.pathname, navigate, resetAppState]);
 
   useEffect(() => {
     if (session?.user?.id) {
@@ -52,7 +52,7 @@ export default function Root() {
   }, [session?.user?.id, loadAppData, resetAppState]);
 
   useEffect(() => {
-    if (session && location.pathname === "/login") {
+    if (session && (location.pathname === "/login" || location.pathname === "/signin")) {
       navigate("/");
     }
   }, [session, location.pathname, navigate]);
@@ -63,7 +63,11 @@ export default function Root() {
     </div>
   );
 
-  if (!session && location.pathname !== "/login") return null;
+  if (!session && location.pathname === "/") {
+    return <Auth />;
+  }
+
+  if (!session && location.pathname !== "/login" && location.pathname !== "/signin") return null;
 
   return (
     <div className="flex h-screen bg-transparent text-foreground font-sans selection:bg-primary selection:text-primary-foreground">

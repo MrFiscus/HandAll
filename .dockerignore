@@ -1,0 +1,43 @@
+# Node dependencies
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Local databases
+*.db
+*.db-journal
+backend/*.db
+backend/*.db-journal
+
+# Environment / secrets
+.env
+.env.*
+frontend/.env
+frontend/.env.*
+backend/.env
+backend/.env.*
+backend/credentials/*.json
+
+# Generated / local data
+backend/imports/generated/*.json
+logs/
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Git
+.git
+.gitignore
+
+# Build output
+frontend/dist/
+dist/

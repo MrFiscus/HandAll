@@ -61,7 +61,7 @@ def _extract_json_object(text: str) -> Optional[Any]:
 
 
 def _get_planner_model() -> Optional[ChatGoogleGenerativeAI]:
-    return get_gemini_chat_model(temperature=0.2)
+    return get_gemini_chat_model(temperature=0.28)
 
 
 def _heuristic_assignment_hours(title: str, description: str) -> int:
@@ -115,9 +115,11 @@ def _estimate_assignment_hours(assignments: List[Dict[str, Any]]) -> Dict[str, D
     ]
 
     prompt = (
-        "Estimate how many hours a student should spend to complete each assignment. "
-        "Return only valid JSON as an array of objects with keys id, estimated_hours, and reason. "
-        "Keep estimated_hours between 1 and 8.\n\n"
+        "Estimate total focused hours to complete each assignment well (not calendar time — effort only). "
+        "Infer assignment type from title/description (paper vs coding vs exam prep vs lab). "
+        "Account for vague titles by assuming typical course expectations. "
+        "Return only valid JSON: an array of { id, estimated_hours, reason } where reason briefly cites "
+        "signals you used. Keep estimated_hours between 1 and 8.\n\n"
         f"{json.dumps(prompt_payload, indent=2)}"
     )
 
@@ -298,7 +300,12 @@ def _build_busy_intervals(
     for event in events:
         if event.get("completed"):
             continue
-        if event.get("type") == "assignment":
+        et = str(event.get("type") or "").lower()
+        # Deadlines are due markers, not time blocks. Flexible/optional personal blocks
+        # do not reserve time (work may be scheduled there if needed).
+        if et == "assignment":
+            continue
+        if et in ("flexible", "optional_personal", "freetime", "free"):
             continue
 
         start = _parse_datetime(event.get("start"), tz)

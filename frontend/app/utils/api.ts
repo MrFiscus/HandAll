@@ -302,11 +302,20 @@ export const api = {
   async upsertTasks(events: CalendarEvent[], sourceUrl?: string): Promise<{
     success: boolean;
     error?: string;
+    classification?: {
+      updated?: number;
+      cache_hits?: number;
+      llm_batches?: number;
+      error?: string | null;
+      samples?: unknown[];
+    };
+    goals?: { skipped?: boolean; reason?: string; cache?: boolean; count?: number; error?: string };
     breakdown?: {
       assignment_count: number;
       assignment_keys: string[];
       subtasks_inserted: number;
       batches: number;
+      cache_hits?: number;
       error: string | null;
     };
     rebalance?: {

@@ -150,15 +150,21 @@ export default function Dashboard() {
       case "working": return "bg-orange-500";
       case "goal": return "bg-green-500";
       case "freetime": return "bg-purple-500";
+      case "fixed": return "bg-slate-600";
+      case "flexible": return "bg-teal-500";
+      case "external": return "bg-gray-500";
       default: return "bg-gray-500";
     }
   };
 
   const getEventBadge = (type: string) => {
     switch (type) {
-      case "working": return "Working Task";
-      case "goal": return "Goal Task";
-      case "freetime": return "Free Time Task";
+      case "working": return "Planned work";
+      case "goal": return "Goal task";
+      case "freetime": return "Free time";
+      case "fixed": return "Fixed (protected)";
+      case "flexible": return "Flexible";
+      case "assignment": return "Deadline";
       default: return type.charAt(0).toUpperCase() + type.slice(1);
     }
   };
@@ -369,6 +375,11 @@ export default function Dashboard() {
                     .map((event) => (
                       <div
                         key={event.id}
+                        title={
+                          event.aiMeta?.reason
+                            ? `${getEventBadge(event.type)}: ${event.aiMeta.reason}`
+                            : getEventBadge(event.type)
+                        }
                         className={cn(
                           "p-2 rounded-md border text-xs relative group",
                           event.completed && "opacity-60"
@@ -376,6 +387,11 @@ export default function Dashboard() {
                       >
                         <div className={cn("absolute left-0 top-0 bottom-0 w-1 rounded-l-md", getEventColor(event.type))} />
                         <div className="pl-2">
+                          <div className="flex items-center gap-1 flex-wrap">
+                            <Badge variant="outline" className="text-[9px] px-1 py-0 h-4 font-normal">
+                              {getEventBadge(event.type)}
+                            </Badge>
+                          </div>
                           <div className={cn("font-medium truncate", event.completed && "line-through")}>
                             {event.title}
                           </div>

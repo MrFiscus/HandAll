@@ -290,12 +290,15 @@ export default function WeeklyCalendar() {
   };
 
   const getColor = (type: string) => {
-    const map: any = {
+    const map: Record<string, string> = {
       class: "bg-blue-500/20 border-blue-500 text-blue-700",
       assignment: "bg-red-500/20 border-red-500 text-red-700",
       working: "bg-orange-500/20 border-orange-500 text-orange-700",
       goal: "bg-green-500/20 border-green-500 text-green-700",
       freetime: "bg-purple-500/20 border-purple-500 text-purple-700",
+      fixed: "bg-slate-600/20 border-slate-600 text-slate-800",
+      flexible: "bg-teal-500/20 border-teal-500 text-teal-800",
+      external: "bg-gray-500/20 border-gray-500 text-gray-700",
     };
     return map[type] || "bg-gray-500/20 border-gray-500 text-gray-700";
   };

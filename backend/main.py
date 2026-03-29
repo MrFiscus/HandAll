@@ -390,6 +390,18 @@ class AssignmentSubtasksBatchRequest(BaseModel):
     motivation: int = 50
 
 
+class ClassifyEventInput(BaseModel):
+    id: str
+    title: str = ""
+    description: str = ""
+    start: str = ""
+    end: str = ""
+
+
+class ClassifyEventsRequest(BaseModel):
+    events: list[ClassifyEventInput]
+
+
 @app.get("/")
 def root() -> Dict[str, str]:
     return {"message": "HandAll AI backend is running", "docs": "/docs"}
@@ -514,6 +526,19 @@ def ai_assignment_subtasks(request: AssignmentSubtasksRequest) -> Dict[str, Any]
         return {"success": True, "subtasks": subtasks}
     except Exception as exc:
         return {"success": False, "error": str(exc), "subtasks": []}
+
+
+@app.post("/ai/classify-events")
+def ai_classify_events(request: ClassifyEventsRequest) -> Dict[str, Any]:
+    """AI-only event classification (protected vs deadline vs flexible)."""
+    try:
+        from backend.calendar_intelligence import classify_calendar_events_batch
+
+        evs = [e.model_dump() for e in request.events]
+        results = classify_calendar_events_batch(evs)
+        return {"success": True, "results": results}
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "results": []}
 
 
 @app.post("/ai/assignment-subtasks-batch")

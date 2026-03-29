@@ -113,6 +113,56 @@ export async function initDB() {
     'CREATE INDEX IF NOT EXISTS idx_ai_planning_assignment ON ai_planning_items(assignment_external_id)',
   ).catch(() => {});
 
+  await db.exec('ALTER TABLE tasks ADD COLUMN ai_meta TEXT').catch(() => {});
+
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_cache_event_class (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      external_key TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      classification TEXT NOT NULL,
+      confidence REAL,
+      subtype TEXT,
+      reason TEXT,
+      raw_json TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, external_key),
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+  `);
+  await db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_ai_cache_event_user_hash ON ai_cache_event_class(user_id, content_hash)',
+  ).catch(() => {});
+
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_cache_assignment (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      assignment_key TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      subtasks_json TEXT NOT NULL,
+      meta_json TEXT,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, assignment_key),
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+  `);
+
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_cache_goals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      goals_hash TEXT NOT NULL,
+      tasks_json TEXT NOT NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id),
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+  `);
+
+  await db.exec('ALTER TABLE ai_planning_items ADD COLUMN rationale TEXT').catch(() => {});
+
   // Seed initial user if not exists
   const user = await db.get('SELECT * FROM users LIMIT 1');
   if (!user) {

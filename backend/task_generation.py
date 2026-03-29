@@ -30,7 +30,8 @@ def _extract_json_object(text: str) -> Optional[Any]:
 
 
 def _get_planner_model() -> Optional[ChatGoogleGenerativeAI]:
-    return get_gemini_chat_model(temperature=0.2)
+    # Slightly higher temperature for richer decomposition while keeping JSON parseable.
+    return get_gemini_chat_model(temperature=0.32)
 
 
 def _fallback_assignment_subtasks(parent_title: str, motivation: int) -> List[Dict[str, Any]]:
@@ -301,14 +302,19 @@ def generate_assignments_subtasks_batch(
     ]
     keys_json = json.dumps([row["assignment_key"] for row in normalized])
     prompt = (
-        "You break MULTIPLE student assignments into ordered, actionable subtasks each. "
-        "Do NOT suggest dates, times, or calendar slots — only task definitions.\n"
-        f"Motivation level: {motivation}/100. Low → fewer, smaller, easier steps per assignment; "
-        "high → can include deeper steps.\n"
-        "Return ONLY valid JSON with a single key \"results\" whose value is an array. "
-        "Each element must have \"assignment_key\" (string, must match input exactly) and "
-        "\"subtasks\" (array of objects with title, description, estimated_minutes 15-120, sort_order).\n"
-        "You MUST include exactly one entry per assignment_key listed below — no duplicates, no omissions.\n\n"
+        "You are an expert academic coach. For EACH assignment, infer the assignment kind "
+        "(e.g. research paper, coding project, exam prep, lab report, presentation) from the title/description, "
+        "then break it into ordered work units (subtasks) that a student can schedule.\n"
+        "Rules:\n"
+        "- Do NOT assign calendar times or dates — titles, descriptions, durations, and order only.\n"
+        "- Work units must be concrete (e.g. 'Outline section 2', 'Run test suite on module A').\n"
+        "- estimated_minutes: 15–180 per unit; sum should roughly match realistic total effort.\n"
+        "- For vague titles, infer likely steps (research → outline → draft → revise for papers).\n"
+        "- Include a short \"rationale\" on each subtask: one sentence on why this step matters.\n"
+        f"Motivation {motivation}/100: low energy → fewer, shorter steps; high → more depth.\n"
+        "Return ONLY valid JSON: { \"results\": [ { \"assignment_key\", \"assignment_kind\", \"breakdown_summary\", "
+        "\"subtasks\": [ { \"title\", \"description\", \"estimated_minutes\", \"sort_order\", \"rationale\" } ] } ] }\n"
+        "You MUST include exactly one results[] entry per assignment_key below — no duplicates, no omissions.\n\n"
         f"Required assignment_keys: {keys_json}\n\n"
         f"assignments={json.dumps(payload, indent=2)}"
     )
@@ -327,16 +333,18 @@ def generate_assignments_subtasks_batch(
             minutes = item.get("estimated_minutes")
             if not isinstance(minutes, (int, float)):
                 minutes = 45
-            minutes = max(15, min(120, int(round(minutes))))
+            minutes = max(15, min(180, int(round(minutes))))
             sort_order = item.get("sort_order")
             if not isinstance(sort_order, (int, float)):
                 sort_order = i + 1
+            rat = str(item.get("rationale") or "").strip()
             cleaned.append(
                 {
                     "title": title,
                     "description": desc,
                     "estimated_minutes": minutes,
                     "sort_order": int(sort_order),
+                    "rationale": rat[:400] if rat else "",
                 }
             )
         return cleaned if cleaned else fallback
@@ -386,11 +394,13 @@ def generate_goal_tasks(side_goals: List[str], motivation: int) -> List[Dict[str
 
     goals_json = json.dumps(goals)
     prompt = (
-        "The user has personal growth goals (not school assignments). "
-        "Generate specific, actionable tasks — not vague advice.\n"
-        "Do NOT include dates, times, or calendar placement.\n"
-        f"Motivation: {motivation}/100. Low → shorter, gentler tasks; high → more demanding is OK.\n"
-        "Cover ALL goals fairly (rotate across goals).\n"
+        "The user has personal growth / side goals (not graded school work). "
+        "Produce concrete, schedulable micro-tasks (e.g. '30 min: Python list comprehensions — 5 exercises', "
+        "'Email one alumni for internship info', '45 min leg day: squats + accessories').\n"
+        "Avoid vague items like 'get better at X'. Tie each task to one goal.\n"
+        "Do NOT include calendar times or dates — only task definitions.\n"
+        f"Motivation: {motivation}/100. Low → shorter, gentler tasks; high → can add volume.\n"
+        "Cover ALL goals with balanced coverage.\n"
         "Return ONLY valid JSON: an array of objects with keys "
         "title, description, estimated_minutes (20-90), side_goal (must match one of the user's goals), sort_order.\n\n"
         f"goals={goals_json}"

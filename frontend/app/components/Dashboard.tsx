@@ -1,11 +1,22 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useNavigate } from "react-router";
 import { format, startOfWeek, addDays, isSameDay } from "date-fns";
+import { ScrollArea } from "./ui/scroll-area";
+
+const AGENT_API_BASE_URL =
+  import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "/agent-api";
+const AGENT_USER_ID_KEY = "handall-agent-user-id";
+
+interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  timestamp: Date;
+}
 import { useAppStore } from "../store/useAppStore";
 import { Card, CardHeader, CardTitle, CardContent } from "./ui/card";
-import { Badge } from "./ui/badge";
 import { Button } from "./ui/button";
-import { Plus, CheckCircle2, Calendar as CalendarIcon, Sparkles } from "lucide-react";
+import { Plus, CheckCircle2, Calendar as CalendarIcon, MessageSquare, Send } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
@@ -25,9 +36,7 @@ export default function Dashboard() {
     updateEvent,
     loadAppData,
     apiLoaded,
-    pendingSuggestions,
-    updatePendingSuggestionStatus,
-    removePendingSuggestion,
+    lastMotivation,
   } = useAppStore();
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [showAddEvent, setShowAddEvent] = useState(false);
@@ -40,12 +49,31 @@ export default function Dashboard() {
     type: "assignment" as const,
   });
 
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+    {
+      id: "1",
+      role: "assistant",
+      content:
+        "Hi! I'm here to help you manage your tasks. Ask me to add tasks, check your schedule, or adjust your calendar.",
+      timestamp: new Date(),
+    },
+  ]);
+  const [inputMessage, setInputMessage] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const threadIdRef = useRef<string>(crypto.randomUUID());
+  const chatSendGenRef = useRef(0);
+
   // Load app data on first mount
   useEffect(() => {
     if (!apiLoaded) {
       loadAppData();
     }
   }, [apiLoaded, loadAppData]);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages]);
 
   // Welcome guide logic
   useEffect(() => {
@@ -55,19 +83,6 @@ export default function Dashboard() {
       localStorage.setItem("handall-welcome-seen", "true");
     }
   }, []);
-
-  const todayEvents = useMemo(() => {
-    return events.filter((event) =>
-      isSameDay(new Date(event.start), selectedDate)
-    );
-  }, [events, selectedDate]);
-
-  const nextPendingSuggestions = useMemo(() => {
-    return pendingSuggestions
-      .filter((suggestion) => suggestion.status === "pending")
-      .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
-      .slice(0, 3);
-  }, [pendingSuggestions]);
 
   const planningSummary = useMemo(() => {
     const subs = planningItems.filter((p) => p.item_type === "assignment_subtask").length;
@@ -127,20 +142,78 @@ export default function Dashboard() {
     }
   };
 
-  const handleAcceptSuggestion = async (suggestionId: string) => {
-    const suggestion = pendingSuggestions.find((item) => item.id === suggestionId);
-    if (!suggestion) return;
+  const handleSendMessage = async () => {
+    const trimmedMessage = inputMessage.trim();
+    if (!trimmedMessage || isSending) return;
 
-    await addEvent({
-      title: suggestion.title,
-      start: suggestion.start,
-      end: suggestion.end,
-      type: suggestion.type,
-      description: suggestion.description,
-      xpValue: suggestion.xpValue,
-    });
-    updatePendingSuggestionStatus(suggestionId, "accepted");
-    toast.success("AI task added to your calendar!");
+    const userMessage: ChatMessage = {
+      id: Date.now().toString(),
+      role: "user",
+      content: trimmedMessage,
+      timestamp: new Date(),
+    };
+
+    setChatMessages((prev) => [...prev, userMessage]);
+    setInputMessage("");
+    const sendGen = ++chatSendGenRef.current;
+    setIsSending(true);
+
+    try {
+      const userId = localStorage.getItem(AGENT_USER_ID_KEY) ?? crypto.randomUUID();
+      localStorage.setItem(AGENT_USER_ID_KEY, userId);
+
+      const response = await fetch(`${AGENT_API_BASE_URL}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          user_id: userId,
+          auth_user_id: userProfile?.id ?? null,
+          thread_id: threadIdRef.current,
+          message: trimmedMessage,
+          motivation: lastMotivation ?? null,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Backend returned ${response.status}`);
+      }
+
+      const data = await response.json();
+      if (sendGen !== chatSendGenRef.current) return;
+
+      const display = typeof data.response === "string" ? data.response : JSON.stringify(data.response);
+
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: display || "I couldn't generate a reply just now.",
+          timestamp: new Date(),
+        },
+      ]);
+
+      if (data.schedule_updated) {
+        await loadAppData();
+      }
+    } catch (error) {
+      if (sendGen !== chatSendGenRef.current) return;
+
+      const message = error instanceof Error ? error.message : "Unable to reach the AI backend right now.";
+      setChatMessages((prev) => [
+        ...prev,
+        {
+          id: (Date.now() + 1).toString(),
+          role: "assistant",
+          content: `I couldn't reach the AI backend just now (${message}). Make sure the app is running and try again.`,
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
+      if (sendGen === chatSendGenRef.current) {
+        setIsSending(false);
+      }
+    }
   };
 
   const getEventColor = (type: string) => {
@@ -151,15 +224,6 @@ export default function Dashboard() {
       case "goal": return "bg-green-500";
       case "freetime": return "bg-purple-500";
       default: return "bg-gray-500";
-    }
-  };
-
-  const getEventBadge = (type: string) => {
-    switch (type) {
-      case "working": return "Working Task";
-      case "goal": return "Goal Task";
-      case "freetime": return "Free Time Task";
-      default: return type.charAt(0).toUpperCase() + type.slice(1);
     }
   };
 
@@ -265,142 +329,74 @@ export default function Dashboard() {
           <WeeklyCalendar />
         </div>
 
-        {/* Sidebar Stats and Today's Schedule */}
-        <div className="space-y-6 overflow-y-auto pr-2">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <Sparkles className="h-4 w-4 text-blue-500" />
-                AI Recommendations
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {nextPendingSuggestions.length === 0 ? (
-                <div className="space-y-3 rounded-lg border border-dashed p-4">
-                  <p className="text-xs text-muted-foreground">
-                    Your main calendar only shows tasks you have already accepted. Generate a plan in Weekly Sync to see AI recommendations here.
-                  </p>
-                  <Button size="sm" className="w-full" onClick={() => navigate("/weekly-sync")}>
-                    Open Weekly Sync
-                  </Button>
-                </div>
-              ) : (
-                <>
-                  <p className="text-xs text-muted-foreground">
-                    {nextPendingSuggestions.length} pending AI-planned task{nextPendingSuggestions.length === 1 ? "" : "s"} ready to review or add.
-                  </p>
-                  {nextPendingSuggestions.map((suggestion) => (
-                    <div key={suggestion.id} className="rounded-lg border p-3 space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium truncate">{suggestion.title}</p>
-                          <p className="text-[11px] text-muted-foreground">
-                            {format(new Date(suggestion.start), "EEE h:mm a")} - {format(new Date(suggestion.end), "h:mm a")}
-                          </p>
-                        </div>
-                        <Badge variant="secondary">{getEventBadge(suggestion.type)}</Badge>
-                      </div>
-                      <div className="flex gap-2">
-                        <Button size="sm" className="flex-1" onClick={() => handleAcceptSuggestion(suggestion.id)}>
-                          Add
-                        </Button>
-                        <Button size="sm" variant="outline" className="flex-1" onClick={() => navigate("/weekly-sync")}>
-                          Review
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => removePendingSuggestion(suggestion.id)}>
-                          X
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Stats Card */}
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium">Your Progress</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <div className="flex justify-between text-xs">
-                  <span>Level {userProfile.level}</span>
-                  <span className="font-semibold">{userProfile.xp % 100}/100 XP</span>
-                </div>
-                <div className="h-2 bg-secondary rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-gradient-to-r from-blue-500 to-purple-500"
-                    style={{ width: `${(userProfile.xp % 100)}%` }}
-                  />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-center">
-                <div className="p-2 bg-muted/50 rounded-lg">
-                  <div className="text-xl font-bold">{userProfile.level}</div>
-                  <div className="text-[10px] text-muted-foreground uppercase">Level</div>
-                </div>
-                <div className="p-2 bg-muted/50 rounded-lg">
-                  <div className="text-xl font-bold">{userProfile.sideGoals.length}</div>
-                  <div className="text-[10px] text-muted-foreground uppercase">Goals</div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Today's Schedule Sidebar */}
-          <Card className="flex-1">
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium flex items-center gap-2">
-                <CalendarIcon className="h-4 w-4" />
-                Today's Tasks
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {todayEvents.length === 0 ? (
-                <p className="text-xs text-muted-foreground text-center py-4">
-                  No tasks for today.
-                </p>
-              ) : (
-                <div className="space-y-3">
-                  {todayEvents
-                    .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
-                    .map((event) => (
-                      <div
-                        key={event.id}
-                        className={cn(
-                          "p-2 rounded-md border text-xs relative group",
-                          event.completed && "opacity-60"
-                        )}
-                      >
-                        <div className={cn("absolute left-0 top-0 bottom-0 w-1 rounded-l-md", getEventColor(event.type))} />
-                        <div className="pl-2">
-                          <div className={cn("font-medium truncate", event.completed && "line-through")}>
-                            {event.title}
-                          </div>
-                          <div className="text-[10px] text-muted-foreground">
-                            {format(new Date(event.start), "h:mm a")}
-                          </div>
-                          {!event.completed && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="h-6 w-full mt-1 text-[10px] py-0 hidden group-hover:flex"
-                              onClick={() => handleCompleteTask(event.id)}
+        {/* Sidebar: AI Chat */}
+        <div className="space-y-4 overflow-y-auto pr-2 relative">
+          <div className="absolute bottom-4 right-4 w-full max-w-[360px]">
+            <Card className="h-[60vh] overflow-hidden flex flex-col">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-sm font-medium flex items-center gap-2">
+                  <MessageSquare className="h-4 w-4" />
+                  AI Assistant
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="flex-1 flex flex-col p-0">
+                <div className="flex-1 min-h-0">
+                  <ScrollArea className="h-full">
+                    <div className="p-4 space-y-4">
+                      {chatMessages.map((message) => (
+                        <div
+                          key={message.id}
+                          className={`flex ${
+                            message.role === "user" ? "justify-end" : "justify-start"
+                          }`}
+                        >
+                          <div
+                            className={`max-w-[85%] p-3 rounded-2xl shadow-sm ${
+                              message.role === "user"
+                                ? "bg-primary text-primary-foreground rounded-tr-none"
+                                : "bg-muted text-muted-foreground rounded-tl-none"
+                            }`}
+                          >
+                            <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
+                            <p
+                              className={`text-[9px] mt-1.5 font-bold uppercase tracking-widest ${
+                                message.role === "user"
+                                  ? "opacity-60"
+                                  : "text-muted-foreground/50"
+                              }`}
                             >
-                              Complete
-                            </Button>
-                          )}
+                              {format(message.timestamp, "h:mm a")}
+                            </p>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                      <div ref={chatEndRef} />
+                    </div>
+                  </ScrollArea>
                 </div>
-              )}
-            </CardContent>
-          </Card>
+                <div className="p-4 border-t">
+                  <div className="flex gap-2">
+                    <Input
+                      type="text"
+                      placeholder="Type a message..."
+                      value={inputMessage}
+                      onChange={(e) => setInputMessage(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
+                      className="flex-1"
+                      disabled={isSending}
+                    />
+                    <Button onClick={handleSendMessage} size="icon" disabled={isSending}>
+                      <Send className="h-4 w-4" />
+                    </Button>
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">Connected to {AGENT_API_BASE_URL}</p>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
         </div>
       </div>
     </div>
   );
 }
+

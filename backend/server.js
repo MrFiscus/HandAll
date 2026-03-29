@@ -3,7 +3,7 @@ import bodyParser from 'body-parser';
 import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createClient } from '@supabase/supabase-js';
@@ -112,21 +112,39 @@ async function loadPlanningItemsForPlanner(db, uid) {
 // Helper to get DB
 const getDB = () => dbPromise;
 
-function mapTaskRowToApi(t) {
-  return {
+function parseAiMetaColumn(raw) {
+  if (!raw || typeof raw !== 'string') return undefined;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+function taskRowToApiPayload(t) {
+  const typ = t.type ? t.type.toLowerCase() : 'working';
+  const xp =
+    typ === 'working' ? 50 : typ === 'goal' ? 30 : 10;
+  const o = {
     id: t.external_id || t.id.toString(),
     db_id: t.id,
     title: t.title,
     description: t.description,
     start: t.start_time,
     end: t.end_time,
-    type: t.type ? t.type.toLowerCase() : 'working',
+    type: typ,
     sourceUrl: t.source_url || undefined,
     plannerSourceUrl: t.planner_source_url || undefined,
     completed: t.status === 'Completed',
-    xpValue:
-      t.type?.toLowerCase() === 'working' ? 50 : t.type?.toLowerCase() === 'goal' ? 30 : 10,
+    xpValue: xp,
   };
+  const am = parseAiMetaColumn(t.ai_meta);
+  if (am) o.aiMeta = am;
+  return o;
+}
+
+function mapTaskRowToApi(t) {
+  return taskRowToApiPayload(t);
 }
 
 /** Replace ai_planning_items subtasks for one assignment; avoids duplicates. */
@@ -145,9 +163,13 @@ async function replaceAssignmentSubtasks(db, uid, taskRow, rawSubtasks) {
     const em = Number.isFinite(Number(st.estimated_minutes)) ? Math.round(Number(st.estimated_minutes)) : 45;
     const sortOrder = Number.isFinite(Number(st.sort_order)) ? Math.round(Number(st.sort_order)) : inserted.length;
     const desc = st.description != null ? String(st.description) : '';
+    const rat =
+      st.rationale != null && String(st.rationale).trim()
+        ? String(st.rationale).trim().slice(0, 2000)
+        : null;
     const r = await db.run(
-      `INSERT INTO ai_planning_items (user_id, item_type, assignment_external_id, assignment_title, side_goal, title, description, estimated_minutes, sort_order, due_iso)
-       VALUES (?, 'assignment_subtask', ?, ?, NULL, ?, ?, ?, ?, ?)`,
+      `INSERT INTO ai_planning_items (user_id, item_type, assignment_external_id, assignment_title, side_goal, title, description, estimated_minutes, sort_order, due_iso, rationale)
+       VALUES (?, 'assignment_subtask', ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
       uid,
       key,
       taskRow.title,
@@ -156,6 +178,7 @@ async function replaceAssignmentSubtasks(db, uid, taskRow, rawSubtasks) {
       Math.max(15, Math.min(240, em)),
       sortOrder,
       taskRow.start_time,
+      rat,
     );
     inserted.push({
       id: r.lastID,
@@ -169,15 +192,170 @@ async function replaceAssignmentSubtasks(db, uid, taskRow, rawSubtasks) {
   return { assignment_external_id: key, inserted };
 }
 
+function contentHashForTaskRow(row) {
+  const h = createHash('sha256');
+  h.update(String(row.title || ''));
+  h.update('\n');
+  h.update(String(row.description || ''));
+  h.update('\n');
+  h.update(String(row.start_time || ''));
+  h.update('\n');
+  h.update(String(row.end_time || ''));
+  return h.digest('hex');
+}
+
+function goalsHashFromList(goals, motivation) {
+  const h = createHash('sha256');
+  h.update([...goals].sort().join('|'));
+  h.update('\n');
+  h.update(String(Math.max(0, Math.min(100, Math.round(Number(motivation) || 50)))));
+  return h.digest('hex');
+}
+
+function mapClassificationToTaskType(cls) {
+  const c = String(cls || '').toLowerCase();
+  if (c === 'assignment_deadline') return 'assignment';
+  if (c === 'optional_personal') return 'flexible';
+  if (c === 'protected_fixed') return 'fixed';
+  return 'external';
+}
+
+async function classifyEventsAndPersist(db, uid, bodyEvents) {
+  const out = {
+    updated: 0,
+    cache_hits: 0,
+    llm_batches: 0,
+    error: null,
+    samples: [],
+  };
+  if (!Array.isArray(bodyEvents) || bodyEvents.length === 0) return out;
+
+  const needLlm = [];
+
+  for (const ev of bodyEvents) {
+    const ext = ev && ev.id != null ? String(ev.id).trim() : '';
+    if (!ext) continue;
+    const row = await db.get('SELECT * FROM tasks WHERE user_id = ? AND external_id = ?', uid, ext);
+    if (!row) continue;
+    const ch = contentHashForTaskRow(row);
+    const cached = await db.get(
+      'SELECT * FROM ai_cache_event_class WHERE user_id = ? AND external_key = ?',
+      uid,
+      ext,
+    );
+    if (cached && cached.content_hash === ch) {
+      out.cache_hits += 1;
+      const mapped = mapClassificationToTaskType(cached.classification);
+      const meta = {
+        classification: cached.classification,
+        confidence: cached.confidence,
+        subtype: cached.subtype,
+        reason: cached.reason,
+        source: 'cache',
+      };
+      await db.run('UPDATE tasks SET type = ?, ai_meta = ? WHERE id = ?', mapped, JSON.stringify(meta), row.id);
+      out.updated += 1;
+      continue;
+    }
+    needLlm.push({
+      id: ext,
+      title: row.title,
+      description: row.description || '',
+      start: row.start_time,
+      end: row.end_time,
+    });
+  }
+
+  for (let i = 0; i < needLlm.length; i += 28) {
+    const chunk = needLlm.slice(i, i + 28);
+    let plannerRes;
+    try {
+      plannerRes = await postPlanner('/ai/classify-events', { events: chunk });
+    } catch (e) {
+      console.error('classify-events:', e);
+      out.error = e instanceof Error ? e.message : String(e);
+      break;
+    }
+    const { ok, data } = plannerRes;
+    if (!ok || !data || data.success === false) {
+      out.error = (data && data.error) || 'Classification request failed';
+      break;
+    }
+    out.llm_batches += 1;
+    const results = Array.isArray(data.results) ? data.results : [];
+    for (const r of results) {
+      if (!r || r.id == null) continue;
+      const row = await db.get('SELECT * FROM tasks WHERE user_id = ? AND external_id = ?', uid, String(r.id));
+      if (!row) continue;
+      const ch = contentHashForTaskRow(row);
+      const mapped = r.mapped_task_type || mapClassificationToTaskType(r.classification);
+      const meta = {
+        classification: r.classification,
+        confidence: r.confidence,
+        subtype: r.subtype,
+        reason: r.reason,
+        source: 'gemini',
+      };
+      await db.run('UPDATE tasks SET type = ?, ai_meta = ? WHERE id = ?', mapped, JSON.stringify(meta), row.id);
+      await db.run('DELETE FROM ai_cache_event_class WHERE user_id = ? AND external_key = ?', uid, String(r.id));
+      await db.run(
+        `INSERT INTO ai_cache_event_class (user_id, external_key, content_hash, classification, confidence, subtype, reason, raw_json, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+        uid,
+        String(r.id),
+        ch,
+        String(r.classification || 'unclear'),
+        r.confidence != null ? Number(r.confidence) : null,
+        r.subtype || null,
+        r.reason || null,
+        JSON.stringify(r),
+      );
+      out.updated += 1;
+      if (out.samples.length < 8) {
+        out.samples.push({ id: r.id, classification: r.classification, type: mapped });
+      }
+    }
+  }
+
+  return out;
+}
+
 const BATCH_ASSIGNMENT_BREAKDOWN_SIZE = 10;
 
 async function runBatchAssignmentBreakdown(db, uid, taskRows, motivation) {
   const assignment_keys = [];
   let subtasks_inserted = 0;
   let batches = 0;
+  let cache_hits = 0;
 
-  for (let i = 0; i < taskRows.length; i += BATCH_ASSIGNMENT_BREAKDOWN_SIZE) {
-    const chunk = taskRows.slice(i, i + BATCH_ASSIGNMENT_BREAKDOWN_SIZE);
+  const needLlm = [];
+  for (const row of taskRows) {
+    const key = assignmentExternalKeyForRow(row);
+    const ch = contentHashForTaskRow(row);
+    const cached = await db.get(
+      'SELECT * FROM ai_cache_assignment WHERE user_id = ? AND assignment_key = ? AND content_hash = ?',
+      uid,
+      key,
+      ch,
+    );
+    if (cached && cached.subtasks_json) {
+      let raw = [];
+      try {
+        raw = JSON.parse(cached.subtasks_json);
+      } catch {
+        raw = [];
+      }
+      await replaceAssignmentSubtasks(db, uid, row, raw);
+      subtasks_inserted += Array.isArray(raw) ? raw.length : 0;
+      assignment_keys.push(key);
+      cache_hits += 1;
+      continue;
+    }
+    needLlm.push(row);
+  }
+
+  for (let i = 0; i < needLlm.length; i += BATCH_ASSIGNMENT_BREAKDOWN_SIZE) {
+    const chunk = needLlm.slice(i, i + BATCH_ASSIGNMENT_BREAKDOWN_SIZE);
     const payload = {
       assignments: chunk.map((row) => ({
         assignment_key: assignmentExternalKeyForRow(row),
@@ -214,13 +392,180 @@ async function runBatchAssignmentBreakdown(db, uid, taskRows, motivation) {
     for (const row of chunk) {
       const key = assignmentExternalKeyForRow(row);
       const raw = byKey.get(key) || [];
-      const { inserted } = await replaceAssignmentSubtasks(db, uid, row, raw);
-      subtasks_inserted += inserted.length;
+      await replaceAssignmentSubtasks(db, uid, row, raw);
+      subtasks_inserted += Array.isArray(raw) ? raw.length : 0;
       assignment_keys.push(key);
+      const ch = contentHashForTaskRow(row);
+      await db.run('DELETE FROM ai_cache_assignment WHERE user_id = ? AND assignment_key = ?', uid, key);
+      await db.run(
+        `INSERT INTO ai_cache_assignment (user_id, assignment_key, content_hash, subtasks_json, meta_json, updated_at)
+         VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+        uid,
+        key,
+        ch,
+        JSON.stringify(raw),
+        JSON.stringify({ motivation }),
+      );
     }
   }
 
-  return { assignment_keys, subtasks_inserted, batches };
+  return { assignment_keys, subtasks_inserted, batches, cache_hits };
+}
+
+async function maybeRegenerateGoalTasksWithCache(db, uid, motivation) {
+  const user = await db.get('SELECT * FROM users WHERE id = ?', uid);
+  const sideGoals = sideGoalsListFromUserRow(user);
+  if (sideGoals.length === 0) {
+    await db.run('DELETE FROM ai_planning_items WHERE user_id = ? AND item_type = ?', uid, 'goal_task');
+    return { skipped: true, reason: 'no_goals', cache: false };
+  }
+  const gh = goalsHashFromList(sideGoals, motivation);
+  const cached = await db.get('SELECT * FROM ai_cache_goals WHERE user_id = ?', uid);
+  if (cached && cached.goals_hash === gh && cached.tasks_json) {
+    let tasks = [];
+    try {
+      tasks = JSON.parse(cached.tasks_json);
+    } catch {
+      tasks = [];
+    }
+    await db.run('DELETE FROM ai_planning_items WHERE user_id = ? AND item_type = ?', uid, 'goal_task');
+    for (const st of tasks) {
+      const title = st.title != null ? String(st.title).trim() : '';
+      if (!title) continue;
+      const em = Number.isFinite(Number(st.estimated_minutes)) ? Math.round(Number(st.estimated_minutes)) : 40;
+      const sortOrder = Number.isFinite(Number(st.sort_order)) ? Math.round(Number(st.sort_order)) : 0;
+      const desc = st.description != null ? String(st.description) : '';
+      const sg = st.side_goal != null ? String(st.side_goal).trim() : '';
+      await db.run(
+        `INSERT INTO ai_planning_items (user_id, item_type, assignment_external_id, assignment_title, side_goal, title, description, estimated_minutes, sort_order, due_iso)
+         VALUES (?, 'goal_task', NULL, NULL, ?, ?, ?, ?, ?, NULL)`,
+        uid,
+        sg || null,
+        title,
+        desc || null,
+        Math.max(15, Math.min(120, em)),
+        sortOrder,
+      );
+    }
+    return { skipped: true, reason: 'cache_hit', cache: true, count: tasks.length };
+  }
+
+  await db.run('DELETE FROM ai_planning_items WHERE user_id = ? AND item_type = ?', uid, 'goal_task');
+
+  let plannerRes;
+  try {
+    plannerRes = await postPlanner('/ai/goal-tasks', {
+      side_goals: sideGoals,
+      motivation,
+    });
+  } catch (netErr) {
+    console.error('Planner unreachable (goal tasks):', netErr);
+    return { skipped: false, error: 'Planner unreachable', cache: false };
+  }
+  const { ok, data } = plannerRes;
+  if (!ok || !data || data.success === false) {
+    return { skipped: false, error: (data && data.error) || 'goal tasks failed', cache: false };
+  }
+  const rawTasks = Array.isArray(data.tasks) ? data.tasks : [];
+  for (const st of rawTasks) {
+    const title = st.title != null ? String(st.title).trim() : '';
+    if (!title) continue;
+    const em = Number.isFinite(Number(st.estimated_minutes)) ? Math.round(Number(st.estimated_minutes)) : 40;
+    const sortOrder = Number.isFinite(Number(st.sort_order)) ? Math.round(Number(st.sort_order)) : 0;
+    const desc = st.description != null ? String(st.description) : '';
+    const sg = st.side_goal != null ? String(st.side_goal).trim() : '';
+    await db.run(
+      `INSERT INTO ai_planning_items (user_id, item_type, assignment_external_id, assignment_title, side_goal, title, description, estimated_minutes, sort_order, due_iso)
+       VALUES (?, 'goal_task', NULL, NULL, ?, ?, ?, ?, ?, NULL)`,
+      uid,
+      sg || null,
+      title,
+      desc || null,
+      Math.max(15, Math.min(120, em)),
+      sortOrder,
+    );
+  }
+
+  await db.run('DELETE FROM ai_cache_goals WHERE user_id = ?', uid);
+  await db.run(
+    `INSERT INTO ai_cache_goals (user_id, goals_hash, tasks_json, updated_at) VALUES (?, ?, ?, datetime('now'))`,
+    uid,
+    gh,
+    JSON.stringify(rawTasks),
+  );
+
+  return { skipped: false, cache: false, count: rawTasks.length };
+}
+
+async function runUnifiedCalendarPipeline(db, uid, bodyEvents, timezone, motivation) {
+  const classification =
+    Array.isArray(bodyEvents) && bodyEvents.length > 0
+      ? await classifyEventsAndPersist(db, uid, bodyEvents)
+      : { updated: 0, cache_hits: 0, llm_batches: 0, error: null, samples: [] };
+
+  const assignmentRows = [];
+  if (Array.isArray(bodyEvents) && bodyEvents.length > 0) {
+    const ids = bodyEvents.filter((e) => e && e.id != null).map((e) => String(e.id));
+    if (ids.length > 0) {
+      const ph = ids.map(() => '?').join(',');
+      const rows = await db.all(
+        `SELECT * FROM tasks WHERE user_id = ? AND external_id IN (${ph})`,
+        uid,
+        ...ids,
+      );
+      for (const row of rows) {
+        const t = String(row.type || '').toLowerCase();
+        const st = String(row.status || '').toLowerCase();
+        if (t === 'assignment' && st !== 'completed') {
+          assignmentRows.push(row);
+        }
+      }
+    }
+  }
+
+  const breakdown = {
+    assignment_count: assignmentRows.length,
+    assignment_keys: [],
+    subtasks_inserted: 0,
+    batches: 0,
+    cache_hits: 0,
+    error: null,
+  };
+
+  if (assignmentRows.length > 0) {
+    try {
+      const batchResult = await runBatchAssignmentBreakdown(db, uid, assignmentRows, motivation);
+      breakdown.assignment_keys = batchResult.assignment_keys;
+      breakdown.subtasks_inserted = batchResult.subtasks_inserted;
+      breakdown.batches = batchResult.batches;
+      breakdown.cache_hits = batchResult.cache_hits;
+    } catch (be) {
+      console.error('Bulk import assignment breakdown:', be);
+      breakdown.error = be instanceof Error ? be.message : String(be);
+    }
+  }
+
+  const goals = await maybeRegenerateGoalTasksWithCache(db, uid, motivation);
+
+  let rebalance = null;
+  const rb = await runScheduleRebalanceCore(db, uid, {
+    horizon_days: 7,
+    timezone,
+    motivation,
+  });
+  if (rb.ok) {
+    rebalance = rb.data;
+  } else {
+    rebalance = {
+      success: false,
+      soft: true,
+      error: rb.error,
+      detail: rb.detail,
+      user: rb.user,
+    };
+  }
+
+  return { classification, breakdown, goals, rebalance };
 }
 
 /**
@@ -1372,18 +1717,7 @@ app.get('/api/tasks', async (req, res) => {
     req.localUser.id
   );
   
-  res.json(tasks.map(t => ({
-    id: t.external_id || t.id.toString(),
-    db_id: t.id, // Keep the real DB ID too
-    title: t.title,
-    description: t.description,
-    start: t.start_time,
-    end: t.end_time,
-    type: t.type ? t.type.toLowerCase() : 'working',
-    sourceUrl: t.source_url || undefined,
-    completed: t.status === 'Completed',
-    xpValue: t.type?.toLowerCase() === 'working' ? 50 : (t.type?.toLowerCase() === 'goal' ? 30 : 10)
-  })));
+  res.json(tasks.map((t) => taskRowToApiPayload(t)));
 });
 
 app.post('/api/tasks/bulk', async (req, res) => {
@@ -1444,71 +1778,19 @@ app.post('/api/tasks/bulk', async (req, res) => {
 
     await db.run('COMMIT');
 
-    const assignmentEvents = events.filter(
-      (e) => String(e.type || '').toLowerCase() === 'assignment' && !e.completed,
-    );
-    const seenKeys = new Set();
-    const taskRows = [];
-    for (const ev of assignmentEvents) {
-      const row = await db.get(
-        'SELECT * FROM tasks WHERE user_id = ? AND external_id = ?',
-        uid,
-        ev.id,
-      );
-      if (!row) continue;
-      const key = assignmentExternalKeyForRow(row);
-      if (seenKeys.has(key)) continue;
-      seenKeys.add(key);
-      taskRows.push(row);
-    }
-
     const user = await db.get('SELECT * FROM users WHERE id = ?', uid);
     const motivation = Number.isFinite(Number(user?.motivation))
       ? Math.max(0, Math.min(100, Math.round(Number(user.motivation))))
       : 50;
 
-    const breakdown = {
-      assignment_count: taskRows.length,
-      assignment_keys: [],
-      subtasks_inserted: 0,
-      batches: 0,
-      error: null,
-    };
-
-    let rebalance = null;
-
-    if (taskRows.length > 0) {
-      try {
-        const batchResult = await runBatchAssignmentBreakdown(db, uid, taskRows, motivation);
-        breakdown.assignment_keys = batchResult.assignment_keys;
-        breakdown.subtasks_inserted = batchResult.subtasks_inserted;
-        breakdown.batches = batchResult.batches;
-      } catch (be) {
-        console.error('Bulk import assignment breakdown:', be);
-        breakdown.error = be instanceof Error ? be.message : String(be);
-      }
-
-      const rb = await runScheduleRebalanceCore(db, uid, {
-        horizon_days: 7,
-        timezone,
-      });
-      if (rb.ok) {
-        rebalance = rb.data;
-      } else {
-        rebalance = {
-          success: false,
-          soft: true,
-          error: rb.error,
-          detail: rb.detail,
-          user: rb.user,
-        };
-      }
-    }
+    const pipeline = await runUnifiedCalendarPipeline(db, uid, events, timezone, motivation);
 
     res.json({
       success: true,
-      breakdown,
-      rebalance,
+      breakdown: pipeline.breakdown,
+      classification: pipeline.classification,
+      goals: pipeline.goals,
+      rebalance: pipeline.rebalance,
     });
   } catch (err) {
     console.error('Bulk upsert error:', err);
@@ -1821,7 +2103,7 @@ app.get('/api/planning-items', async (req, res) => {
     const db = await getDB();
     const rows = await db.all(
       `SELECT id, item_type, assignment_external_id, assignment_title, side_goal, title, description,
-              estimated_minutes, sort_order, due_iso
+              estimated_minutes, sort_order, due_iso, rationale
        FROM ai_planning_items WHERE user_id = ? ORDER BY item_type, assignment_external_id, sort_order, id`,
       req.localUser.id,
     );
@@ -1884,6 +2166,17 @@ app.post('/api/ai/assignment-breakdown', async (req, res) => {
 
     const rawSubtasks = Array.isArray(data.subtasks) ? data.subtasks : [];
     const { assignment_external_id: key, inserted } = await replaceAssignmentSubtasks(db, uid, task, rawSubtasks);
+    const ch = contentHashForTaskRow(task);
+    await db.run('DELETE FROM ai_cache_assignment WHERE user_id = ? AND assignment_key = ?', uid, key);
+    await db.run(
+      `INSERT INTO ai_cache_assignment (user_id, assignment_key, content_hash, subtasks_json, meta_json, updated_at)
+       VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+      uid,
+      key,
+      ch,
+      JSON.stringify(rawSubtasks),
+      JSON.stringify({ motivation, source: 'single_breakdown' }),
+    );
 
     res.json({ success: true, assignment_external_id: key, subtasks: inserted });
   } catch (e) {
@@ -1961,6 +2254,15 @@ app.post('/api/ai/goal-tasks/regenerate', async (req, res) => {
         side_goal: sg,
       });
     }
+
+    const gh = goalsHashFromList(sideGoals, motivation);
+    await db.run('DELETE FROM ai_cache_goals WHERE user_id = ?', uid);
+    await db.run(
+      `INSERT INTO ai_cache_goals (user_id, goals_hash, tasks_json, updated_at) VALUES (?, ?, ?, datetime('now'))`,
+      uid,
+      gh,
+      JSON.stringify(rawTasks),
+    );
 
     res.json({ success: true, tasks: inserted });
   } catch (e) {

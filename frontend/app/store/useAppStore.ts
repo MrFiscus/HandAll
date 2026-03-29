@@ -2,16 +2,34 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { api } from "../utils/api";
 
+export interface CalendarAiMeta {
+  classification?: string;
+  confidence?: number;
+  subtype?: string;
+  reason?: string;
+  source?: string;
+}
+
 export interface CalendarEvent {
   id: string;
   title: string;
   start: Date;
   end: Date;
-  type: "class" | "assignment" | "working" | "goal" | "freetime" | "external";
+  type:
+    | "class"
+    | "assignment"
+    | "working"
+    | "goal"
+    | "freetime"
+    | "external"
+    | "fixed"
+    | "flexible";
   description?: string;
   sourceUrl?: string;
   completed?: boolean;
   xpValue?: number;
+  /** Set after AI classifies imported/connected calendar rows */
+  aiMeta?: CalendarAiMeta;
 }
 
 /** Persisted AI-generated units consumed by the planner (not calendar times). */
@@ -26,6 +44,7 @@ export interface PlanningItemRow {
   estimated_minutes: number;
   sort_order: number;
   due_iso?: string | null;
+  rationale?: string | null;
 }
 
 export interface SuggestedTask extends CalendarEvent {
@@ -361,6 +380,9 @@ export const useAppStore = create<AppState>()(
           });
           if (bulk.breakdown?.error) {
             console.warn("Calendar import: assignment breakdown issue:", bulk.breakdown.error);
+          }
+          if (bulk.classification?.error) {
+            console.warn("Calendar import: AI classification issue:", bulk.classification.error);
           }
           if (bulk.rebalance && bulk.rebalance.success === false) {
             console.warn(

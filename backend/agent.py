@@ -1131,7 +1131,10 @@ def build_system_prompt(user_metadata: Dict[str, Any]) -> str:
         "unless no task matches or several tasks match (then use title_contains or list options). "
         "Use HandAll schedule tools to add, remove, move, search, inspect, and rebalance tasks inside the app. "
         "Use the Google Calendar tools only when the user explicitly wants external Google Calendar events inspected or changed. "
-        "When you edit the app schedule, state what changed (task title, previous time → new time) in plain language. Be concise and accurate."
+        "When you edit the app schedule, state what changed (task title, previous time → new time) in plain language. Be concise and accurate. "
+        "Calendar rows may include ai-classification metadata: fixed commitments block time and are not moved by the planner; "
+        "assignment deadlines drive AI-generated work blocks scheduled before the due time; flexible events can be overlapped by planned work. "
+        "If the user asks why something was classified or how work was split, explain using that distinction and that times for focus blocks come from HandAll's deterministic planner, not guessed by the chat model."
     )
 
 

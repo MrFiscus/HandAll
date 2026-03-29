@@ -1,147 +1,231 @@
-# HandAll - AI-Driven Student Time Manager
+# HandAll
 
-HandAll is a sophisticated time management application specifically designed for students. It goes beyond simple scheduling by using Artificial Intelligence to break down large assignments into manageable working blocks, syncing with multiple calendar sources, and dynamically rebalancing your schedule based on your current motivation levels.
+HandAll is an AI-supported student planner built to keep classes, assignments, recovery time, side goals, and calendar imports in one flow. Instead of acting like a plain calendar, it helps students set up routines, import school schedules, discover goal-supporting events, and talk to an assistant that understands the planner context.
 
-## 🚀 Key Features
+## What HandAll Does
 
-### 📅 Advanced Calendar Interface
-- **Dynamic Collision Detection:** Overlapping events are automatically detected and displayed side-by-side for maximum clarity.
-- **Smart Drag-and-Drop:** Reposition events with a professional "ghost" preview that shows the new time in real-time before you drop.
-- **Multi-Day Handling:** Overnight events (e.g., 10 PM - 8 AM) are gracefully clipped and split across day columns.
-- **Dual View Modes:** Seamlessly toggle between a comprehensive **Week View** and a focused **Day View**.
-- **Interactive Completion:** Quickly cross out and mark tasks as finished using **Shift + Click**.
+- Centralizes classes, tasks, imported calendar events, and personal goals in one interface.
+- Uses AI-assisted planning to break work into manageable blocks and support schedule decisions.
+- Lets students connect calendars, import `.ics` feeds, and preview converted events before syncing.
+- Adds a visual layer for motivation, energy windows, side goals, and assistant-guided planning.
 
-### 🤖 AI-Powered Scheduling
-- **Task Decomposition:** Large projects and assignments are automatically broken down into smaller, actionable "Working Blocks" by the AI planner.
-- **The Motivation Engine:** Schedules are rebalanced using a "50% rule" logic—the app adjusts task density based on your current motivation level (0-100).
-- **AI Chat Assistant:** A built-in assistant powered by **LangGraph** and **OpenAI** helps you manage tasks and check your schedule through natural conversation.
+## Visual Product Tour
 
-### 🔄 Seamless Synchronization
-- **Google Calendar Integration:** Direct sync with your Google account.
-- **Private iCal Support:** Import private calendar URLs via a secure backend proxy to bypass CORS restrictions.
-- **File Uploads:** Support for importing `.ics` files directly into your dashboard.
+### Landing and Authentication
 
-### 🎮 Gamified Productivity
-- **XP & Leveling System:** Earn XP by completing tasks. "Working" blocks provide the highest rewards, followed by "Goal" and "Free Time" tasks.
-- **Progress Tracking:** Monitor your level and XP progress directly from the sidebar.
+The app starts with a simple landing page that frames HandAll as a guided planning tool rather than just another calendar.
 
----
+![Landing page](images/landing-page.png)
 
-## 🛠️ Tech Stack
+Users can create an account directly or continue with Google for a faster setup flow.
+
+![Sign up](images/sign-up.png)
+
+Returning users land on a focused sign-in screen that takes them straight back into their planner.
+
+![Sign in](images/sign-in.png)
+
+### Onboarding Flow
+
+New users are guided through a three-step onboarding flow so the planner can personalize recommendations before the main dashboard opens.
+
+Step 1 collects profile information and side goals. Those goals later feed into event discovery and long-term planning.
+
+![Onboarding profile](images/onboarding-profile.png)
+
+Step 2 captures routine preferences such as wake-up and sleep windows so the planner can respect energy boundaries. The time picker is built as a dedicated modal to keep routine setup simple and touch-friendly.
+
+![Onboarding routine and sleep time modal](images/onboarding-routine.png)
+
+Step 3 connects the calendar layer, either through Google or `.ics` import, before finishing setup.
+
+![Onboarding calendar](images/onboarding-calendar.png)
+
+### Calendar Sync and Import
+
+HandAll supports calendar sync through Google Calendar and also supports private iCal links or file uploads.
+
+The import dialog supports both URL sync and direct file upload, which helps students bring in university calendars or exported schedules without dealing with CORS issues in the browser.
+
+![Calendar import modal](images/calendar-import-modal.png)
+
+Before events are committed, HandAll shows an import preview with converted tasks, category counts, and priority labeling so users can verify what is coming into the planner.
+
+![Calendar import preview](images/calendar-import-preview.png)
+
+The advanced settings view also shows active sync sources so users can see what is currently connected.
+
+![Advanced settings and integrations](images/settings-advanced.png)
+
+### Planner and Calendar Experience
+
+The main planner supports both day and week views, allowing users to zoom in on a single day or look at a fuller weekly plan.
+
+Day view is useful for focused execution and quick task edits.
+
+![Calendar day view](images/calendar-day-view.png)
+
+Week view gives a broader planning perspective and helps users see class load, study blocks, and recovery windows together.
+
+![Calendar week view](images/calendar-week-view.png)
+
+The more populated weekly schedule shows how HandAll combines classes, study blocks, and lower-pressure recovery activities into the same planning surface.
+
+![Calendar populated week](images/calendar-populated-week.png)
+
+Users can manually add new entries through a dedicated modal without leaving the calendar.
+
+![Add event modal](images/calendar-add-event.png)
+
+### Goals and Event Discovery
+
+One of HandAll's distinctive features is the Goals area, which looks beyond school deadlines and helps users build momentum on side ambitions.
+
+The "Fun Events" view surfaces nearby experiences that can support balance and recovery.
+
+![Goals fun events](images/goals-fun-events.png)
+
+The "Goal Events" view narrows results around a specific side goal, like learning guitar or learning Spanish, so the app can suggest more targeted opportunities.
+
+![Goals goal events](images/goals-goal-events.png)
+
+The settings page also lets users maintain side goals over time, which feeds back into event discovery and future planning recommendations.
+
+![Goals settings](images/settings-goals.png)
+
+### AI Assistant and Guided Planning
+
+The built-in assistant is available inside the planner so users can ask for help without leaving the scheduling context.
+
+It is intended for natural-language schedule support, task guidance, and general planning help based on the rest of the app state.
+
+![Assistant chat](images/assistant-chat.png)
+
+### Settings and Personalization
+
+The general settings page gives users a place to manage profile presence, XP, current level, and routine preferences in one place.
+
+![General settings](images/settings-general.png)
+
+The app also includes a motivation or energy slider directly in the dashboard so users can quickly signal how intense or gentle their schedule should feel.
+
+This is visible in the planner screenshots and ties into the app's routine-first scheduling philosophy.
+
+## Core Features
+
+### AI-supported scheduling
+
+- Breaks large work into smaller planning blocks.
+- Supports assistant-driven planning inside the app.
+- Balances structure with lower-pressure recovery activities.
+
+### Routine-aware planning
+
+- Captures wake-up and sleep windows during onboarding.
+- Keeps schedule decisions grounded in how the user actually works.
+- Surfaces motivation and energy controls directly in the planner UI.
+
+### Calendar integration
+
+- Google Calendar connection.
+- Private iCal URL support.
+- Direct `.ics` upload.
+- Preview-before-import workflow for safer syncing.
+
+### Side goals and growth
+
+- Stores long-term goals like fitness, music, or language learning.
+- Discovers fun and goal-supporting opportunities nearby.
+- Connects planning with life outside class deadlines.
+
+## Tech Stack
 
 ### Frontend
-- **Framework:** React 18 (Vite)
-- **Language:** TypeScript
-- **State Management:** Zustand
-- **Styling:** Tailwind CSS, shadcn/ui, Radix UI
-- **Date Handling:** date-fns
 
-### Backend (Orchestrator)
-- **Runtime:** Node.js (Express)
-- **Database:** SQLite (with `sqlite3` and `sqlite` wrapper)
-- **Authentication:** Supabase Auth
-- **APIs:** Google Calendar API, iCal Parsing
+- React 18
+- TypeScript
+- Vite
+- Tailwind CSS
+- Zustand
+- Radix UI and shadcn-style component patterns
 
-### AI Backend (Planner & Agent)
-- **Framework:** Python (FastAPI)
-- **AI Orchestration:** LangGraph
-- **LLM:** OpenAI (via `langchain-openai`; Google APIs used only for Calendar OAuth, not chat)
-- **Environment:** Uvicorn
+### Backend
 
----
+- Node.js
+- Express
+- SQLite
+- Supabase Auth
 
-## 📥 Getting Started
+### AI backend
+
+- Python
+- FastAPI
+- LangGraph
+- OpenAI via `langchain-openai`
+
+## Local Development
 
 ### Prerequisites
-- Node.js (v18 or higher recommended)
-- Python 3.9+
-- A Google Cloud Project (for Calendar API)
-- An OpenAI API key (`OPENAI_API_KEY` in root `.env`)
-- A Supabase Project (for Auth)
 
-### 1. Repository Setup
+- Node.js 18 or newer
+- Python 3.9 or newer
+- A Supabase project for authentication
+- An OpenAI API key
+- Optional Google Calendar credentials for calendar integration
+
+### Install
+
 ```bash
-git clone https://github.com/evanbh256/HandAll.git
+git clone https://github.com/MrFiscus/HandAll.git
 cd HandAll
-npm install
+npm run setup
 ```
 
-### 2. Backend Setup (Node.js)
-1. Navigate to the backend folder:
-   ```bash
-   cd backend
-   npm install
-   ```
-2. Create a `.env` file in the `backend/` directory:
-   ```env
-   SUPABASE_URL=your_supabase_url
-   SUPABASE_ANON_KEY=your_supabase_anon_key
-   HANDALL_PLANNER_URL=http://127.0.0.1:8011
-   ```
-3. Initialize/Reset the database:
-   ```bash
-   npm run reset-db
-   ```
-4. Start the server:
-   ```bash
-   npm start
-   ```
+### Run the app
 
-### 3. AI Backend Setup (Python)
-1. Navigate to the backend folder (in a new terminal):
-   ```bash
-   cd backend
-   # Recommended: Create a virtual environment
-   python -m venv .venv
-   source .venv/bin/activate # Windows: .venv\Scripts\activate
-   pip install -r requirements.txt
-   ```
-2. Create a `.env` file in the root or `backend/` directory:
-   ```env
-   OPENAI_API_KEY=your_openai_api_key
-   OPENAI_MODEL=gpt-4o-mini
-   ```
-3. Start the FastAPI server:
-   ```bash
-   uvicorn main:app --port 8011
-   ```
+```bash
+npm run dev
+```
 
-### 4. Frontend Setup (React)
-1. Navigate to the frontend folder:
-   ```bash
-   cd frontend
-   npm install
-   ```
-2. Create a `.env` file in the `frontend/` directory:
-   ```env
-   VITE_SUPABASE_URL=your_supabase_url
-   VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
-   VITE_AGENT_API_URL=http://localhost:8011
-   ```
-3. Start the development server:
-   ```bash
-   npm run dev
-   ```
+This starts:
 
----
+- the Node backend
+- the Vite frontend
+- the Python AI service
 
-## 📁 Project Structure
+### Key environment values
 
-- `frontend/`: React application, UI components, and state logic.
-- `backend/`: Node.js Express server handling user data and calendar proxying.
-- `backend/main.py`: FastAPI entry point for AI planning and chat.
-- `backend/planner.py`: Core logic for task decomposition and schedule rebalancing.
-- `backend/agent.py`: LangGraph-based AI agent for conversational interactions.
-- `functions/`: Design documents and pseudocode for core business logic.
+Root or backend environment:
 
----
+```env
+SUPABASE_URL=your_supabase_url
+SUPABASE_KEY=your_supabase_key
+OPENAI_API_KEY=your_openai_api_key
+OPENAI_MODEL=gpt-4o-mini
+```
 
-## 👥 Development Team
-- **Evan Bhandari** - Advanced Calendar UI & Sync Optimization
-- **Smaran Pokharel** - Google Calendar Connect Flow
-- **Tenzing Gurung** - AI Planner & Motivation Sync Logic
+Frontend environment:
 
----
+```env
+VITE_SUPABASE_URL=your_supabase_url
+VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
+```
 
-## ⚖️ License
-This project is for educational use as part of the DSU Student curriculum.
+## Project Structure
+
+- `frontend/` - React application and UI components
+- `backend/` - Node backend, calendar sync, and persistence
+- `backend/main.py` - FastAPI entry point for AI routes
+- `backend/planner.py` - planning and decomposition logic
+- `backend/agent.py` - conversational assistant logic
+- `images/` - screenshots used in the README
+
+## Team
+
+- Evan Bhandari - Calendar UI and sync optimization
+- Smaran Pokharel - Google Calendar connect flow and product integration
+- Tenzing Gurung - AI planner and motivation sync logic
+
+## License
+
+This project was created for educational and portfolio use.

@@ -345,14 +345,14 @@ export default function Dashboard() {
                 </button>
               </DialogTrigger>
               <DialogContent 
-                overlayClassName="bg-transparent"
-                className="sm:max-w-[500px] h-[600px] border-none rounded-[3rem] bg-card/60 backdrop-blur-xl shadow-4xl flex flex-col p-0 overflow-hidden"
+                overlayClassName="bg-black/55"
+                className="sm:max-w-[500px] h-[600px] border border-white/10 rounded-[3rem] bg-[#1b3f2c] shadow-4xl flex flex-col p-0 overflow-hidden"
               >
-                <div className="p-10 border-b border-white/5 bg-white/2">
+                <div className="p-10 border-b border-white/10 bg-[#224b34]">
                   <h2 className="text-3xl font-black tracking-tighter">Let&apos;s Chat.</h2>
-                  <p className="opacity-40 font-medium text-sm">Refine your experience.</p>
+                  <p className="text-foreground/65 font-medium text-sm">Refine your experience.</p>
                 </div>
-                <ScrollArea className="flex-1" type="always">
+                <ScrollArea className="flex-1 bg-[#1d422e]" type="always">
                   <div className="p-10 space-y-6">
                     {chatMessages.map((m) => (
                       <div key={m.id} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
@@ -361,7 +361,7 @@ export default function Dashboard() {
                             "max-w-[85%] p-5 rounded-[1.5rem] text-base font-medium leading-relaxed break-words",
                             m.role === "user"
                               ? "bg-primary text-primary-foreground rounded-tr-none"
-                              : "bg-white/[0.03] border border-white/5 rounded-tl-none",
+                              : "bg-[#29543c] border border-white/10 text-foreground rounded-tl-none",
                           )}
                         >
                           {m.content}
@@ -371,14 +371,14 @@ export default function Dashboard() {
                     <div ref={chatEndRef} />
                   </div>
                 </ScrollArea>
-                <div className="p-12 pt-0">
-                  <div className="flex gap-4 p-3 rounded-[2rem] bg-white/[0.03] border border-white/5 focus-within:border-primary/20 transition-all">
+                <div className="p-12 pt-0 bg-[#1d422e]">
+                  <div className="flex gap-4 p-3 rounded-[2rem] bg-[#224730] border border-white/10 focus-within:border-primary/30 transition-all">
                     <Input
                       value={inputMessage}
                       onChange={(e) => setInputMessage(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
                       placeholder="Type something..."
-                      className="flex-1 h-14 bg-transparent border-none text-lg px-6 focus:ring-0"
+                      className="flex-1 h-14 bg-transparent border-none text-lg px-6 text-foreground placeholder:text-foreground/45 focus:ring-0"
                       disabled={isSending}
                     />
                     <Button

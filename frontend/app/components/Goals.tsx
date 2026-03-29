@@ -1,6 +1,11 @@
 import { useState } from "react";
 import { useAppStore } from "../store/useAppStore";
-import { api, NearbyGoalEventGroup, NearbyGoalEventResult } from "../utils/api";
+import {
+  api,
+  GoalEventRecommendation,
+  NearbyGoalEventGroup,
+  NearbyGoalEventResult,
+} from "../utils/api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/card";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -15,6 +20,7 @@ import {
   Target,
   ExternalLink,
   Search,
+  Sparkles,
 } from "lucide-react";
 
 function EventList({
@@ -60,14 +66,126 @@ function EventList({
 }
 
 export default function Goals() {
-  const { userProfile } = useAppStore();
+  const { userProfile, events, addEvent } = useAppStore();
   const [location, setLocation] = useState("");
   const [resolvedLocation, setResolvedLocation] = useState("");
   const [isResolvingLocation, setIsResolvingLocation] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
+  const [isRecommending, setIsRecommending] = useState(false);
   const [funEvents, setFunEvents] = useState<NearbyGoalEventResult[]>([]);
   const [goalGroups, setGoalGroups] = useState<NearbyGoalEventGroup[]>([]);
   const [lastSearchedLocation, setLastSearchedLocation] = useState("");
+  const [recommendations, setRecommendations] = useState<{
+    fun: GoalEventRecommendation | null;
+    goal: GoalEventRecommendation | null;
+  }>({ fun: null, goal: null });
+
+  const findNextOpenSlot = (durationMinutes: number) => {
+    const wakeHour = Number(userProfile.wakeTime?.split(":")[0] || 7);
+    const wakeMinute = Number(userProfile.wakeTime?.split(":")[1] || 0);
+    const sleepHour = Number(userProfile.sleepTime?.split(":")[0] || 23);
+    const sleepMinute = Number(userProfile.sleepTime?.split(":")[1] || 0);
+    const now = new Date();
+    const sortedEvents = [...events]
+      .map((event) => ({
+        start: new Date(event.start),
+        end: new Date(event.end),
+      }))
+      .sort((a, b) => a.start.getTime() - b.start.getTime());
+
+    for (let dayOffset = 0; dayOffset < 14; dayOffset += 1) {
+      const day = new Date(now);
+      day.setDate(now.getDate() + dayOffset);
+      day.setHours(0, 0, 0, 0);
+
+      let cursor = new Date(day);
+      cursor.setHours(wakeHour, wakeMinute, 0, 0);
+      const dayEnd = new Date(day);
+      dayEnd.setHours(sleepHour, sleepMinute, 0, 0);
+
+      if (dayOffset === 0 && cursor < now) {
+        const roundedNow = new Date(now);
+        roundedNow.setMinutes(Math.ceil(roundedNow.getMinutes() / 15) * 15, 0, 0);
+        cursor = roundedNow;
+      }
+
+      const sameDayEvents = sortedEvents.filter(
+        (event) =>
+          event.end > cursor &&
+          event.start < dayEnd &&
+          event.start.toDateString() === day.toDateString(),
+      );
+
+      for (const event of sameDayEvents) {
+        const proposedEnd = new Date(cursor.getTime() + durationMinutes * 60000);
+        if (proposedEnd <= event.start) {
+          return { start: cursor, end: proposedEnd };
+        }
+        if (cursor < event.end) {
+          cursor = new Date(event.end);
+        }
+      }
+
+      const finalEnd = new Date(cursor.getTime() + durationMinutes * 60000);
+      if (finalEnd <= dayEnd) {
+        return { start: cursor, end: finalEnd };
+      }
+    }
+
+    const fallbackStart = new Date(now);
+    fallbackStart.setHours(wakeHour, wakeMinute, 0, 0);
+    const fallbackEnd = new Date(fallbackStart.getTime() + durationMinutes * 60000);
+    return { start: fallbackStart, end: fallbackEnd };
+  };
+
+  const addRecommendationToCalendar = async (
+    recommendation: GoalEventRecommendation,
+  ) => {
+    const slot = findNextOpenSlot(recommendation.suggested_duration_minutes || 60);
+    await addEvent({
+      title: recommendation.task_title,
+      description: recommendation.task_description,
+      start: slot.start,
+      end: slot.end,
+      type: recommendation.task_type,
+    });
+  };
+
+  const handleRecommendAndAdd = async () => {
+    if (!lastSearchedLocation || (funEvents.length === 0 && goalGroups.length === 0)) {
+      toast.error("Search for nearby events first.");
+      return;
+    }
+
+    setIsRecommending(true);
+    try {
+      const result = await api.recommendGoalEvents({
+        location: lastSearchedLocation || location.trim(),
+        sideGoals: userProfile.sideGoals,
+        motivation: userProfile.motivation ?? 50,
+        funEvents,
+        goalEventGroups: goalGroups,
+      });
+      setRecommendations({
+        fun: result.fun_event,
+        goal: result.goal_event,
+      });
+
+      const toAdd = [result.fun_event, result.goal_event].filter(Boolean) as GoalEventRecommendation[];
+      for (const item of toAdd) {
+        await addRecommendationToCalendar(item);
+      }
+
+      toast.success("Added one fun event and one goal-supporting event to your calendar.");
+    } catch (error) {
+      console.error("Goal event recommendation failed:", error);
+      toast.error(
+        error instanceof Error ? error.message : "Failed to recommend goal events.",
+      );
+    } finally {
+      setIsRecommending(false);
+    }
+  };
 
   const handleUseMyLocation = async () => {
     if (!navigator.geolocation) {
@@ -207,12 +325,53 @@ export default function Goals() {
           </div>
 
           {lastSearchedLocation ? (
-            <p className="text-sm text-muted-foreground">
-              Showing results for <span className="font-medium text-foreground">{resolvedLocation || lastSearchedLocation}</span>
-            </p>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-muted-foreground">
+                Showing results for <span className="font-medium text-foreground">{resolvedLocation || lastSearchedLocation}</span>
+              </p>
+              <Button type="button" onClick={handleRecommendAndAdd} disabled={isRecommending || (!funEvents.length && !goalGroups.length)}>
+                {isRecommending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles className="mr-2 h-4 w-4" />
+                )}
+                Recommend and Add
+              </Button>
+            </div>
           ) : null}
         </div>
       </div>
+
+      {(recommendations.fun || recommendations.goal) && (
+        <div className="grid gap-6 md:grid-cols-2">
+          {[recommendations.fun, recommendations.goal].filter(Boolean).map((item) => (
+            <Card key={`${item!.kind}-${item!.title}`} className="rounded-[2rem] bg-white/[0.01] border border-white/[0.03] backdrop-blur-sm">
+              <CardHeader>
+                <CardTitle className="text-lg">{item!.kind === "fun" ? "AI fun pick" : "AI goal pick"}</CardTitle>
+                <CardDescription>{item!.reason}</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div>
+                  <p className="font-medium">{item!.title}</p>
+                  <p className="text-sm text-muted-foreground">{item!.description || "No description provided."}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant="secondary">{item!.task_type === "freetime" ? "Fun Event" : item!.goal || "Goal Event"}</Badge>
+                  <Badge variant="outline">{item!.suggested_duration_minutes} min</Badge>
+                </div>
+                {item!.url ? (
+                  <Button asChild size="sm" variant="outline">
+                    <a href={item!.url} target="_blank" rel="noreferrer">
+                      <ExternalLink className="mr-2 h-3.5 w-3.5" />
+                      Open source
+                    </a>
+                  </Button>
+                ) : null}
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      )}
 
       <div className="grid gap-6 xl:grid-cols-[1.05fr_1fr]">
         <div className="h-fit p-8 rounded-[2rem] bg-white/[0.01] border border-white/[0.03] space-y-8 backdrop-blur-sm">

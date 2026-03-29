@@ -81,6 +81,14 @@ export interface NearbyGoalEventGroup {
   results: NearbyGoalEventResult[];
 }
 
+export interface GoalEventRecommendation extends NearbyGoalEventResult {
+  reason: string;
+  task_title: string;
+  task_description: string;
+  task_type: "goal" | "freetime";
+  suggested_duration_minutes: number;
+}
+
 export const api = {
   async fetchUser(): Promise<UserProfile> {
     const headers = await getAuthHeaders();
@@ -494,6 +502,38 @@ export const api = {
     const data = (await res.json().catch(() => null)) ?? {};
     if (!res.ok) {
       throw new Error(typeof data.error === 'string' ? data.error : 'Failed to search nearby events');
+    }
+    return data;
+  },
+
+  async recommendGoalEvents(params: {
+    location: string;
+    sideGoals: string[];
+    motivation: number;
+    funEvents: NearbyGoalEventResult[];
+    goalEventGroups: NearbyGoalEventGroup[];
+  }): Promise<{
+    success: boolean;
+    fun_event: GoalEventRecommendation | null;
+    goal_event: GoalEventRecommendation | null;
+  }> {
+    const res = await fetch(`${AGENT_API_BASE_URL}/ai/recommend-goal-events`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        location: params.location,
+        side_goals: params.sideGoals,
+        motivation: params.motivation,
+        fun_events: params.funEvents,
+        goal_event_groups: params.goalEventGroups,
+      }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.success === false) {
+      throw new Error(data?.error || "Failed to recommend goal events");
     }
     return data;
   },

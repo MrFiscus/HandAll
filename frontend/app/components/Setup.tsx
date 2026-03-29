@@ -93,17 +93,6 @@ export default function Setup() {
       }
     }
 
-    if (step === 2) {
-      if (formData.wakeTime === DEFAULT_WAKE_TIME) {
-        toast.error("Customize your wake time before continuing.");
-        return;
-      }
-      if (formData.sleepTime === DEFAULT_SLEEP_TIME) {
-        toast.error("Customize your sleep time before continuing.");
-        return;
-      }
-    }
-
     if (step < STEPS.length) {
       saveSetupDraft({
         name: trimmedName,

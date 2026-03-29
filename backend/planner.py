@@ -225,6 +225,157 @@ def _generate_ai_suggestions(side_goals: List[str], motivation: int) -> Dict[str
         return {"goal": fallback_goal, "free_time": fallback_free}
 
 
+def recommend_goal_events(payload: Dict[str, Any]) -> Dict[str, Any]:
+    location = str(payload.get("location") or "").strip()
+    side_goals = [
+        str(goal).strip()
+        for goal in (payload.get("side_goals") or [])
+        if isinstance(goal, str) and str(goal).strip()
+    ]
+    fun_events = [
+        item for item in (payload.get("fun_events") or []) if isinstance(item, dict)
+    ]
+    goal_groups = [
+        item for item in (payload.get("goal_event_groups") or []) if isinstance(item, dict)
+    ]
+    motivation = max(0, min(int(payload.get("motivation") or 50), 100))
+
+    fallback_fun = next((item for item in fun_events if item.get("title")), None)
+    fallback_goal = None
+    for group in goal_groups:
+        results = group.get("results") or []
+        if isinstance(results, list):
+          fallback_goal = next((item for item in results if isinstance(item, dict) and item.get("title")), None)
+        if fallback_goal:
+          break
+
+    def _build_output(item: Optional[Dict[str, Any]], *, kind: str, goal_name: str = "") -> Optional[Dict[str, Any]]:
+        if not item:
+            return None
+        title = str(item.get("title") or "").strip()
+        description = str(item.get("description") or "").strip()
+        url = str(item.get("url") or "").strip()
+        if kind == "fun":
+            task_title = f"Try: {title}"
+            task_type = "freetime"
+            duration = 90
+            reason = "Good low-pressure option for fun and recovery."
+        else:
+            prefix = f"{goal_name}: " if goal_name and goal_name.lower() not in title.lower() else ""
+            task_title = f"{prefix}{title}"
+            task_type = "goal"
+            duration = 75
+            reason = "Directly supports one of your current side goals."
+        return {
+            "title": title,
+            "description": description,
+            "url": url,
+            "goal": goal_name or item.get("goal"),
+            "kind": kind,
+            "task_title": task_title,
+            "task_description": (
+                f"{description or title}\n\nSuggested from nearby events in {location}."
+                + (f"\nLearn more: {url}" if url else "")
+            ).strip(),
+            "task_type": task_type,
+            "suggested_duration_minutes": duration,
+            "reason": reason,
+        }
+
+    fallback = {
+        "fun_event": _build_output(fallback_fun, kind="fun"),
+        "goal_event": _build_output(
+            fallback_goal,
+            kind="goal",
+            goal_name=str((fallback_goal or {}).get("goal") or ""),
+        ),
+    }
+
+    model = _get_planner_model()
+    if not model or (not fun_events and not goal_groups):
+        log_llm_fallback(
+            "planner.recommend_goal_events",
+            "Gemini unavailable or no goal-event search results available",
+        )
+        return fallback
+
+    prompt = (
+        "You are selecting nearby event ideas for a student planner. "
+        "Pick exactly one fun event and exactly one goal-supporting event from the provided search results. "
+        "A fun event should be relaxing, social, or enjoyable. "
+        "A goal-supporting event should most strongly help one of the listed side goals. "
+        "Return only valid JSON with keys fun_event and goal_event. "
+        "Each should be an object containing: title, reason, task_title, task_description, "
+        "task_type, suggested_duration_minutes, url, goal. "
+        "Use task_type='freetime' for fun_event and task_type='goal' for goal_event. "
+        "Keep suggested_duration_minutes between 45 and 120. "
+        "Do not invent titles that are not in the candidate list.\n\n"
+        f"location={location}\n"
+        f"motivation={motivation}\n"
+        f"side_goals={json.dumps(side_goals)}\n"
+        f"fun_events={json.dumps(fun_events, indent=2)}\n"
+        f"goal_event_groups={json.dumps(goal_groups, indent=2)}"
+    )
+
+    try:
+        response = model.invoke([HumanMessage(content=prompt)])
+        log_llm_chat_completion(response, "planner.recommend_goal_events")
+        parsed = _extract_json_object(str(response.content))
+        if not isinstance(parsed, dict):
+            log_llm_fallback(
+                "planner.recommend_goal_events",
+                "response not a JSON object; using first-result fallback",
+            )
+            return fallback
+
+        def _merge(kind: str, fallback_item: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+            candidate = parsed.get(f"{kind}_event")
+            if not isinstance(candidate, dict):
+                return fallback_item
+            title = str(candidate.get("title") or "").strip()
+            if not title:
+                return fallback_item
+
+            pool: List[Dict[str, Any]]
+            goal_name = str(candidate.get("goal") or "").strip()
+            if kind == "fun":
+                pool = fun_events
+            else:
+                pool = []
+                for group in goal_groups:
+                    results = group.get("results") or []
+                    if isinstance(results, list):
+                        for result in results:
+                            if isinstance(result, dict):
+                                pool.append({ **result, "goal": group.get("goal") })
+
+            matched = next(
+                (item for item in pool if str(item.get("title") or "").strip().lower() == title.lower()),
+                None,
+            )
+            base = _build_output(matched or {"title": title, "description": candidate.get("task_description") or "", "url": candidate.get("url") or "", "goal": goal_name}, kind=kind, goal_name=goal_name or str((matched or {}).get("goal") or ""))
+            if not base:
+                return fallback_item
+            base["reason"] = str(candidate.get("reason") or base["reason"]).strip()
+            base["task_title"] = str(candidate.get("task_title") or base["task_title"]).strip()
+            base["task_description"] = str(candidate.get("task_description") or base["task_description"]).strip()
+            duration = candidate.get("suggested_duration_minutes")
+            if isinstance(duration, (int, float)):
+                base["suggested_duration_minutes"] = max(45, min(120, int(round(duration))))
+            return base
+
+        return {
+            "fun_event": _merge("fun", fallback["fun_event"]),
+            "goal_event": _merge("goal", fallback["goal_event"]),
+        }
+    except Exception as exc:
+        log_llm_fallback(
+            "planner.recommend_goal_events",
+            f"exception: {exc!s}"[:300],
+        )
+        return fallback
+
+
 def _normalize_assignments(
     assignments: List[Dict[str, Any]],
     events: List[Dict[str, Any]],

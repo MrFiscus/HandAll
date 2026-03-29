@@ -378,6 +378,28 @@ class GoalTasksRequest(BaseModel):
     motivation: int = 50
 
 
+class GoalEventCandidate(BaseModel):
+    title: str = ""
+    description: str = ""
+    url: str = ""
+    kind: str = "fun"
+    goal: str | None = None
+
+
+class GoalEventGroupInput(BaseModel):
+    goal: str
+    query: str = ""
+    results: list[GoalEventCandidate] = []
+
+
+class GoalEventRecommendationsRequest(BaseModel):
+    location: str
+    side_goals: list[str] = []
+    motivation: int = 50
+    fun_events: list[GoalEventCandidate] = []
+    goal_event_groups: list[GoalEventGroupInput] = []
+
+
 class BatchAssignmentInput(BaseModel):
     assignment_key: str
     title: str
@@ -567,3 +589,27 @@ def ai_goal_tasks(request: GoalTasksRequest) -> Dict[str, Any]:
         return {"success": True, "tasks": tasks}
     except Exception as exc:
         return {"success": False, "error": str(exc), "tasks": []}
+
+
+@app.post("/ai/recommend-goal-events")
+def ai_recommend_goal_events(request: GoalEventRecommendationsRequest) -> Dict[str, Any]:
+    try:
+        from backend.planner import recommend_goal_events
+
+        recommendations = recommend_goal_events(
+            {
+                "location": request.location,
+                "side_goals": request.side_goals,
+                "motivation": request.motivation,
+                "fun_events": [event.model_dump() for event in request.fun_events],
+                "goal_event_groups": [group.model_dump() for group in request.goal_event_groups],
+            }
+        )
+        return {"success": True, **recommendations}
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            "fun_event": None,
+            "goal_event": None,
+        }

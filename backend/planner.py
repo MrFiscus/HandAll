@@ -10,6 +10,9 @@ from zoneinfo import ZoneInfo
 from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
+from backend.llm_client import get_gemini_chat_model
+from backend.llm_usage import log_llm_chat_completion, log_llm_fallback
+
 
 def _get_timezone(timezone_name: str):
     try:
@@ -58,15 +61,7 @@ def _extract_json_object(text: str) -> Optional[Any]:
 
 
 def _get_planner_model() -> Optional[ChatGoogleGenerativeAI]:
-    google_api_key = os.getenv("GOOGLE_API_KEY")
-    if not google_api_key:
-        return None
-
-    return ChatGoogleGenerativeAI(
-        model=os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"),
-        google_api_key=google_api_key,
-        temperature=0.2,
-    )
+    return get_gemini_chat_model(temperature=0.2)
 
 
 def _heuristic_assignment_hours(title: str, description: str) -> int:
@@ -99,7 +94,13 @@ def _estimate_assignment_hours(assignments: List[Dict[str, Any]]) -> Dict[str, D
         for assignment in assignments
     }
 
-    if not model or not assignments:
+    if not assignments:
+        return fallback
+    if not model:
+        log_llm_fallback(
+            "planner._estimate_assignment_hours",
+            "GOOGLE_API_KEY missing or Gemini chat model unavailable",
+        )
         return fallback
 
     prompt_payload = [
@@ -122,8 +123,13 @@ def _estimate_assignment_hours(assignments: List[Dict[str, Any]]) -> Dict[str, D
 
     try:
         response = model.invoke([HumanMessage(content=prompt)])
+        log_llm_chat_completion(response, "planner._estimate_assignment_hours")
         parsed = _extract_json_object(str(response.content))
         if not isinstance(parsed, list):
+            log_llm_fallback(
+                "planner._estimate_assignment_hours",
+                "response not a JSON array; using heuristic hours",
+            )
             return fallback
 
         result = dict(fallback)
@@ -138,7 +144,11 @@ def _estimate_assignment_hours(assignments: List[Dict[str, Any]]) -> Dict[str, D
                     "reason": str(item.get("reason") or "Estimated by AI planner."),
                 }
         return result
-    except Exception:
+    except Exception as exc:
+        log_llm_fallback(
+            "planner._estimate_assignment_hours",
+            f"exception: {exc!s}"[:300],
+        )
         return fallback
 
 
@@ -171,6 +181,10 @@ def _generate_ai_suggestions(side_goals: List[str], motivation: int) -> Dict[str
 
     model = _get_planner_model()
     if not model:
+        log_llm_fallback(
+            "planner._generate_ai_suggestions",
+            "GOOGLE_API_KEY missing or Gemini chat model unavailable",
+        )
         return {"goal": fallback_goal, "free_time": fallback_free}
 
     goals_line = json.dumps(side_goals)
@@ -186,8 +200,13 @@ def _generate_ai_suggestions(side_goals: List[str], motivation: int) -> Dict[str
 
     try:
         response = model.invoke([HumanMessage(content=prompt)])
+        log_llm_chat_completion(response, "planner._generate_ai_suggestions")
         parsed = _extract_json_object(str(response.content))
         if not isinstance(parsed, dict):
+            log_llm_fallback(
+                "planner._generate_ai_suggestions",
+                "response not a JSON object; using template suggestions",
+            )
             return {"goal": fallback_goal, "free_time": fallback_free}
 
         goal_items = parsed.get("goal")
@@ -196,7 +215,11 @@ def _generate_ai_suggestions(side_goals: List[str], motivation: int) -> Dict[str
             "goal": goal_items if isinstance(goal_items, list) and goal_items else fallback_goal,
             "free_time": free_items if isinstance(free_items, list) and free_items else fallback_free,
         }
-    except Exception:
+    except Exception as exc:
+        log_llm_fallback(
+            "planner._generate_ai_suggestions",
+            f"exception: {exc!s}"[:300],
+        )
         return {"goal": fallback_goal, "free_time": fallback_free}
 
 
@@ -394,6 +417,103 @@ def _working_block_minutes(motivation: int, remaining_minutes: int, slot_remaini
     return 60 if remaining_minutes >= 60 and slot_remaining >= 60 else 30
 
 
+def _goal_block_minutes(motivation: int, remaining_minutes: int, slot_remaining: int) -> int:
+    """Chunk personal-goal work; slightly shorter than deadline blocks when tired."""
+    cap = min(remaining_minutes, slot_remaining)
+    cap = max(15, _round_down_to_30(cap) or 15)
+    if motivation <= 35:
+        return min(30, cap)
+    if motivation <= 55:
+        return min(45, cap) if cap >= 45 else 30
+    if motivation <= 75:
+        return min(60, cap) if cap >= 60 else 30
+    return min(60, cap) if cap >= 60 else 30
+
+
+def _normalize_assignment_work_units(raw: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        aid = str(item.get("assignment_id") or item.get("assignment_external_id") or "assignment")
+        em = item.get("estimated_minutes")
+        if not isinstance(em, (int, float)):
+            em = 45
+        out.append(
+            {
+                "id": str(item.get("id") or f"u-{len(out)}"),
+                "assignment_id": aid,
+                "assignment_title": str(item.get("assignment_title") or "").strip(),
+                "title": title,
+                "description": str(item.get("description") or "").strip(),
+                "estimated_minutes": max(15, min(240, int(round(em)))),
+                "sort_order": int(item.get("sort_order") or 0),
+                "due_iso": item.get("due_iso") or item.get("due_date"),
+            }
+        )
+    return out
+
+
+def _normalize_goal_work_units(raw: Any) -> List[Dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
+        em = item.get("estimated_minutes")
+        if not isinstance(em, (int, float)):
+            em = 35
+        out.append(
+            {
+                "id": str(item.get("id") or f"g-{len(out)}"),
+                "title": title,
+                "description": str(item.get("description") or "").strip(),
+                "estimated_minutes": max(15, min(120, int(round(em)))),
+                "side_goal": str(item.get("side_goal") or "").strip(),
+                "sort_order": int(item.get("sort_order") or 0),
+            }
+        )
+    return out
+
+
+def _assignment_meta_from_work_units(work_units: List[Dict[str, Any]], tz: ZoneInfo) -> List[Dict[str, Any]]:
+    by_id: Dict[str, Dict[str, Any]] = {}
+    for u in work_units:
+        aid = u["assignment_id"]
+        due_raw = u.get("due_iso")
+        due_dt = _parse_datetime(str(due_raw), tz) if due_raw else None
+        if aid not in by_id:
+            by_id[aid] = {
+                "id": aid,
+                "title": u.get("assignment_title") or u["title"],
+                "description": "",
+                "_due_dt": due_dt,
+                "estimated_hours": 0.0,
+                "estimate_reason": "Sum of AI subtasks.",
+            }
+        else:
+            prev = by_id[aid].get("_due_dt")
+            if due_dt and (prev is None or due_dt < prev):
+                by_id[aid]["_due_dt"] = due_dt
+        hours = u["estimated_minutes"] / 60.0
+        by_id[aid]["estimated_hours"] = float(by_id[aid]["estimated_hours"]) + hours
+    out: List[Dict[str, Any]] = []
+    for row in by_id.values():
+        ddt = row.pop("_due_dt", None)
+        row["due_date"] = ddt.isoformat() if ddt else ""
+        out.append(row)
+    return sorted(out, key=lambda x: x.get("due_date") or "")
+
+
 def _make_task(
     *,
     task_id: str,
@@ -427,6 +547,9 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     events = payload.get("events") or []
     side_goals = [goal for goal in (payload.get("side_goals") or []) if isinstance(goal, str) and goal.strip()]
+    assignment_work_units = _normalize_assignment_work_units(payload.get("assignment_work_units"))
+    goal_work_units = _normalize_goal_work_units(payload.get("goal_work_units"))
+
     assignments = _normalize_assignments(payload.get("assignments") or [], events, tz, plan_start)
 
     estimates = _estimate_assignment_hours(assignments)
@@ -456,118 +579,120 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
     working_by_day: Dict[str, int] = defaultdict(int)
     daily_limit = _daily_working_limit(motivation)
 
+    far_future = plan_end + timedelta(days=365)
+
+    def _unit_due_dt(unit: Dict[str, Any]) -> datetime:
+        raw = unit.get("due_iso")
+        if not raw:
+            return far_future
+        parsed = _parse_datetime(str(raw), tz)
+        return parsed if parsed else far_future
+
     slot_index = 0
-    for assignment in enriched_assignments:
-        remaining_minutes = int(math.ceil(float(assignment["estimated_hours"]) * 60))
-        block_index = 1
-        while remaining_minutes > 0 and slot_index < len(usable_slots):
-            slot = usable_slots[slot_index]
-            if slot["start"] >= assignment["due_date"]:
-                break
 
-            if working_by_day[slot["day_key"]] >= daily_limit:
-                slot_index += 1
+    if assignment_work_units:
+        sorted_units = sorted(
+            assignment_work_units,
+            key=lambda u: (_unit_due_dt(u), u["assignment_id"], u["sort_order"], u["id"]),
+        )
+        for unit in sorted_units:
+            due_dt = _unit_due_dt(unit)
+            if due_dt < plan_start:
                 continue
+            remaining_minutes = int(unit["estimated_minutes"])
+            block_index = 1
+            assignment_id = unit["assignment_id"]
+            unit_id = unit["id"]
+            title_base = unit["title"]
+            unit_desc = unit["description"] or f"Subtask for {unit.get('assignment_title') or 'assignment'}."
 
-            duration = _working_block_minutes(
-                motivation, remaining_minutes, slot["remaining_minutes"]
-            )
-            if slot["remaining_minutes"] < duration:
-                slot_index += 1
-                continue
+            while remaining_minutes > 0 and slot_index < len(usable_slots):
+                slot = usable_slots[slot_index]
+                if slot["start"] >= due_dt:
+                    break
 
-            task_title = assignment["title"]
-            if remaining_minutes > duration:
-                task_title = f"{assignment['title']} - Focus Block {block_index}"
+                if working_by_day[slot["day_key"]] >= daily_limit:
+                    slot_index += 1
+                    continue
 
-            suggestions.append(
-                _make_task(
-                    task_id=f"{assignment['id']}-working-{block_index}",
-                    title=task_title,
-                    description=assignment.get("description") or f"Make progress on {assignment['title']}.",
-                    start=slot["start"],
-                    duration_minutes=duration,
-                    task_type="working",
+                duration = _working_block_minutes(
+                    motivation, remaining_minutes, slot["remaining_minutes"]
                 )
-            )
+                if slot["remaining_minutes"] < duration:
+                    slot_index += 1
+                    continue
 
-            slot["start"] = slot["start"] + timedelta(minutes=duration)
-            slot["remaining_minutes"] -= duration
-            remaining_minutes -= duration
-            working_by_day[slot["day_key"]] += 1
-            block_index += 1
+                task_title = title_base
+                if remaining_minutes > duration:
+                    task_title = f"{title_base} (part {block_index})"
 
-            if slot["remaining_minutes"] < 30:
-                slot_index += 1
+                suggestions.append(
+                    _make_task(
+                        task_id=f"{assignment_id}-sub-{unit_id}-w{block_index}",
+                        title=task_title,
+                        description=unit_desc,
+                        start=slot["start"],
+                        duration_minutes=duration,
+                        task_type="working",
+                    )
+                )
 
-    ideas = _generate_ai_suggestions(side_goals, motivation)
-    goal_ideas = ideas["goal"] or [f"Make progress on {goal}" for goal in side_goals]
-    free_ideas = ideas["free_time"] or ["Take a real break and recharge"]
+                slot["start"] = slot["start"] + timedelta(minutes=duration)
+                slot["remaining_minutes"] -= duration
+                remaining_minutes -= duration
+                working_by_day[slot["day_key"]] += 1
+                block_index += 1
 
-    remaining_slots = [slot for slot in usable_slots if slot["remaining_minutes"] >= 30]
-    extra_bias = "goal" if motivation > 70 else "free" if motivation <= 40 else "balanced"
+                if slot["remaining_minutes"] < 30:
+                    slot_index += 1
 
-    goal_index = 0
-    free_index = 0
-    extra_counter = 0
-    num_goals = len(side_goals)
-    for slot in remaining_slots:
-        if slot["remaining_minutes"] < 30:
-            continue
+        assignment_return = _assignment_meta_from_work_units(assignment_work_units, tz)
+    else:
+        for assignment in enriched_assignments:
+            remaining_minutes = int(math.ceil(float(assignment["estimated_hours"]) * 60))
+            block_index = 1
+            while remaining_minutes > 0 and slot_index < len(usable_slots):
+                slot = usable_slots[slot_index]
+                if slot["start"] >= assignment["due_date"]:
+                    break
 
-        if motivation <= 40:
-            duration = 30
-        elif motivation >= 80 and slot["remaining_minutes"] >= 60:
-            duration = 60
-        else:
-            duration = 60 if slot["remaining_minutes"] >= 60 else 30
+                if working_by_day[slot["day_key"]] >= daily_limit:
+                    slot_index += 1
+                    continue
 
-        choose_goal = (
-            num_goals > 0
-            and (
-                extra_bias == "goal"
-                or (extra_bias == "balanced" and extra_counter % 2 == 0)
-            )
-        )
+                duration = _working_block_minutes(
+                    motivation, remaining_minutes, slot["remaining_minutes"]
+                )
+                if slot["remaining_minutes"] < duration:
+                    slot_index += 1
+                    continue
 
-        if choose_goal and goal_ideas:
-            idea = goal_ideas[goal_index % len(goal_ideas)]
-            task_type = "goal"
-            active_goal = side_goals[extra_counter % num_goals] if num_goals else ""
-            if active_goal and active_goal.lower() not in idea.lower():
-                title = f"{active_goal}: {idea}"
-            else:
-                title = idea
-            description = (
-                f"Side-goal block aligned to motivation {motivation}/100. "
-                f"Covers your goals: {', '.join(side_goals)}."
-            )
-            goal_index += 1
-        else:
-            title = free_ideas[free_index % len(free_ideas)]
-            task_type = "freetime"
-            description = "Free time suggestion to protect rest and keep your schedule sustainable."
-            free_index += 1
+                task_title = assignment["title"]
+                if remaining_minutes > duration:
+                    task_title = f"{assignment['title']} - Focus Block {block_index}"
 
-        suggestions.append(
-            _make_task(
-                task_id=f"extra-{task_type}-{extra_counter + 1}",
-                title=title,
-                description=description,
-                start=slot["start"],
-                duration_minutes=duration,
-                task_type=task_type,
-            )
-        )
+                suggestions.append(
+                    _make_task(
+                        task_id=f"{assignment['id']}-working-{block_index}",
+                        title=task_title,
+                        description=assignment.get("description")
+                        or f"Make progress on {assignment['title']}.",
+                        start=slot["start"],
+                        duration_minutes=duration,
+                        task_type="working",
+                    )
+                )
 
-        slot["start"] = slot["start"] + timedelta(minutes=duration)
-        slot["remaining_minutes"] -= duration
-        extra_counter += 1
+                slot["start"] = slot["start"] + timedelta(minutes=duration)
+                slot["remaining_minutes"] -= duration
+                remaining_minutes -= duration
+                working_by_day[slot["day_key"]] += 1
+                block_index += 1
 
-    suggestions.sort(key=lambda item: item["start"])
+                if slot["remaining_minutes"] < 30:
+                    slot_index += 1
 
-    return {
-        "assignments": [
+        assignment_return = [
             {
                 "id": assignment["id"],
                 "title": assignment["title"],
@@ -577,7 +702,139 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "estimate_reason": assignment["estimate_reason"],
             }
             for assignment in enriched_assignments
-        ],
+        ]
+
+    ideas = _generate_ai_suggestions(side_goals, motivation)
+    goal_ideas = ideas["goal"] or [f"Make progress on {goal}" for goal in side_goals]
+    free_ideas = ideas["free_time"] or ["Take a real break and recharge"]
+
+    remaining_slots = [slot for slot in usable_slots if slot["remaining_minutes"] >= 30]
+    extra_bias = "goal" if motivation > 70 else "free" if motivation <= 40 else "balanced"
+
+    extra_counter = 0
+
+    if goal_work_units:
+        sorted_goals = sorted(
+            goal_work_units,
+            key=lambda g: (g.get("side_goal") or "", g["sort_order"], g["id"]),
+        )
+        g_idx = 0
+        for unit in sorted_goals:
+            rem = int(unit["estimated_minutes"])
+            title = unit["title"]
+            desc = unit["description"] or "Personal goal progress (planner-scheduled)."
+            sg = unit.get("side_goal") or ""
+            if sg and sg.lower() not in title.lower():
+                disp_title = f"{sg}: {title}"
+            else:
+                disp_title = title
+            block_num = 1
+            while rem > 0:
+                slot = next((s for s in usable_slots if s["remaining_minutes"] >= 15), None)
+                if slot is None:
+                    break
+                duration = _goal_block_minutes(motivation, rem, slot["remaining_minutes"])
+                if duration < 15:
+                    break
+                suggestions.append(
+                    _make_task(
+                        task_id=f"goal-{unit['id']}-b{block_num}",
+                        title=disp_title if block_num == 1 else f"{disp_title} (part {block_num})",
+                        description=desc,
+                        start=slot["start"],
+                        duration_minutes=duration,
+                        task_type="goal",
+                    )
+                )
+                slot["start"] = slot["start"] + timedelta(minutes=duration)
+                slot["remaining_minutes"] -= duration
+                rem -= duration
+                block_num += 1
+            g_idx += 1
+
+        remaining_slots = [slot for slot in usable_slots if slot["remaining_minutes"] >= 30]
+        free_index = 0
+        for slot in remaining_slots:
+            if slot["remaining_minutes"] < 30:
+                continue
+            duration = 30 if motivation <= 40 else (60 if slot["remaining_minutes"] >= 60 else 30)
+            duration = min(duration, slot["remaining_minutes"])
+            duration = max(15, _round_down_to_30(duration) or 15)
+            suggestions.append(
+                _make_task(
+                    task_id=f"extra-freetime-{extra_counter + 1}",
+                    title=free_ideas[free_index % len(free_ideas)],
+                    description="Free time suggestion to protect rest and keep your schedule sustainable.",
+                    start=slot["start"],
+                    duration_minutes=duration,
+                    task_type="freetime",
+                )
+            )
+            slot["start"] = slot["start"] + timedelta(minutes=duration)
+            slot["remaining_minutes"] -= duration
+            free_index += 1
+            extra_counter += 1
+    else:
+        goal_index = 0
+        free_index = 0
+        num_goals = len(side_goals)
+        for slot in remaining_slots:
+            if slot["remaining_minutes"] < 30:
+                continue
+
+            if motivation <= 40:
+                duration = 30
+            elif motivation >= 80 and slot["remaining_minutes"] >= 60:
+                duration = 60
+            else:
+                duration = 60 if slot["remaining_minutes"] >= 60 else 30
+
+            choose_goal = (
+                num_goals > 0
+                and (
+                    extra_bias == "goal"
+                    or (extra_bias == "balanced" and extra_counter % 2 == 0)
+                )
+            )
+
+            if choose_goal and goal_ideas:
+                idea = goal_ideas[goal_index % len(goal_ideas)]
+                task_type = "goal"
+                active_goal = side_goals[extra_counter % num_goals] if num_goals else ""
+                if active_goal and active_goal.lower() not in idea.lower():
+                    title = f"{active_goal}: {idea}"
+                else:
+                    title = idea
+                description = (
+                    f"Side-goal block aligned to motivation {motivation}/100. "
+                    f"Covers your goals: {', '.join(side_goals)}."
+                )
+                goal_index += 1
+            else:
+                title = free_ideas[free_index % len(free_ideas)]
+                task_type = "freetime"
+                description = "Free time suggestion to protect rest and keep your schedule sustainable."
+                free_index += 1
+
+            suggestions.append(
+                _make_task(
+                    task_id=f"extra-{task_type}-{extra_counter + 1}",
+                    title=title,
+                    description=description,
+                    start=slot["start"],
+                    duration_minutes=duration,
+                    task_type=task_type,
+                )
+            )
+
+            slot["start"] = slot["start"] + timedelta(minutes=duration)
+            slot["remaining_minutes"] -= duration
+            extra_counter += 1
+
+    suggestions.sort(key=lambda item: item["start"])
+
+    return {
+        "assignments": assignment_return,
         "suggested_tasks": suggestions,
         "meta": {
             "motivation": motivation,
@@ -586,5 +843,7 @@ def generate_weekly_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
             "free_slots_considered": len(usable_slots),
             "side_goals": side_goals,
             "daily_working_block_cap": _daily_working_limit(motivation),
+            "used_ai_assignment_subtasks": bool(assignment_work_units),
+            "used_ai_goal_tasks": bool(goal_work_units),
         },
     }

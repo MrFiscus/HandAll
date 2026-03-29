@@ -300,7 +300,7 @@ export default function WeeklySync() {
           <CardHeader>
             <CardTitle>Suggested Tasks</CardTitle>
             <p className="text-sm text-muted-foreground">
-              Review and accept or reject the AI planner suggestions. Only 50% of your free time is used so the rest stays open.
+              Review and accept or reject suggestions. The planner places blocks in free time using your motivation level; assignment subtasks and saved goal tasks are scheduled first when available.
             </p>
           </CardHeader>
           <CardContent className="space-y-4">

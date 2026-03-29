@@ -1,5 +1,5 @@
 import { supabase } from "../lib/supabase";
-import { CalendarEvent, UserProfile } from "../store/useAppStore";
+import { CalendarEvent, PlanningItemRow, UserProfile } from "../store/useAppStore";
 
 const AGENT_API_BASE_URL =
   import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "/agent-api";
@@ -249,26 +249,116 @@ export const api = {
         typeof data.error === 'string' ? data.error : 'Failed to add task',
       );
     }
+    return data as { success: boolean; id?: number; external_id?: string };
+  },
+
+  async fetchPlanningItems(): Promise<PlanningItemRow[]> {
+    const headers = await getAuthHeaders();
+    if (!headers.Authorization) return [];
+    const res = await fetch("/api/planning-items", { headers });
+    const data = (await res.json().catch(() => null)) ?? {};
+    if (!res.ok) return [];
+    return Array.isArray(data.items) ? data.items : [];
+  },
+
+  async requestAssignmentBreakdown(taskId: string): Promise<{
+    success: boolean;
+    assignment_external_id?: string;
+    subtasks?: unknown[];
+  }> {
+    const headers = await getAuthHeaders();
+    if (!headers.Authorization) {
+      throw new Error(supabase ? "Not signed in." : "Supabase is not configured.");
+    }
+    const res = await fetch("/api/ai/assignment-breakdown", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ taskId }),
+    });
+    const data = (await res.json().catch(() => null)) ?? {};
+    if (!res.ok) {
+      throw new Error(typeof data.error === "string" ? data.error : "Breakdown failed");
+    }
     return data;
   },
 
-  async upsertTasks(events: CalendarEvent[], sourceUrl?: string) {
+  async regenerateGoalTasks(): Promise<{ success: boolean; tasks?: unknown[] }> {
     const headers = await getAuthHeaders();
+    if (!headers.Authorization) {
+      throw new Error(supabase ? "Not signed in." : "Supabase is not configured.");
+    }
+    const res = await fetch("/api/ai/goal-tasks/regenerate", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({}),
+    });
+    const data = (await res.json().catch(() => null)) ?? {};
+    if (!res.ok) {
+      throw new Error(typeof data.error === "string" ? data.error : "Goal task regeneration failed");
+    }
+    return data;
+  },
+
+  async upsertTasks(events: CalendarEvent[], sourceUrl?: string): Promise<{
+    success: boolean;
+    error?: string;
+    breakdown?: {
+      assignment_count: number;
+      assignment_keys: string[];
+      subtasks_inserted: number;
+      batches: number;
+      error: string | null;
+    };
+    rebalance?: {
+      success?: boolean;
+      soft?: boolean;
+      motivation?: number;
+      tasks?: Array<Record<string, unknown>>;
+      error?: string;
+      detail?: string;
+    } | null;
+  }> {
+    const headers = await getAuthHeaders();
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
     const res = await fetch('/api/tasks/bulk', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ events: events.map(e => ({
-        id: e.id,
-        title: e.title,
-        description: e.description,
-        start: toIsoString(e.start) ?? new Date().toISOString(),
-        end: toIsoString(e.end) ?? new Date().toISOString(),
-        type: e.type,
-        source_url: e.sourceUrl ?? sourceUrl,
-        completed: e.completed
-      }))})
+      body: JSON.stringify({
+        timezone,
+        events: events.map((e) => ({
+          id: e.id,
+          title: e.title,
+          description: e.description,
+          start: toIsoString(e.start) ?? new Date().toISOString(),
+          end: toIsoString(e.end) ?? new Date().toISOString(),
+          type: e.type,
+          source_url: e.sourceUrl ?? sourceUrl,
+          completed: e.completed,
+        })),
+      }),
     });
-    return res.json();
+    const data = (await res.json().catch(() => null)) ?? {};
+    if (!res.ok) {
+      throw new Error(typeof data.error === 'string' ? data.error : 'Bulk sync failed');
+    }
+    return data as {
+      success: boolean;
+      breakdown?: {
+        assignment_count: number;
+        assignment_keys: string[];
+        subtasks_inserted: number;
+        batches: number;
+        error: string | null;
+      };
+      rebalance?: {
+        success?: boolean;
+        soft?: boolean;
+        motivation?: number;
+        tasks?: Array<Record<string, unknown>>;
+        error?: string;
+        detail?: string;
+      } | null;
+    };
   },
 
   async updateTask(id: string, updates: Partial<CalendarEvent>) {
@@ -375,6 +465,37 @@ export const api = {
     meta: Record<string, any>;
     error?: string;
   }> {
+    const authHeaders = await getAuthHeaders();
+    let assignment_work_units: object[] = [];
+    let goal_work_units: object[] = [];
+    if (authHeaders.Authorization) {
+      const piRes = await fetch("/api/planning-items", { headers: authHeaders });
+      const piData = (await piRes.json().catch(() => null)) ?? {};
+      const items: PlanningItemRow[] = Array.isArray(piData.items) ? piData.items : [];
+      assignment_work_units = items
+        .filter((i) => i.item_type === "assignment_subtask")
+        .map((i) => ({
+          id: String(i.id),
+          assignment_id: i.assignment_external_id || "",
+          assignment_title: i.assignment_title || "",
+          title: i.title,
+          description: i.description || "",
+          estimated_minutes: i.estimated_minutes,
+          sort_order: i.sort_order,
+          due_iso: i.due_iso,
+        }));
+      goal_work_units = items
+        .filter((i) => i.item_type === "goal_task")
+        .map((i) => ({
+          id: String(i.id),
+          title: i.title,
+          description: i.description || "",
+          estimated_minutes: i.estimated_minutes,
+          side_goal: i.side_goal || "",
+          sort_order: i.sort_order,
+        }));
+    }
+
     const res = await fetch(`${AGENT_API_BASE_URL}/plan-week`, {
       method: 'POST',
       headers: {
@@ -406,6 +527,8 @@ export const api = {
           due_date: toIsoString(assignment.dueDate),
           estimated_hours: assignment.estimatedHours,
         })),
+        assignment_work_units,
+        goal_work_units,
       }),
     });
 

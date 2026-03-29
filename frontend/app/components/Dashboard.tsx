@@ -20,6 +20,7 @@ export default function Dashboard() {
   const {
     events,
     userProfile,
+    planningItems,
     addEvent,
     updateEvent,
     loadAppData,
@@ -67,6 +68,12 @@ export default function Dashboard() {
       .sort((a, b) => new Date(a.start).getTime() - new Date(b.start).getTime())
       .slice(0, 3);
   }, [pendingSuggestions]);
+
+  const planningSummary = useMemo(() => {
+    const subs = planningItems.filter((p) => p.item_type === "assignment_subtask").length;
+    const goals = planningItems.filter((p) => p.item_type === "goal_task").length;
+    return { subs, goals };
+  }, [planningItems]);
 
   const handleAddEvent = async () => {
     if (!newEvent.title.trim()) {
@@ -167,6 +174,15 @@ export default function Dashboard() {
           <p className="text-muted-foreground">
             Welcome back! Here's your weekly overview.
           </p>
+          {(planningSummary.subs > 0 || planningSummary.goals > 0) && (
+            <p className="mt-1 text-sm text-muted-foreground">
+              AI planning queue:{" "}
+              <span className="font-medium text-foreground">{planningSummary.subs}</span> assignment
+              subtasks,{" "}
+              <span className="font-medium text-foreground">{planningSummary.goals}</span> personal-goal
+              tasks (used when you rebalance or run Weekly Sync).
+            </p>
+          )}
         </div>
         <div className="flex gap-2">
            <Dialog open={showAddEvent} onOpenChange={setShowAddEvent}>

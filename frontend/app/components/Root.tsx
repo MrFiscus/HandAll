@@ -20,6 +20,7 @@ import WelcomeGuide from "./WelcomeGuide";
 import { supabase } from "../lib/supabase";
 import { api } from "../utils/api";
 import { toast } from "sonner";
+import { normalizeChatResponseContent } from "../utils/chatResponse";
 
 interface ChatMessage {
   id: string;
@@ -29,9 +30,16 @@ interface ChatMessage {
 }
 
 interface ChatApiResponse {
-  response: string;
+  /** Plain string or structured (stringified blocks) depending on model/version */
+  response: string | unknown;
   user_id: string;
   thread_id: string;
+  /** From FastAPI when HandAll tasks table was updated (rebalance / add / remove) */
+  schedule_updated?: boolean;
+  /** Present on /chat failure: llm | tool | graph | other */
+  error_source?: string | null;
+  /** Short technical line when HANDALL_EXPOSE_ERRORS / DEBUG on server */
+  error_detail?: string | null;
 }
 
 const AGENT_API_BASE_URL =
@@ -68,6 +76,8 @@ export default function Root() {
   const [loading, setLoading] = useState(true);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const threadIdRef = useRef<string>(crypto.randomUUID());
+  /** Ignore late /chat responses when a newer message was already sent (prevents partial or reordered replies). */
+  const chatSendGenRef = useRef(0);
   const displayName =
     userProfile.name ||
     session?.user?.user_metadata?.full_name ||
@@ -216,6 +226,7 @@ export default function Root() {
     };
     setChatMessages((prev) => [...prev, userMessage]);
     setInputMessage("");
+    const sendGen = ++chatSendGenRef.current;
     setIsSending(true);
 
     try {
@@ -242,16 +253,24 @@ export default function Root() {
       }
 
       const data: ChatApiResponse = await response.json();
+      if (sendGen !== chatSendGenRef.current) return;
+
+      const display = normalizeChatResponseContent(data.response);
       setChatMessages((prev) => [
         ...prev,
         {
           id: (Date.now() + 1).toString(),
           role: "assistant",
-          content: data.response || "I couldn't generate a reply just now.",
+          content: display || "I couldn't generate a reply just now.",
           timestamp: new Date(),
         },
       ]);
+      if (data.schedule_updated) {
+        await loadAppData();
+      }
     } catch (error) {
+      if (sendGen !== chatSendGenRef.current) return;
+
       const message =
         error instanceof Error
           ? error.message
@@ -269,7 +288,9 @@ export default function Root() {
         },
       ]);
     } finally {
-      setIsSending(false);
+      if (sendGen === chatSendGenRef.current) {
+        setIsSending(false);
+      }
     }
   };
 

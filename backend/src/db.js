@@ -88,6 +88,29 @@ export async function initDB() {
   await db.exec('ALTER TABLE users ADD COLUMN side_goals_json TEXT').catch(() => {});
   await db.exec('ALTER TABLE users ADD COLUMN motivation INTEGER DEFAULT 50').catch(() => {});
 
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_planning_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      item_type TEXT NOT NULL,
+      assignment_external_id TEXT,
+      assignment_title TEXT,
+      side_goal TEXT,
+      title TEXT NOT NULL,
+      description TEXT,
+      estimated_minutes INTEGER NOT NULL DEFAULT 45,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      due_iso TEXT,
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    );
+  `);
+  await db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_ai_planning_user ON ai_planning_items(user_id)',
+  ).catch(() => {});
+  await db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_ai_planning_assignment ON ai_planning_items(assignment_external_id)',
+  ).catch(() => {});
+
   // Seed initial user if not exists
   const user = await db.get('SELECT * FROM users LIMIT 1');
   if (!user) {

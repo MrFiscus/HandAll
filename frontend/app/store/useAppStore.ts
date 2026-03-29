@@ -14,6 +14,20 @@ export interface CalendarEvent {
   xpValue?: number;
 }
 
+/** Persisted AI-generated units consumed by the planner (not calendar times). */
+export interface PlanningItemRow {
+  id: number;
+  item_type: "assignment_subtask" | "goal_task";
+  assignment_external_id?: string | null;
+  assignment_title?: string | null;
+  side_goal?: string | null;
+  title: string;
+  description?: string | null;
+  estimated_minutes: number;
+  sort_order: number;
+  due_iso?: string | null;
+}
+
 export interface SuggestedTask extends CalendarEvent {
   status: "pending" | "accepted" | "rejected";
 }
@@ -54,6 +68,7 @@ export interface UserProfile {
 export interface AppState {
   userProfile: UserProfile;
   events: CalendarEvent[];
+  planningItems: PlanningItemRow[];
   pendingSuggestions: SuggestedTask[];
   isSetupComplete: boolean;
   lastMotivation: number;
@@ -61,6 +76,7 @@ export interface AppState {
   apiLoaded: boolean;
 
   loadAppData: () => Promise<void>;
+  refreshPlanningItems: () => Promise<void>;
   setUserProfile: (profile: Partial<UserProfile>) => Promise<void>;
   addEvent: (event: Omit<CalendarEvent, "id">) => Promise<void>;
   removeEvent: (id: string) => Promise<void>;
@@ -128,6 +144,7 @@ export const useAppStore = create<AppState>()(
         googleCalendarConnected: false,
       },
       events: [],
+      planningItems: [],
       pendingSuggestions: [],
       isSetupComplete: false,
       lastMotivation: 50,
@@ -136,13 +153,17 @@ export const useAppStore = create<AppState>()(
 
       loadAppData: async () => {
         try {
-          const user = await api.fetchUser();
-          const tasks = await api.fetchTasks();
+          const [user, tasks, planningItems] = await Promise.all([
+            api.fetchUser(),
+            api.fetchTasks(),
+            api.fetchPlanningItems().catch(() => [] as PlanningItemRow[]),
+          ]);
           const motivationFromServer =
             typeof user.motivation === "number" ? user.motivation : get().lastMotivation;
           set({
             userProfile: user,
             events: tasks.map(normalizeCalendarEvent),
+            planningItems,
             lastMotivation: motivationFromServer,
             apiLoaded: true,
           });
@@ -151,8 +172,18 @@ export const useAppStore = create<AppState>()(
         }
       },
 
+      refreshPlanningItems: async () => {
+        try {
+          const planningItems = await api.fetchPlanningItems();
+          set({ planningItems });
+        } catch (e) {
+          console.error("refreshPlanningItems", e);
+        }
+      },
+
       setUserProfile: async (profile) => {
         const current = get().userProfile;
+        const prevGoals = JSON.stringify(current.sideGoals);
         set({
           userProfile: {
             ...current,
@@ -177,6 +208,13 @@ export const useAppStore = create<AppState>()(
             calendarUrls: merged.calendarUrls,
             motivation: merged.motivation ?? get().lastMotivation,
           });
+          const nextGoals = JSON.stringify(merged.sideGoals);
+          if (nextGoals !== prevGoals) {
+            void api
+              .regenerateGoalTasks()
+              .then(() => get().refreshPlanningItems())
+              .catch(() => {});
+          }
           return;
         }
 
@@ -191,13 +229,34 @@ export const useAppStore = create<AppState>()(
           calendarUrls: merged.calendarUrls,
           motivation: merged.motivation ?? get().lastMotivation,
         });
+        const nextGoals = JSON.stringify(merged.sideGoals);
+        if (nextGoals !== prevGoals) {
+          void api
+            .regenerateGoalTasks()
+            .then(() => get().refreshPlanningItems())
+            .catch(() => {});
+        }
       },
 
       addEvent: async (event) => {
         try {
-          await api.addTask(event);
+          const created = await api.addTask(event);
           const tasks = await api.fetchTasks();
           set({ events: tasks.map(normalizeCalendarEvent) });
+          if (event.type === "assignment") {
+            const taskKey =
+              created?.id != null
+                ? String(created.id)
+                : created?.external_id != null
+                  ? String(created.external_id)
+                  : null;
+            if (taskKey) {
+              void api
+                .requestAssignmentBreakdown(taskKey)
+                .then(() => get().refreshPlanningItems())
+                .catch((e) => console.warn("Assignment AI breakdown:", e));
+            }
+          }
         } catch (err) {
           console.error("Add event error:", err);
           throw err;
@@ -262,12 +321,35 @@ export const useAppStore = create<AppState>()(
 
       syncCalendarEvents: async (newEvents, sourceUrl) => {
         try {
-          await api.upsertTasks(newEvents, sourceUrl);
-          const tasks = await api.fetchTasks();
+          const bulk = await api.upsertTasks(newEvents, sourceUrl);
+          const [tasks, planningItems] = await Promise.all([
+            api.fetchTasks(),
+            api.fetchPlanningItems().catch(() => [] as PlanningItemRow[]),
+          ]);
+          const motivation =
+            bulk.rebalance && typeof bulk.rebalance.motivation === "number"
+              ? bulk.rebalance.motivation
+              : undefined;
           set({
             events: tasks.map(normalizeCalendarEvent),
+            planningItems,
             lastCalendarSync: new Date(),
+            ...(motivation !== undefined
+              ? {
+                  userProfile: { ...get().userProfile, motivation },
+                  lastMotivation: motivation,
+                }
+              : {}),
           });
+          if (bulk.breakdown?.error) {
+            console.warn("Calendar import: assignment breakdown issue:", bulk.breakdown.error);
+          }
+          if (bulk.rebalance && bulk.rebalance.success === false) {
+            console.warn(
+              "Calendar import: schedule rebalance skipped or failed:",
+              bulk.rebalance.error,
+            );
+          }
         } catch (err) {
           console.error("Sync calendar error:", err);
           throw err;
@@ -316,6 +398,7 @@ export const useAppStore = create<AppState>()(
 
         state.events = (state.events || []).map(normalizeCalendarEvent);
         state.pendingSuggestions = (state.pendingSuggestions || []).map(normalizeSuggestedTask);
+        state.planningItems = [];
         state.lastCalendarSync = state.lastCalendarSync
           ? ensureDate(state.lastCalendarSync as unknown as string | Date)
           : null;

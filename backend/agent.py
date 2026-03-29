@@ -1,22 +1,27 @@
 import json
+import logging
 import os
+import re
 import sqlite3
 from contextvars import ContextVar
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from typing import Annotated, Any, Dict, List, Optional, TypedDict
+from typing import Annotated, Any, Dict, List, Optional, Tuple, TypedDict
+from zoneinfo import ZoneInfo
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from dotenv import load_dotenv
 from supabase import Client, create_client
+
+from backend.llm_client import get_gemini_chat_model
+from backend.llm_usage import log_llm_chat_completion
 
 
 ROOT_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
@@ -27,6 +32,8 @@ if not os.getenv("SUPABASE_KEY") and os.getenv("SUPABASE_ANON_KEY"):
     os.environ["SUPABASE_KEY"] = os.environ["SUPABASE_ANON_KEY"]
 
 CURRENT_AGENT_CONTEXT: ContextVar[Dict[str, Any]] = ContextVar("current_agent_context", default={})
+
+logger = logging.getLogger(__name__)
 
 
 # The state object is the shared data packet passed from node to node.
@@ -169,6 +176,158 @@ def _serialize_task_row(row: sqlite3.Row) -> Dict[str, Any]:
     }
 
 
+def _safe_zone(tz_name: str) -> ZoneInfo:
+    name = (tz_name or "UTC").strip() or "UTC"
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return ZoneInfo("UTC")
+
+
+def _parse_local_date_yyyy_mm_dd(s: str) -> date:
+    raw = (s or "").strip()
+    parts = raw.split("-")
+    if len(parts) != 3:
+        raise ValueError(f"Expected local_date as YYYY-MM-DD, got {s!r}")
+    y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+    return date(y, m, d)
+
+
+def _parse_local_hhmm(raw: str) -> Tuple[int, int]:
+    """Parse times like 2, 2am, 2:00, 14:30, 6:00pm into 24h hour, minute."""
+    t = (raw or "").strip().lower().replace(" ", "")
+    if not t:
+        raise ValueError("Time string is empty")
+    m = re.match(r"^(\d{1,2})(?::(\d{2}))?(am|pm)$", t)
+    if m:
+        h, mi, ap = int(m.group(1)), int(m.group(2) or 0), m.group(3)
+        if mi >= 60:
+            raise ValueError(f"Invalid minutes in {raw!r}")
+        if ap == "am":
+            if h == 12:
+                h = 0
+        else:
+            if h != 12:
+                h += 12
+        return h % 24, mi
+    m = re.match(r"^(\d{1,2}):(\d{2})$", t)
+    if m:
+        h, mi = int(m.group(1)), int(m.group(2))
+        if h >= 24 or mi >= 60:
+            raise ValueError(f"Invalid time {raw!r}")
+        return h % 24, mi
+    m = re.match(r"^(\d{1,2})$", t)
+    if m:
+        return int(m.group(1)) % 24, 0
+    raise ValueError(f"Could not parse local time from {raw!r} (use e.g. 2am, 02:00, 14:30)")
+
+
+def _task_with_local_labels(task: Dict[str, Any], tz_name: str) -> Dict[str, Any]:
+    z = _safe_zone(tz_name)
+    st = _parse_iso_datetime(task["start"])
+    et = _parse_iso_datetime(task["end"])
+    return {
+        **task,
+        "local_start_label": st.astimezone(z).strftime("%Y-%m-%d %H:%M"),
+        "local_end_label": et.astimezone(z).strftime("%Y-%m-%d %H:%M"),
+    }
+
+
+def _local_calendar_day_utc_bounds(d: date, tz_name: str) -> Tuple[datetime, datetime]:
+    """
+    Inclusive start / exclusive end in UTC for the user's local calendar day `d`.
+    Used to query SQLite where task times are stored as UTC ISO strings.
+    """
+    z = _safe_zone(tz_name)
+    local_start = datetime.combine(d, time(0, 0, 0), tzinfo=z)
+    local_end = local_start + timedelta(days=1)
+    utc_start = local_start.astimezone(timezone.utc)
+    utc_end = local_end.astimezone(timezone.utc)
+    return utc_start, utc_end
+
+
+def _fetch_tasks_starting_on_local_calendar_day(
+    local_user_id: int, d: date, tz_name: str
+) -> List[Dict[str, Any]]:
+    """
+    All tasks whose start falls on local calendar day `d` (any time of day), including
+    tasks that already ended earlier that day (unlike _get_upcoming_tasks which drops past events).
+    """
+    utc_lo, utc_hi = _local_calendar_day_utc_bounds(d, tz_name)
+    lo_iso = utc_lo.isoformat()
+    hi_iso = utc_hi.isoformat()
+    logger.info(
+        "tasks_for_local_day: user_id=%s local_date=%s tz=%s utc_window=[%s, %s)",
+        local_user_id,
+        d.isoformat(),
+        tz_name,
+        lo_iso,
+        hi_iso,
+    )
+    with _open_app_db() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM tasks
+            WHERE user_id = ?
+              AND start_time >= ?
+              AND start_time < ?
+            ORDER BY start_time ASC
+            """,
+            (local_user_id, lo_iso, hi_iso),
+        ).fetchall()
+    return [_serialize_task_row(row) for row in rows]
+
+
+def _tasks_starting_on_local_date(
+    local_user_id: int, d: date, tz_name: str, horizon_days: int = 120
+) -> List[Dict[str, Any]]:
+    """Tasks whose start time falls on local date `d` (timezone-aware DB query)."""
+    _ = horizon_days  # retained for call-site compatibility; day scope uses full local calendar day
+    return _fetch_tasks_starting_on_local_calendar_day(local_user_id, d, tz_name)
+
+
+def _match_tasks_for_local_time(
+    candidates: List[Dict[str, Any]],
+    d: date,
+    tz_name: str,
+    local_time_hhmm: str,
+    tolerance_minutes: int,
+) -> List[Dict[str, Any]]:
+    z = _safe_zone(tz_name)
+    h, mi = _parse_local_hhmm(local_time_hhmm)
+    # User intent: wall-clock time in their profile timezone — never interpret as UTC.
+    target_local = datetime.combine(d, time(h, mi, 0), tzinfo=z)
+    target_utc = target_local.astimezone(timezone.utc)
+    tol = max(5, min(int(tolerance_minutes or 90), 24 * 60))
+    matched: List[Dict[str, Any]] = []
+    logger.info(
+        "task_time_match: tz=%s local_date=%s user_local_time=%s (%02d:%02d) -> utc=%s tol_min=%s candidates=%s",
+        tz_name,
+        d.isoformat(),
+        local_time_hhmm,
+        h,
+        mi,
+        target_utc.isoformat(),
+        tol,
+        len(candidates),
+    )
+    for t in candidates:
+        st = _parse_iso_datetime(t["start"])
+        st_local = st.astimezone(z)
+        delta = abs((st_local - target_local).total_seconds())
+        logger.info(
+            "task_time_match: task_id=%s start_utc=%s start_local=%s delta_sec=%s",
+            t.get("id"),
+            st.isoformat(),
+            st_local.strftime("%Y-%m-%d %H:%M"),
+            delta,
+        )
+        if delta <= tol * 60:
+            matched.append(t)
+    return matched
+
+
 def _get_upcoming_tasks(local_user_id: int, days: int) -> List[Dict[str, Any]]:
     now_iso = datetime.now(timezone.utc).isoformat()
     horizon_iso = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
@@ -289,6 +448,238 @@ def list_schedule(days: int = 7) -> Dict[str, Any]:
         "count": len(tasks),
         "tasks": tasks[:25],
     }
+
+
+@tool
+def search_app_tasks(
+    local_date_yyyy_mm_dd: str,
+    local_time_hhmm: Optional[str] = None,
+    title_contains: Optional[str] = None,
+    tolerance_minutes: int = 90,
+) -> Dict[str, Any]:
+    """
+    Find HandAll tasks on a calendar day in the user's timezone.
+    Use local_date_yyyy_mm_dd as YYYY-MM-DD (infer year from context: today / schedule snapshot).
+    If local_time_hhmm is set (e.g. 2am, 02:00, 14:30), only returns tasks whose start is within tolerance_minutes.
+    Optional title_contains filters by substring match (case-insensitive).
+    """
+    context = _get_agent_context()
+    local_user = _resolve_local_user(context.get("auth_user_id"), context.get("user_metadata"))
+    if not local_user:
+        return {
+            "success": False,
+            "message": "I need an authenticated HandAll user before I can search the schedule.",
+            "matches": [],
+        }
+    tz_name = context.get("user_metadata", {}).get("timezone") or "UTC"
+    try:
+        d = _parse_local_date_yyyy_mm_dd(local_date_yyyy_mm_dd)
+    except ValueError as e:
+        return {"success": False, "message": str(e), "matches": []}
+
+    on_day = _tasks_starting_on_local_date(int(local_user["id"]), d, tz_name)
+    logger.info(
+        "search_app_tasks: local_date=%s tz=%s tasks_on_day=%s",
+        local_date_yyyy_mm_dd,
+        tz_name,
+        len(on_day),
+    )
+    title_f = (title_contains or "").strip().lower()
+    if title_f:
+        on_day = [t for t in on_day if title_f in (t.get("title") or "").lower()]
+
+    if local_time_hhmm and str(local_time_hhmm).strip():
+        try:
+            matches = _match_tasks_for_local_time(
+                on_day, d, tz_name, str(local_time_hhmm).strip(), tolerance_minutes
+            )
+        except ValueError as e:
+            return {"success": False, "message": str(e), "matches": []}
+    else:
+        matches = list(on_day)
+
+    enriched = [_task_with_local_labels(t, tz_name) for t in matches[:25]]
+    return {
+        "success": True,
+        "timezone": tz_name,
+        "local_date": local_date_yyyy_mm_dd,
+        "count": len(enriched),
+        "matches": enriched,
+    }
+
+
+def _reschedule_handall_task(
+    local_user: Dict[str, Any],
+    task_id: str,
+    new_start: datetime,
+    new_end: Optional[datetime],
+) -> Dict[str, Any]:
+    """Apply start/end update in SQLite; shared by update_app_task_times and move_app_task_local."""
+    context = _get_agent_context()
+    tid = (task_id or "").strip()
+    if not tid:
+        return {"success": False, "message": "task_id is required."}
+
+    with _open_app_db() as connection:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM tasks
+            WHERE user_id = ?
+              AND (CAST(id AS TEXT) = ? OR external_id = ?)
+            LIMIT 1
+            """,
+            (local_user["id"], tid, tid),
+        ).fetchone()
+
+        if not row:
+            return {
+                "success": False,
+                "message": f"No task found with id {tid!r}.",
+            }
+
+        old_start = _parse_iso_datetime(row["start_time"])
+        old_end = _parse_iso_datetime(row["end_time"])
+        duration = old_end - old_start
+        resolved_end = new_end if new_end is not None else (new_start + duration)
+        if resolved_end <= new_start:
+            return {
+                "success": False,
+                "message": "Invalid times: end must be after start.",
+            }
+
+        connection.execute(
+            """
+            UPDATE tasks
+            SET start_time = ?, end_time = ?
+            WHERE user_id = ? AND id = ?
+            """,
+            (
+                new_start.isoformat(),
+                resolved_end.isoformat(),
+                local_user["id"],
+                row["id"],
+            ),
+        )
+        connection.commit()
+        updated = connection.execute(
+            "SELECT * FROM tasks WHERE id = ?",
+            (row["id"],),
+        ).fetchone()
+
+    tz_name = context.get("user_metadata", {}).get("timezone") or "UTC"
+    ser = _serialize_task_row(updated) if updated else {}
+    if ser:
+        ser = _task_with_local_labels(ser, tz_name)
+    old_l = _task_with_local_labels(_serialize_task_row(row), tz_name)
+    return {
+        "success": True,
+        "message": (
+            f"Moved \"{ser.get('title', '')}\" from {old_l.get('local_start_label')} "
+            f"to {ser.get('local_start_label')}."
+        ),
+        "task": ser,
+        "previous_local_start": old_l.get("local_start_label"),
+        "new_local_start": ser.get("local_start_label"),
+    }
+
+
+@tool
+def update_app_task_times(
+    task_id: str,
+    new_start_iso_utc: str,
+    new_end_iso_utc: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Update a HandAll task's start (and optionally end) time in the app database.
+    task_id is the numeric id from search_app_tasks / list_schedule (or external_id).
+    Pass new_start_iso_utc / new_end_iso_utc as ISO 8601 instants (with timezone offset, e.g. Z).
+    If new_end_iso_utc is omitted, the original duration is preserved.
+    """
+    ctx = _get_agent_context()
+    local_user = _resolve_local_user(ctx.get("auth_user_id"), ctx.get("user_metadata"))
+    if not local_user:
+        return {
+            "success": False,
+            "message": "I need an authenticated HandAll user before I can update tasks.",
+        }
+
+    new_start = _parse_iso_datetime(new_start_iso_utc)
+    new_end: Optional[datetime] = _parse_iso_datetime(new_end_iso_utc) if new_end_iso_utc else None
+    return _reschedule_handall_task(local_user, task_id, new_start, new_end)
+
+
+@tool
+def move_app_task_local(
+    local_date_yyyy_mm_dd: str,
+    from_local_time_hhmm: str,
+    to_local_time_hhmm: str,
+    title_contains: str = "",
+) -> Dict[str, Any]:
+    """
+    Move a task on a given local calendar day from one time to another (preserves duration).
+    Prefer this when the user gives a date and from-time and to-time (e.g. move Sunday March 29 2am to 6am).
+    Do not ask for year or title if the task is uniquely identified. Use title_contains only if needed to disambiguate.
+    """
+    context = _get_agent_context()
+    local_user = _resolve_local_user(context.get("auth_user_id"), context.get("user_metadata"))
+    if not local_user:
+        return {
+            "success": False,
+            "message": "I need an authenticated HandAll user before I can move tasks.",
+        }
+    tz_name = context.get("user_metadata", {}).get("timezone") or "UTC"
+    try:
+        d = _parse_local_date_yyyy_mm_dd(local_date_yyyy_mm_dd)
+    except ValueError as e:
+        return {"success": False, "message": str(e)}
+
+    try:
+        day_tasks = _tasks_starting_on_local_date(int(local_user["id"]), d, tz_name)
+        logger.info(
+            "move_app_task_local: local_date=%s tz=%s from=%s to=%s tasks_on_day=%s",
+            local_date_yyyy_mm_dd,
+            tz_name,
+            from_local_time_hhmm,
+            to_local_time_hhmm,
+            len(day_tasks),
+        )
+        matches = _match_tasks_for_local_time(
+            day_tasks,
+            d,
+            tz_name,
+            from_local_time_hhmm,
+            90,
+        )
+    except ValueError as e:
+        return {"success": False, "message": str(e)}
+
+    tcf = (title_contains or "").strip().lower()
+    if tcf:
+        matches = [t for t in matches if tcf in (t.get("title") or "").lower()]
+
+    if not matches:
+        return {
+            "success": False,
+            "message": (
+                f"No task starts near {from_local_time_hhmm!r} on {local_date_yyyy_mm_dd} "
+                f"({tz_name}). Use search_app_tasks or list_schedule to see available blocks."
+            ),
+            "matches": [],
+        }
+    if len(matches) > 1:
+        return {
+            "success": False,
+            "message": "Multiple tasks match; ask the user to pick one or pass title_contains.",
+            "matches": [_task_with_local_labels(t, tz_name) for t in matches[:10]],
+        }
+
+    h2, m2 = _parse_local_hhmm(to_local_time_hhmm)
+    z = _safe_zone(tz_name)
+    new_start = datetime.combine(d, time(h2, m2, 0), tzinfo=z).astimezone(timezone.utc)
+
+    tid = str(matches[0]["id"])
+    return _reschedule_handall_task(local_user, tid, new_start, None)
 
 
 @tool
@@ -509,6 +900,43 @@ def rebalance_app_plan(days: int = 7) -> Dict[str, Any]:
             (local_user["id"], now_iso, horizon_iso),
         )
 
+        planning_rows = connection.execute(
+            """
+            SELECT * FROM ai_planning_items
+            WHERE user_id = ?
+            ORDER BY item_type, assignment_external_id, sort_order, id
+            """,
+            (local_user["id"],),
+        ).fetchall()
+        assignment_work_units = []
+        goal_work_units = []
+        for row in planning_rows:
+            r = dict(row)
+            if r.get("item_type") == "assignment_subtask":
+                assignment_work_units.append(
+                    {
+                        "id": str(r.get("id")),
+                        "assignment_id": r.get("assignment_external_id") or "",
+                        "assignment_title": r.get("assignment_title") or "",
+                        "title": r.get("title") or "",
+                        "description": r.get("description") or "",
+                        "estimated_minutes": int(r.get("estimated_minutes") or 45),
+                        "sort_order": int(r.get("sort_order") or 0),
+                        "due_iso": r.get("due_iso"),
+                    }
+                )
+            elif r.get("item_type") == "goal_task":
+                goal_work_units.append(
+                    {
+                        "id": str(r.get("id")),
+                        "title": r.get("title") or "",
+                        "description": r.get("description") or "",
+                        "estimated_minutes": int(r.get("estimated_minutes") or 40),
+                        "side_goal": r.get("side_goal") or "",
+                        "sort_order": int(r.get("sort_order") or 0),
+                    }
+                )
+
         plan = generate_weekly_plan(
             {
                 "user_id": str(local_user["id"]),
@@ -521,6 +949,8 @@ def rebalance_app_plan(days: int = 7) -> Dict[str, Any]:
                 "horizon_days": safe_days,
                 "events": current_events,
                 "assignments": [],
+                "assignment_work_units": assignment_work_units,
+                "goal_work_units": goal_work_units,
             }
         )
 
@@ -561,7 +991,17 @@ def rebalance_app_plan(days: int = 7) -> Dict[str, Any]:
     }
 
 
-TOOLS = [list_events, manage_event, list_schedule, add_app_task, remove_app_task, rebalance_app_plan]
+TOOLS = [
+    list_events,
+    manage_event,
+    list_schedule,
+    search_app_tasks,
+    move_app_task_local,
+    update_app_task_times,
+    add_app_task,
+    remove_app_task,
+    rebalance_app_plan,
+]
 
 
 def fetch_user_data(state: AgentState) -> Dict[str, Any]:
@@ -637,6 +1077,27 @@ def fetch_user_data(state: AgentState) -> Dict[str, Any]:
         except Exception:
             pass
 
+    tzsnap = user_metadata.get("timezone", "UTC")
+    z_snap = _safe_zone(tzsnap)
+    now_utc = datetime.now(timezone.utc)
+    user_metadata["today_local"] = now_utc.astimezone(z_snap).strftime("%Y-%m-%d (%A)")
+    snap_lines: List[str] = []
+    auth_snap = state.get("auth_user_id")
+    if auth_snap:
+        lu_snap = _resolve_local_user(auth_snap, user_metadata)
+        if lu_snap:
+            try:
+                for t in _get_upcoming_tasks(int(lu_snap["id"]), 14):
+                    st = _parse_iso_datetime(t["start"])
+                    local = st.astimezone(z_snap).strftime("%a %Y-%m-%d %H:%M")
+                    tit = (t.get("title") or "")[:120]
+                    snap_lines.append(f"- id={t['id']} | {local} | {tit}")
+            except Exception:
+                snap_lines.append("(could not load schedule snapshot)")
+    user_metadata["schedule_snapshot"] = (
+        "\n".join(snap_lines) if snap_lines else "(no tasks in the next 14 days)"
+    )
+
     current_context = dict(_get_agent_context())
     current_context["user_metadata"] = user_metadata
     CURRENT_AGENT_CONTEXT.set(current_context)
@@ -653,28 +1114,169 @@ def build_system_prompt(user_metadata: Dict[str, Any]) -> str:
     if isinstance(goals, str):
         goals = [goals] if goals.strip() else []
     goals_line = json.dumps(goals) if goals else "[]"
+    today_local = user_metadata.get("today_local", "")
+    schedule_snapshot = user_metadata.get("schedule_snapshot", "(not loaded)")
     return (
         f"You are HandAll's helpful AI planning agent assisting {name}. "
         f"The user's timezone is {timezone_name}. "
+        f"Today in that timezone: {today_local}. "
+        f"You have access to their HandAll app schedule (stored tasks). "
+        f"Current schedule snapshot (next ~14 days, local times):\n{schedule_snapshot}\n"
         f"Current motivation/energy: {motivation}/100 (low = prefer shorter sessions, more rest, lighter tasks; high = can plan deeper work). "
         f"Full side-goals list (use ALL in advice, not just one): {goals_line}. "
         f"Other preferences: {json.dumps({k: v for k, v in prefs.items() if k not in {'side_goals', 'sideGoals'}})}. "
-        "Use HandAll schedule tools to add, remove, inspect, and rebalance tasks inside the app whenever the user asks about their workload or plan. "
-        "Use the Google Calendar tools only when the user explicitly wants external calendar events inspected or changed. "
-        "When you edit the app schedule, confirm what you changed in plain language. Be concise, accurate, and proactive."
+        "Always try to resolve requests using list_schedule, search_app_tasks, or move_app_task_local before asking questions. "
+        "For moves like 'move Sunday March 29 2am to 6am', infer the calendar year from Today if the user did not state a year, "
+        "use local_date_yyyy_mm_dd (YYYY-MM-DD) in the user's timezone, and call move_app_task_local — do not ask for year or task title "
+        "unless no task matches or several tasks match (then use title_contains or list options). "
+        "Use HandAll schedule tools to add, remove, move, search, inspect, and rebalance tasks inside the app. "
+        "Use the Google Calendar tools only when the user explicitly wants external Google Calendar events inspected or changed. "
+        "When you edit the app schedule, state what changed (task title, previous time → new time) in plain language. Be concise and accurate."
     )
+
+
+def _parse_tool_message_payload(message: ToolMessage) -> Optional[Dict[str, Any]]:
+    raw = message.content
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else None
+        except Exception:
+            return None
+    return None
+
+
+def _merge_schedule_tool_truth(
+    messages: List[BaseMessage], assistant_text: str
+) -> Tuple[str, bool]:
+    """
+    Align chat text with actual tool outcomes for schedule-changing tools.
+    Returns (merged_response, schedule_changed_in_db).
+    """
+    fact_lines: List[str] = []
+    any_failure = False
+    schedule_changed = False
+
+    for message in messages:
+        if not isinstance(message, ToolMessage):
+            continue
+        name = getattr(message, "name", None) or ""
+        if name not in {
+            "rebalance_app_plan",
+            "add_app_task",
+            "remove_app_task",
+            "update_app_task_times",
+            "move_app_task_local",
+        }:
+            continue
+        payload = _parse_tool_message_payload(message)
+        if not isinstance(payload, dict):
+            continue
+
+        if name == "rebalance_app_plan":
+            if payload.get("success"):
+                deleted = int(payload.get("deleted_count") or 0)
+                inserted = int(payload.get("inserted_count") or 0)
+                if deleted > 0 or inserted > 0:
+                    schedule_changed = True
+                msg = (payload.get("message") or "").strip()
+                if deleted == 0 and inserted == 0:
+                    fact_lines.append(
+                        "HandAll schedule: nothing was changed (no planned blocks to replace in the current window)."
+                    )
+                elif msg:
+                    fact_lines.append(f"HandAll schedule: {msg}")
+            else:
+                any_failure = True
+                fact_lines.append(
+                    f"HandAll schedule could not be updated: {payload.get('message', 'Unknown error')}"
+                )
+
+        elif name == "add_app_task":
+            if payload.get("success"):
+                schedule_changed = True
+                m = (payload.get("message") or "Task added.").strip()
+                fact_lines.append(m)
+            else:
+                any_failure = True
+                fact_lines.append(
+                    f"Could not add task: {payload.get('message', 'Unknown error')}"
+                )
+
+        elif name == "remove_app_task":
+            if payload.get("success"):
+                schedule_changed = True
+                m = (payload.get("message") or "Task removed.").strip()
+                fact_lines.append(m)
+            else:
+                any_failure = True
+                fact_lines.append(
+                    f"Could not remove task: {payload.get('message', 'Unknown error')}"
+                )
+
+        elif name in ("update_app_task_times", "move_app_task_local"):
+            if payload.get("success"):
+                schedule_changed = True
+                m = (payload.get("message") or "Task updated.").strip()
+                if m:
+                    fact_lines.append(m)
+            else:
+                any_failure = True
+                fact_lines.append(
+                    payload.get("message") or "Could not reschedule task."
+                )
+
+    if not fact_lines:
+        return assistant_text, schedule_changed
+
+    block = "\n".join(fact_lines)
+    if any_failure:
+        merged = f"{block}\n\n{assistant_text}".strip() if assistant_text else block
+    else:
+        merged = f"{assistant_text}\n\n{block}".strip() if assistant_text else block
+    return merged, schedule_changed
+
+
+def _flatten_block_dict(block: Dict[str, Any]) -> str:
+    """Extract user-visible text from one structured LangChain/Gemini content block."""
+    typ = block.get("type")
+    text_val = block.get("text")
+    if not isinstance(text_val, str) or not text_val.strip():
+        return ""
+    if typ in ("image", "file", "tool_use"):
+        return ""
+    return text_val.strip()
+
+
+def _flatten_ai_message_content(content: Any) -> str:
+    """Gemini/LangChain may return str, a single dict, or a list of blocks."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, dict):
+        return _flatten_block_dict(content)
+    if isinstance(content, list):
+        parts: List[str] = []
+        for block in content:
+            if isinstance(block, str) and block.strip():
+                parts.append(block.strip())
+            elif isinstance(block, dict):
+                piece = _flatten_block_dict(block)
+                if piece:
+                    parts.append(piece)
+        return "\n\n".join(parts).strip()
+    return str(content).strip()
 
 
 def call_model(state: AgentState) -> Dict[str, Any]:
     """Call Gemini with the latest state and let it decide whether to use tools."""
-    google_api_key = os.getenv("GOOGLE_API_KEY")
-    model_name = os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
-
-    model = ChatGoogleGenerativeAI(
-        model=model_name,
-        google_api_key=google_api_key,
-        temperature=0.2,
-    ).bind_tools(TOOLS)
+    base = get_gemini_chat_model(temperature=0.2)
+    if base is None:
+        raise RuntimeError("GOOGLE_API_KEY is not configured in the environment.")
+    model = base.bind_tools(TOOLS)
 
     system_prompt = build_system_prompt(state.get("user_metadata", {}))
     # We prepend a fresh system message built from state["user_metadata"].
@@ -691,6 +1293,7 @@ def call_model(state: AgentState) -> Dict[str, Any]:
     )
     try:
         response = model.invoke(model_input)
+        log_llm_chat_completion(response, "agent.call_model")
     finally:
         CURRENT_AGENT_CONTEXT.reset(context_token)
     return {"messages": [response]}
@@ -752,13 +1355,16 @@ def run_agent(
     finally:
         CURRENT_AGENT_CONTEXT.reset(context_token)
 
-    final_text = ""
+    # Always use the chronologically *last* AIMessage. Skipping messages with falsy
+    # content ("" or []) incorrectly picks an *earlier* tool-turn reply (often just "I"
+    # or a fragment) instead of the final answer after tools.
+    last_ai: Optional[AIMessage] = None
     for agent_message in reversed(result["messages"]):
-        if isinstance(agent_message, AIMessage) and agent_message.content:
-            if isinstance(agent_message.content, str):
-                final_text = agent_message.content
-            else:
-                final_text = str(agent_message.content)
+        if isinstance(agent_message, AIMessage):
+            last_ai = agent_message
             break
+    final_text = _flatten_ai_message_content(last_ai.content) if last_ai else ""
 
-    return {"response": final_text, "state": result}
+    final_text, schedule_updated = _merge_schedule_tool_truth(result["messages"], final_text)
+
+    return {"response": final_text, "state": result, "schedule_updated": schedule_updated}

@@ -73,6 +73,14 @@ Users can manually add new entries through a dedicated modal without leaving the
 
 ![Add event modal](images/calendar-add-event.png)
 
+Existing entries can also be updated in place, which makes it easy to adjust start times, mark work done, or clean up the plan without leaving the weekly view.
+
+![Edit event modal](images/calendar-edit-event.png)
+
+The motivation slider also lives directly inside the planner. It gives the AI a fast signal about how intense or protected the day should feel, which lets HandAll reshape the daily schedule around a more relaxed mode or a stronger lock-in mode.
+
+![Motivation slider and AI schedule mode](images/motivation-slider-lock-in.png)
+
 The built-in assistant is available inside the planner so users can ask for help without leaving the scheduling context.
 
 It is intended for natural-language schedule support, task guidance, and general planning help based on the rest of the app state.
@@ -105,9 +113,7 @@ The advanced settings view also shows active sync sources so users can see what 
 
 ![Advanced settings and integrations](images/settings-advanced.png)
 
-The app also includes a motivation or energy slider directly in the dashboard so users can quickly signal how intense or gentle their schedule should feel.
-
-This is visible in the planner screenshots and ties into the app's routine-first scheduling philosophy.
+The broader settings flow supports the planner's routine-first behavior, while the motivation slider itself lives inside the calendar so users can adjust schedule intensity in context.
 
 ## Core Features
 
@@ -116,6 +122,9 @@ This is visible in the planner screenshots and ties into the app's routine-first
 - Breaks large work into smaller planning blocks.
 - Supports assistant-driven planning inside the app.
 - Balances structure with lower-pressure recovery activities.
+- Modifies the daily plan using AI based on the current motivation slider state.
+- Uses the motivation slider to shift between gentler recovery-oriented planning and stronger lock-in scheduling.
+- Includes burnout-aware scheduling logic so tasks are distributed in a way that helps prevent students from overloading themselves.
 
 ### Routine-aware planning
 
@@ -135,6 +144,16 @@ This is visible in the planner screenshots and ties into the app's routine-first
 - Stores long-term goals like fitness, music, or language learning.
 - Discovers fun and goal-supporting opportunities nearby.
 - Connects planning with life outside class deadlines.
+
+### Progress and rewards
+
+- Includes an XP system that rewards completed tasks.
+- Uses task completion as a way to make progress visible and reinforce consistency.
+- Tracks user progress directly inside the product through the profile and planner experience.
+
+When a task is completed, HandAll gives immediate XP feedback so users can see progress as part of the scheduling loop rather than as a separate dashboard-only system.
+
+![Task complete XP reward](images/xp-task-complete.png)
 
 ## Tech Stack
 
@@ -257,6 +276,7 @@ Notes:
 
 - Evan Bhandari - Calendar UI and sync optimization
 - Smaran Pokharel - Google Calendar connect flow and product integration
+- Sandesh Dhakal - Frontend and presentation
 - Tenzing Gurung - AI planner and motivation sync logic
 
 ## Project Context

@@ -94,6 +94,7 @@ export interface AppState {
   lastMotivation: number;
   lastCalendarSync: Date | null;
   apiLoaded: boolean;
+  resetAppState: () => void;
 
   loadAppData: () => Promise<void>;
   refreshPlanningItems: () => Promise<void>;
@@ -173,6 +174,26 @@ export const useAppStore = create<AppState>()(
       lastMotivation: 50,
       lastCalendarSync: null,
       apiLoaded: false,
+      resetAppState: () =>
+        set({
+          userProfile: {
+            name: "Student",
+            level: 0,
+            xp: 0,
+            wakeTime: "07:00",
+            sleepTime: "23:00",
+            sideGoals: [],
+            calendarUrls: [],
+            googleCalendarConnected: false,
+          },
+          events: [],
+          planningItems: [],
+          pendingSuggestions: [],
+          isSetupComplete: false,
+          lastMotivation: 50,
+          lastCalendarSync: null,
+          apiLoaded: false,
+        }),
 
       loadAppData: async () => {
         try {

@@ -16,7 +16,7 @@ import { cn } from "./ui/utils";
 export default function Root() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { userProfile, apiLoaded, loadAppData } = useAppStore();
+  const { userProfile, apiLoaded, loadAppData, resetAppState } = useAppStore();
   const [showHelp, setShowHelp] = useState(false);
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -29,18 +29,33 @@ export default function Root() {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setLoading(false);
-      if (!session) navigate("/login");
+      if (!session) {
+        resetAppState();
+        navigate("/login");
+      }
     });
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
-      if (!session) navigate("/login");
+      if (!session) {
+        resetAppState();
+        navigate("/login");
+      }
     });
     return () => subscription.unsubscribe();
-  }, [navigate]);
+  }, [navigate, resetAppState]);
 
   useEffect(() => {
-    if (session && !apiLoaded) loadAppData();
-  }, [session, apiLoaded, loadAppData]);
+    if (session?.user?.id) {
+      resetAppState();
+      void loadAppData();
+    }
+  }, [session?.user?.id, loadAppData, resetAppState]);
+
+  useEffect(() => {
+    if (session && location.pathname === "/login") {
+      navigate("/");
+    }
+  }, [session, location.pathname, navigate]);
 
   if (loading) return (
     <div className="h-screen w-screen flex items-center justify-center bg-background">
@@ -84,7 +99,11 @@ export default function Root() {
             onClick={() => setShowHelp(true)} 
           />
           <button 
-            onClick={() => supabase?.auth.signOut()}
+            onClick={async () => {
+              resetAppState();
+              await supabase?.auth.signOut();
+              navigate("/login");
+            }}
             className="p-3 rounded-2xl text-muted-foreground/40 hover:text-destructive transition-all hover:bg-destructive/10"
           >
             <LogOut className="h-6 w-6" />

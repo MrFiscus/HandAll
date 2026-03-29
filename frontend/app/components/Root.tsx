@@ -1,127 +1,69 @@
+import React, { useState, useEffect } from "react";
 import { Outlet, useNavigate, useLocation } from "react-router";
-import { useState, useEffect, useRef } from "react";
 import {
   CalendarDays,
-  MessageSquare,
   Settings as SettingsIcon,
-  BarChart3,
-  Send,
-  HelpCircle,
-  CheckSquare,
   LogOut,
-  AlertTriangle,
   Target,
+  HelpCircle,
 } from "lucide-react";
-import { Button } from "./ui/button";
 import { useAppStore } from "../store/useAppStore";
-import { ScrollArea } from "./ui/scroll-area";
-import { Input } from "./ui/input";
-import { format } from "date-fns";
 import WelcomeGuide from "./WelcomeGuide";
 import { supabase } from "../lib/supabase";
+import { cn } from "./ui/utils";
 import { api } from "../utils/api";
 import { toast } from "sonner";
-import { normalizeChatResponseContent } from "../utils/chatResponse";
-import { getAuthHeaders } from "../utils/api";
 
-interface ChatMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  timestamp: Date;
-}
-
-interface ChatApiResponse {
-  /** Plain string or structured (stringified blocks) depending on model/version */
-  response: string | unknown;
-  user_id: string;
-  thread_id: string;
-  /** From FastAPI when HandAll tasks table was updated (rebalance / add / remove) */
-  schedule_updated?: boolean;
-  /** Present on /chat failure: llm | tool | graph | other */
-  error_source?: string | null;
-  /** Short technical line when HANDALL_EXPOSE_ERRORS / DEBUG on server */
-  error_detail?: string | null;
-}
-
-const AGENT_API_BASE_URL =
-  import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "/agent-api";
-const AGENT_USER_ID_KEY = "handall-agent-user-id";
 const GOOGLE_CALENDAR_SYNC_KEY = "handall-google-calendar-sync";
 const GOOGLE_CALENDAR_CONNECT_QUERY = "google_calendar_connect";
+const AGENT_USER_ID_KEY = "handall-agent-user-id";
 
 export default function Root() {
   const navigate = useNavigate();
   const location = useLocation();
   const {
     userProfile,
-    isSetupComplete,
     apiLoaded,
     loadAppData,
-    lastMotivation,
+    resetAppState,
+    isSetupComplete,
     syncCalendarEvents,
   } = useAppStore();
-  const [showChat, setShowChat] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-    {
-      id: "1",
-      role: "assistant",
-      content:
-        "Hi! I'm here to help you manage your tasks. Ask me to add tasks, check your schedule, or adjust your calendar.",
-      timestamp: new Date(),
-    },
-  ]);
-  const [inputMessage, setInputMessage] = useState("");
-  const [isSending, setIsSending] = useState(false);
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const chatEndRef = useRef<HTMLDivElement>(null);
-  const threadIdRef = useRef<string>(crypto.randomUUID());
-  /** Ignore late /chat responses when a newer message was already sent (prevents partial or reordered replies). */
-  const chatSendGenRef = useRef(0);
-  const displayName =
-    userProfile.name ||
-    session?.user?.user_metadata?.full_name ||
-    session?.user?.user_metadata?.name ||
-    "Student";
-  const avatarUrl =
-    session?.user?.user_metadata?.custom_avatar ||
-    session?.user?.user_metadata?.avatar_url ||
-    session?.user?.user_metadata?.picture ||
-    null;
 
   useEffect(() => {
     if (!supabase) {
       setLoading(false);
       return;
     }
-
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setLoading(false);
       if (!session) {
+        resetAppState();
         navigate("/login");
       }
     });
-
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
       if (!session) {
+        resetAppState();
         navigate("/login");
       }
     });
-
     return () => subscription.unsubscribe();
-  }, [navigate]);
+  }, [navigate, resetAppState]);
 
   useEffect(() => {
-    if (session && !apiLoaded) {
-      loadAppData();
+    if (session?.user?.id) {
+      resetAppState();
+      void loadAppData();
     }
-  }, [session, apiLoaded, loadAppData]);
+  }, [session?.user?.id, loadAppData, resetAppState]);
 
   useEffect(() => {
     if (session?.user?.id) {
@@ -130,17 +72,20 @@ export default function Root() {
   }, [session?.user?.id]);
 
   useEffect(() => {
-    if (session && apiLoaded && !isSetupComplete && location.pathname !== "/setup") {
+    if (!session) return;
+    if (location.pathname === "/login") {
+      navigate("/");
+      return;
+    }
+    if (apiLoaded && !isSetupComplete && location.pathname !== "/setup") {
       navigate("/setup");
     }
   }, [session, apiLoaded, isSetupComplete, location.pathname, navigate]);
 
   useEffect(() => {
-    const maybeHandleGoogleCalendarConnection = async () => {
-      if (!session || !apiLoaded) {
-        return;
-      }
+    if (!session?.user?.id || !apiLoaded) return;
 
+    const run = async () => {
       const syncKey = `${GOOGLE_CALENDAR_SYNC_KEY}:${session.user.id}`;
       const url = new URL(window.location.href);
       const connectRequested = url.searchParams.get(GOOGLE_CALENDAR_CONNECT_QUERY) === "1";
@@ -174,9 +119,7 @@ export default function Root() {
         } catch (error) {
           console.error("Google Calendar connect callback failed:", error);
           toast.error(
-            error instanceof Error
-              ? error.message
-              : "Could not complete Google Calendar connection.",
+            error instanceof Error ? error.message : "Could not complete Google Calendar connection.",
           );
         }
       }
@@ -202,311 +145,93 @@ export default function Root() {
       }
     };
 
-    maybeHandleGoogleCalendarConnection();
+    void run();
   }, [session, apiLoaded, syncCalendarEvents, loadAppData, userProfile.googleCalendarConnected]);
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chatMessages]);
-
-  const handleLogout = async () => {
-    if (supabase) {
-      await supabase.auth.signOut();
-    }
-    navigate("/login");
-  };
-
-  const handleSendMessage = async () => {
-    const trimmedMessage = inputMessage.trim();
-    if (!trimmedMessage || isSending) return;
-
-    const userMessage: ChatMessage = {
-      id: Date.now().toString(),
-      role: "user",
-      content: trimmedMessage,
-      timestamp: new Date(),
-    };
-    setChatMessages((prev) => [...prev, userMessage]);
-    setInputMessage("");
-    const sendGen = ++chatSendGenRef.current;
-    setIsSending(true);
-
-    try {
-      const authId = session?.user?.id;
-      const userId = authId ?? localStorage.getItem(AGENT_USER_ID_KEY) ?? crypto.randomUUID();
-      if (authId) localStorage.setItem(AGENT_USER_ID_KEY, authId);
-
-      const headers = await getAuthHeaders();
-      const response = await fetch(`${AGENT_API_BASE_URL}/chat`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          user_id: userId,
-          auth_user_id: authId ?? null,
-          thread_id: threadIdRef.current,
-          message: trimmedMessage,
-          motivation: lastMotivation,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Backend returned ${response.status}`);
-      }
-
-      const data: ChatApiResponse = await response.json();
-      if (sendGen !== chatSendGenRef.current) return;
-
-      const display = normalizeChatResponseContent(data.response);
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          id: (Date.now() + 1).toString(),
-          role: "assistant",
-          content: display || "I couldn't generate a reply just now.",
-          timestamp: new Date(),
-        },
-      ]);
-      if (data.schedule_updated) {
-        await loadAppData();
-      }
-    } catch (error) {
-      if (sendGen !== chatSendGenRef.current) return;
-
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Unable to reach the AI backend right now.";
-
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          id: (Date.now() + 1).toString(),
-          role: "assistant",
-          content:
-            `I couldn't reach the AI backend just now (${message}). ` +
-            "Make sure `npm run dev` is still running, then try again.",
-          timestamp: new Date(),
-        },
-      ]);
-    } finally {
-      if (sendGen === chatSendGenRef.current) {
-        setIsSending(false);
-      }
-    }
-  };
-
-  if (!supabase && !loading) {
+  if (loading) {
     return (
-      <div className="h-screen w-screen flex items-center justify-center bg-background p-4">
-        <div className="max-w-md w-full p-8 border rounded-2xl shadow-xl bg-card text-center space-y-6">
-          <AlertTriangle className="h-16 w-16 text-yellow-500 mx-auto" />
-          <h1 className="text-2xl font-bold">Supabase Not Configured</h1>
-          <p className="text-muted-foreground text-sm leading-relaxed">
-            I couldn't find your Supabase credentials. Please create a <code className="bg-muted px-1 rounded">.env</code> file in the <code className="bg-muted px-1 rounded">frontend/</code> directory with:
-          </p>
-          <pre className="bg-black text-green-400 p-4 rounded-lg text-xs text-left overflow-x-auto border border-white/10">
-            VITE_SUPABASE_URL=your_url_here{"\n"}
-            VITE_SUPABASE_ANON_KEY=your_anon_key_here
-          </pre>
-          <Button onClick={() => window.location.reload()} className="w-full">
-            Retry Connection
-          </Button>
-        </div>
+      <div className="h-screen w-screen flex items-center justify-center bg-background">
+        <div className="text-2xl font-black tracking-tighter opacity-20 animate-pulse">HandAll.</div>
       </div>
     );
   }
 
-  if (loading) {
-    return <div className="h-screen w-screen flex items-center justify-center">Loading HandAll...</div>;
-  }
-
-  if (!session && location.pathname !== "/login") {
-    return null;
-  }
+  if (!session && location.pathname !== "/login") return null;
 
   if (location.pathname === "/setup") {
     return <Outlet />;
   }
 
   return (
-    <div className="flex h-screen bg-background">
-      <aside className="w-64 border-r bg-card flex flex-col">
-        <div className="p-6 border-b">
-          <h1 className="text-2xl font-bold">HandAll</h1>
-          <p className="text-sm text-muted-foreground">Time Manager</p>
+    <div className="flex h-screen bg-transparent text-foreground font-sans selection:bg-primary selection:text-primary-foreground">
+      <aside className="w-20 lg:w-24 flex flex-col items-center py-12 border-r border-white/5 bg-transparent relative z-50">
+        <div className="mb-12">
+          <div className="h-10 w-10 rounded-2xl bg-primary flex items-center justify-center shadow-[0_0_30px_rgba(221,251,92,0.2)]">
+            <span className="font-black text-primary-foreground text-xl">H</span>
+          </div>
         </div>
 
-        <nav className="flex-1 p-4 space-y-2">
-          <Button
-            variant={location.pathname === "/" ? "secondary" : "ghost"}
-            className="w-full justify-start"
-            onClick={() => navigate("/")}
-          >
-            <CalendarDays className="mr-2 h-4 w-4" />
-            Dashboard
-          </Button>
-          <Button
-            variant={location.pathname === "/weekly-sync" ? "secondary" : "ghost"}
-            className="w-full justify-start"
-            onClick={() => navigate("/weekly-sync")}
-          >
-            <BarChart3 className="mr-2 h-4 w-4" />
-            Weekly Sync
-          </Button>
-          <Button
-            variant={location.pathname === "/daily-check-in" ? "secondary" : "ghost"}
-            className="w-full justify-start"
-            onClick={() => navigate("/daily-check-in")}
-          >
-            <CheckSquare className="mr-2 h-4 w-4" />
-            Daily Check-in
-          </Button>
-          <Button
-            variant={location.pathname === "/goals" ? "secondary" : "ghost"}
-            className="w-full justify-start"
-            onClick={() => navigate("/goals")}
-          >
-            <Target className="mr-2 h-4 w-4" />
-            Goals
-          </Button>
-          <Button
-            variant={location.pathname === "/settings" ? "secondary" : "ghost"}
-            className="w-full justify-start"
+        <nav className="flex-1 flex flex-col gap-8">
+          <NavButton icon={<CalendarDays />} active={location.pathname === "/"} onClick={() => navigate("/")} />
+          <NavButton icon={<Target />} active={location.pathname === "/goals"} onClick={() => navigate("/goals")} />
+          <NavButton
+            icon={<SettingsIcon />}
+            active={location.pathname === "/settings"}
             onClick={() => navigate("/settings")}
-          >
-            <SettingsIcon className="mr-2 h-4 w-4" />
-            Settings
-          </Button>
-          <Button
-            variant="ghost"
-            className="w-full justify-start"
-            onClick={() => setShowHelp(true)}
-          >
-            <HelpCircle className="mr-2 h-4 w-4" />
-            How It Works
-          </Button>
+          />
         </nav>
 
-        <div className="p-4 border-t space-y-4">
-          <Button
-            variant="ghost"
-            className="h-auto w-full justify-start rounded-xl p-2 hover:bg-accent/60"
-            onClick={() => navigate("/settings")}
+        <div className="mt-auto flex flex-col gap-8">
+          <NavButton icon={<HelpCircle />} onClick={() => setShowHelp(true)} />
+          <button
+            type="button"
+            onClick={async () => {
+              resetAppState();
+              await supabase?.auth.signOut();
+              navigate("/login");
+            }}
+            className="p-3 rounded-2xl text-muted-foreground/40 hover:text-destructive transition-all hover:bg-destructive/10"
           >
-            <div className="flex items-center gap-3">
-              {avatarUrl ? (
-                <img
-                  src={avatarUrl}
-                  alt={`${displayName} profile`}
-                  className="h-10 w-10 rounded-full object-cover ring-2 ring-border"
-                  referrerPolicy="no-referrer"
-                />
-              ) : (
-                <div className="flex h-10 w-10 rounded-full bg-gradient-to-br from-blue-500 to-purple-500 items-center justify-center text-white font-bold">
-                  {userProfile.level}
-                </div>
-              )}
-              <div className="min-w-0 text-left">
-                <p className="text-sm font-medium truncate">{displayName}</p>
-                <p className="text-xs text-muted-foreground">Level {userProfile.level}</p>
-              </div>
-            </div>
-          </Button>
-          <div className="h-2 bg-secondary rounded-full overflow-hidden">
-            <div
-              className="h-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all"
-              style={{ width: `${userProfile.xp % 100}%` }}
-            />
-          </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="w-full justify-start text-red-500 hover:text-red-600 hover:bg-red-50"
-            onClick={handleLogout}
-          >
-            <LogOut className="mr-2 h-4 w-4" />
-            Log Out
-          </Button>
+            <LogOut className="h-6 w-6" />
+          </button>
         </div>
       </aside>
 
-      <main className="flex-1 overflow-auto">
-        <Outlet />
+      <main className="flex-1 overflow-hidden relative">
+        <div className="h-full w-full overflow-auto">
+          <Outlet />
+        </div>
       </main>
 
       {showHelp && <WelcomeGuide onClose={() => setShowHelp(false)} />}
-
-      <Button
-        className="fixed bottom-6 right-6 h-14 w-14 rounded-full shadow-lg"
-        onClick={() => setShowChat(!showChat)}
-      >
-        <MessageSquare className="h-6 w-6" />
-      </Button>
-
-      {showChat && (
-        <div className="fixed bottom-24 right-6 w-96 h-[500px] bg-card border rounded-xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-300">
-          <div className="p-4 border-b bg-muted/30 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
-              <h3 className="font-bold text-sm">AI Assistant</h3>
-            </div>
-            <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full" onClick={() => setShowChat(false)}>
-              <span className="text-lg">×</span>
-            </Button>
-          </div>
-          <ScrollArea className="flex-1 overflow-y-auto">
-            <div className="p-4 space-y-4">
-              {chatMessages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`flex ${
-                    message.role === "user" ? "justify-end" : "justify-start"
-                  }`}
-                >
-                  <div
-                    className={`max-w-[85%] p-3 rounded-2xl shadow-sm ${
-                      message.role === "user"
-                        ? "bg-primary text-primary-foreground rounded-tr-none"
-                        : "bg-muted text-muted-foreground rounded-tl-none"
-                    }`}
-                  >
-                    <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
-                    <p
-                      className={`text-[9px] mt-1.5 font-bold uppercase tracking-widest ${
-                        message.role === "user"
-                          ? "opacity-60"
-                          : "text-muted-foreground/50"
-                      }`}
-                    >
-                      {format(message.timestamp, "h:mm a")}
-                    </p>
-                  </div>
-                </div>
-              ))}
-              <div ref={chatEndRef} />
-            </div>
-          </ScrollArea>
-          <div className="p-4 border-t">
-            <div className="flex gap-2">
-              <Input
-                type="text"
-                placeholder="Type a message..."
-                value={inputMessage}
-                onChange={(e) => setInputMessage(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-                className="flex-1"
-                disabled={isSending}
-              />
-              <Button onClick={handleSendMessage} size="icon" disabled={isSending}>
-                <Send className="h-4 w-4" />
-              </Button>
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Connected to {AGENT_API_BASE_URL}
-            </p>
-          </div>
-        </div>
-      )}
     </div>
+  );
+}
+
+function NavButton({
+  icon,
+  active,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  active?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "p-4 rounded-[2rem] transition-all duration-500 relative group",
+        active
+          ? "text-primary bg-white/[0.03] shadow-2xl scale-110"
+          : "text-muted-foreground/40 hover:text-foreground hover:scale-105",
+      )}
+    >
+      {React.cloneElement(icon as React.ReactElement, { className: "h-6 w-6" })}
+      {active && (
+        <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-primary rounded-full -ml-1 shadow-[0_0_15px_var(--color-primary)]" />
+      )}
+    </button>
   );
 }

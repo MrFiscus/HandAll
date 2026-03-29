@@ -219,7 +219,7 @@ export default function Goals() {
         <Card className="h-fit">
           <CardHeader>
             <div className="flex items-center gap-2">
-              <PartyPopper className="h-5 w-5 text-primary" />
+              <PartyPopper className="h-5 w-5 text-orange-500" />
               <CardTitle>Fun Events Near You</CardTitle>
             </div>
             <CardDescription>
@@ -238,7 +238,7 @@ export default function Goals() {
           <Card>
             <CardHeader>
               <div className="flex items-center gap-2">
-                <Target className="h-5 w-5 text-primary" />
+                <Target className="h-5 w-5 text-blue-500" />
                 <CardTitle>Goal-Supporting Events</CardTitle>
               </div>
               <CardDescription>

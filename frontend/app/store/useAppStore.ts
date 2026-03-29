@@ -97,6 +97,7 @@ export interface AppState {
   lastMotivation: number;
   lastCalendarSync: Date | null;
   apiLoaded: boolean;
+  resetAppState: () => void;
 
   loadAppData: () => Promise<void>;
   refreshPlanningItems: () => Promise<void>;
@@ -176,6 +177,26 @@ export const useAppStore = create<AppState>()(
       lastMotivation: 50,
       lastCalendarSync: null,
       apiLoaded: false,
+      resetAppState: () =>
+        set({
+          userProfile: {
+            name: "Student",
+            level: 0,
+            xp: 0,
+            wakeTime: "07:00",
+            sleepTime: "23:00",
+            sideGoals: [],
+            calendarUrls: [],
+            googleCalendarConnected: false,
+          },
+          events: [],
+          planningItems: [],
+          pendingSuggestions: [],
+          isSetupComplete: false,
+          lastMotivation: 50,
+          lastCalendarSync: null,
+          apiLoaded: false,
+        }),
 
       loadAppData: async () => {
         try {
@@ -314,8 +335,25 @@ export const useAppStore = create<AppState>()(
       },
 
       updateEvent: async (id, updates) => {
+        const { events, userProfile, setUserProfile } = get();
+        const event = events.find((e) => e.id === id);
+        
         const res = await api.updateTask(id, updates);
         if (res.success) {
+          // If task is being marked as completed and it wasn't before
+          if (updates.completed === true && event && !event.completed) {
+            const xpGain = event.xpValue || 10;
+            const newXp = userProfile.xp + xpGain;
+            const newLevel = Math.floor(newXp / 100);
+            
+            await setUserProfile({
+              xp: newXp,
+              level: newLevel,
+            });
+            
+            toast.success(`Task completed! +${xpGain} XP`);
+          }
+          
           const [user, tasks] = await Promise.all([api.fetchUser(), api.fetchTasks()]);
           set({ userProfile: user, events: tasks.map(normalizeCalendarEvent) });
         }

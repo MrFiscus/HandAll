@@ -1,10 +1,27 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import { useNavigate } from "react-router";
-import { format, startOfWeek, addDays, isSameDay } from "date-fns";
+import { format } from "date-fns";
 import { ScrollArea } from "./ui/scroll-area";
+import { useAppStore } from "../store/useAppStore";
+import { Button } from "./ui/button";
+import {
+  Plus,
+  MessageSquare,
+  Send,
+  Zap,
+  Sparkles,
+} from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
+import { Input } from "./ui/input";
+import { Label } from "./ui/label";
+import { Slider } from "./ui/slider";
+import { cn } from "./ui/utils";
+import { toast } from "sonner";
+import WeeklyCalendar from "./WeeklyCalendar";
+import { supabase } from "../lib/supabase";
+import { getAuthHeaders } from "../utils/api";
+import { normalizeChatResponseContent } from "../utils/chatResponse";
 
-const AGENT_API_BASE_URL =
-  import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "/agent-api";
+const AGENT_API_BASE_URL = import.meta.env.VITE_AGENT_API_URL?.replace(/\/$/, "") ?? "/agent-api";
 const AGENT_USER_ID_KEY = "handall-agent-user-id";
 
 interface ChatMessage {
@@ -13,36 +30,21 @@ interface ChatMessage {
   content: string;
   timestamp: Date;
 }
-import { useAppStore } from "../store/useAppStore";
-import { supabase } from "../lib/supabase";
-import { getAuthHeaders } from "../utils/api";
-import { Card, CardHeader, CardTitle, CardContent } from "./ui/card";
-import { Button } from "./ui/button";
-import { Plus, CheckCircle2, Calendar as CalendarIcon, MessageSquare, Send } from "lucide-react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
-import { Input } from "./ui/input";
-import { Label } from "./ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
-import { cn } from "./ui/utils";
-import { toast } from "sonner";
-import WelcomeGuide from "./WelcomeGuide";
-import WeeklyCalendar from "./WeeklyCalendar";
 
 export default function Dashboard() {
-  const navigate = useNavigate();
   const {
-    events,
     userProfile,
     planningItems,
     addEvent,
-    updateEvent,
     loadAppData,
     apiLoaded,
     lastMotivation,
+    setMotivation,
   } = useAppStore();
-  const [selectedDate, setSelectedDate] = useState(new Date());
+
+  const [viewMode, setViewMode] = useState<"day" | "week">("day");
   const [showAddEvent, setShowAddEvent] = useState(false);
-  const [showWelcome, setShowWelcome] = useState(false);
+  const [showChat, setShowChat] = useState(false);
   const [newEvent, setNewEvent] = useState({
     title: "",
     date: format(new Date(), "yyyy-MM-dd"),
@@ -55,8 +57,7 @@ export default function Dashboard() {
     {
       id: "1",
       role: "assistant",
-      content:
-        "Hi! I'm here to help you manage your tasks. Ask me to add tasks, check your schedule, or adjust your calendar.",
+      content: "How can I help you find focus today?",
       timestamp: new Date(),
     },
   ]);
@@ -66,81 +67,42 @@ export default function Dashboard() {
   const threadIdRef = useRef<string>(crypto.randomUUID());
   const chatSendGenRef = useRef(0);
 
-  // Load app data on first mount
-  useEffect(() => {
-    if (!apiLoaded) {
-      loadAppData();
-    }
-  }, [apiLoaded, loadAppData]);
-
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chatMessages]);
-
-  // Welcome guide logic
-  useEffect(() => {
-    const hasSeenWelcome = localStorage.getItem("handall-welcome-seen");
-    if (!hasSeenWelcome) {
-      setShowWelcome(true);
-      localStorage.setItem("handall-welcome-seen", "true");
-    }
-  }, []);
-
   const planningSummary = useMemo(() => {
     const subs = planningItems.filter((p) => p.item_type === "assignment_subtask").length;
     const goals = planningItems.filter((p) => p.item_type === "goal_task").length;
     return { subs, goals };
   }, [planningItems]);
 
-  const handleAddEvent = async () => {
-    if (!newEvent.title.trim()) {
-      toast.error("Please enter a title");
-      return;
-    }
+  useEffect(() => {
+    if (!apiLoaded) loadAppData();
+  }, [apiLoaded, loadAppData]);
 
+  useEffect(() => {
+    if (showChat) {
+      setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+    }
+  }, [chatMessages, showChat]);
+
+  const handleAddEvent = async () => {
+    if (!newEvent.title.trim()) return toast.error("What are we working on?");
     const start = new Date(`${newEvent.date}T${newEvent.startTime}`);
     const end = new Date(`${newEvent.date}T${newEvent.endTime}`);
-
-    if (end <= start) {
-      toast.error("End time must be after start time");
-      return;
-    }
-
+    if (end <= start) return toast.error("Time must flow forward.");
     try {
+      const xpValue =
+        newEvent.type === "working" ? 50 : newEvent.type === "goal" ? 30 : 10;
       await addEvent({
         title: newEvent.title,
         start,
         end,
         type: newEvent.type,
-        xpValue:
-          newEvent.type === "working"
-            ? 50
-            : newEvent.type === "goal"
-              ? 30
-              : 10,
+        xpValue,
       });
-
-      toast.success("Event added to calendar!");
+      toast.success("Added to your path.");
       setShowAddEvent(false);
-      setNewEvent({
-        title: "",
-        date: format(new Date(), "yyyy-MM-dd"),
-        startTime: "09:00",
-        endTime: "10:00",
-        type: "assignment",
-      });
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Could not save this event.";
+      const message = err instanceof Error ? err.message : "Flow interrupted.";
       toast.error(message);
-    }
-  };
-
-  const handleCompleteTask = async (eventId: string) => {
-    const event = events.find(e => e.id === eventId);
-    if (event && !event.completed) {
-      await updateEvent(eventId, { completed: true });
-      toast.success(`XP earned! 🎉`);
     }
   };
 
@@ -148,22 +110,19 @@ export default function Dashboard() {
     const trimmedMessage = inputMessage.trim();
     if (!trimmedMessage || isSending) return;
 
-    const userMessage: ChatMessage = {
+    const userMsg: ChatMessage = {
       id: Date.now().toString(),
       role: "user",
       content: trimmedMessage,
       timestamp: new Date(),
     };
-
-    setChatMessages((prev) => [...prev, userMessage]);
+    setChatMessages((prev) => [...prev, userMsg]);
     setInputMessage("");
     const sendGen = ++chatSendGenRef.current;
     setIsSending(true);
 
     try {
-      const session = supabase
-        ? (await supabase.auth.getSession()).data.session
-        : null;
+      const session = supabase ? (await supabase.auth.getSession()).data.session : null;
       const authId = session?.user?.id;
       const userId = authId ?? localStorage.getItem(AGENT_USER_ID_KEY) ?? crypto.randomUUID();
       if (authId) localStorage.setItem(AGENT_USER_ID_KEY, authId);
@@ -188,8 +147,7 @@ export default function Dashboard() {
       const data = await response.json();
       if (sendGen !== chatSendGenRef.current) return;
 
-      const display = typeof data.response === "string" ? data.response : JSON.stringify(data.response);
-
+      const display = normalizeChatResponseContent(data.response);
       setChatMessages((prev) => [
         ...prev,
         {
@@ -205,14 +163,13 @@ export default function Dashboard() {
       }
     } catch (error) {
       if (sendGen !== chatSendGenRef.current) return;
-
-      const message = error instanceof Error ? error.message : "Unable to reach the AI backend right now.";
+      const message = error instanceof Error ? error.message : "Unable to reach the AI backend.";
       setChatMessages((prev) => [
         ...prev,
         {
           id: (Date.now() + 1).toString(),
           role: "assistant",
-          content: `I couldn't reach the AI backend just now (${message}). Make sure the app is running and try again.`,
+          content: `I lost the connection (${message}). Try again?`,
           timestamp: new Date(),
         },
       ]);
@@ -223,187 +180,158 @@ export default function Dashboard() {
     }
   };
 
-  const getEventColor = (type: string) => {
-    switch (type) {
-      case "class": return "bg-blue-500";
-      case "assignment": return "bg-red-500";
-      case "working": return "bg-orange-500";
-      case "goal": return "bg-green-500";
-      case "freetime": return "bg-purple-500";
-      default: return "bg-gray-500";
-    }
-  };
-
   return (
-    <div className="p-6 space-y-6">
-      {showWelcome && <WelcomeGuide onClose={() => setShowWelcome(false)} />}
-      
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold">Dashboard</h1>
-          <p className="text-muted-foreground">
-            Welcome back! Here's your weekly overview.
-          </p>
+    <div className="min-h-screen p-8 lg:p-12 flex flex-col gap-10 max-w-[1800px] mx-auto transition-all duration-1000">
+      <header className="flex items-end justify-between">
+        <div className="space-y-1">
+          <h1 className="text-6xl font-black tracking-tighter text-foreground leading-none">Focus.</h1>
+          <p className="text-lg font-medium text-muted-foreground/40">Good morning, {userProfile.name}.</p>
           {(planningSummary.subs > 0 || planningSummary.goals > 0) && (
-            <p className="mt-1 text-sm text-muted-foreground">
+            <p className="text-sm text-muted-foreground/60 max-w-xl">
               AI planning queue:{" "}
-              <span className="font-medium text-foreground">{planningSummary.subs}</span> assignment
-              subtasks,{" "}
-              <span className="font-medium text-foreground">{planningSummary.goals}</span> personal-goal
-              tasks (used when you rebalance or run Weekly Sync).
+              <span className="font-medium text-foreground">{planningSummary.subs}</span> assignment subtasks,{" "}
+              <span className="font-medium text-foreground">{planningSummary.goals}</span> goal tasks.
             </p>
           )}
         </div>
-        <div className="flex gap-2">
-           <Dialog open={showAddEvent} onOpenChange={setShowAddEvent}>
-            <DialogTrigger asChild>
-              <Button type="button">
-                <Plus className="mr-2 h-4 w-4" />
-                Add Event
+
+        <Dialog open={showAddEvent} onOpenChange={setShowAddEvent}>
+          <DialogTrigger asChild>
+            <button
+              type="button"
+              className="h-14 px-8 rounded-full bg-white/[0.03] hover:bg-white/[0.06] border border-white/5 text-base font-bold transition-all hover:scale-105 active:scale-95 flex items-center gap-3"
+            >
+              <Plus className="h-5 w-5 text-primary" />
+              <span>Add to Day</span>
+            </button>
+          </DialogTrigger>
+          <DialogContent className="rounded-[3rem] border-none p-10 bg-card/95 backdrop-blur-3xl shadow-4xl sm:max-w-[500px]">
+            <DialogHeader>
+              <DialogTitle className="text-4xl font-black tracking-tighter mb-6">New Entry</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-8">
+              <div className="space-y-2">
+                <Label>Activity</Label>
+                <Input
+                  value={newEvent.title}
+                  onChange={(e) => setNewEvent({ ...newEvent, title: e.target.value })}
+                  placeholder="What's next?"
+                  className="h-14 bg-white/[0.02] border-none rounded-2xl text-lg px-6"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-6">
+                <div className="space-y-2">
+                  <Label>Start</Label>
+                  <Input
+                    type="time"
+                    value={newEvent.startTime}
+                    onChange={(e) => setNewEvent({ ...newEvent, startTime: e.target.value })}
+                    className="h-14 bg-white/[0.02] border-none rounded-2xl px-6 font-bold"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>End</Label>
+                  <Input
+                    type="time"
+                    value={newEvent.endTime}
+                    onChange={(e) => setNewEvent({ ...newEvent, endTime: e.target.value })}
+                    className="h-14 bg-white/[0.02] border-none rounded-2xl px-6 font-bold"
+                  />
+                </div>
+              </div>
+              <Button
+                type="button"
+                onClick={handleAddEvent}
+                className="w-full h-14 rounded-3xl font-black uppercase tracking-widest shadow-2xl"
+              >
+                Confirm Entry
               </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      </header>
+
+      <div className="grid grid-cols-12 gap-10 flex-1">
+        <div className="col-span-12 lg:col-span-10 min-h-[800px] transition-all duration-1000 animate-in fade-in slide-in-from-bottom-12">
+          <WeeklyCalendar viewMode={viewMode} setViewMode={setViewMode} />
+        </div>
+
+        <div className="col-span-12 lg:col-span-2 flex flex-col gap-8 py-4 h-full">
+          <div className="p-8 rounded-[2rem] bg-white/[0.01] border border-white/[0.03] space-y-8 backdrop-blur-sm">
+            <div className="flex items-center gap-3">
+              <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-primary">
+                <Zap className="h-4 w-4 fill-current" />
+              </div>
+              <span className="font-bold tracking-tight text-lg">Energy</span>
+            </div>
+            <Slider value={[lastMotivation]} onValueChange={(v) => setMotivation(v[0])} max={100} step={5} />
+            <div className="text-center font-black">
+              <span className="text-3xl text-primary">{lastMotivation}%</span>
+            </div>
+          </div>
+
+          <Dialog open={showChat} onOpenChange={setShowChat}>
+            <DialogTrigger asChild>
+              <button
+                type="button"
+                className="w-full h-24 rounded-[2rem] bg-primary text-primary-foreground shadow-[0_20px_40px_rgba(221,251,92,0.1)] flex flex-col items-center justify-center gap-2 group hover:scale-[1.02] transition-all duration-500 border-none"
+              >
+                <Sparkles className="h-6 w-6 transition-transform group-hover:rotate-12" />
+                <span className="font-black uppercase tracking-widest text-[9px]">Assistant</span>
+              </button>
             </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Add New Event</DialogTitle>
-              </DialogHeader>
-              <div className="space-y-4 py-4">
-                <div className="space-y-2">
-                  <Label htmlFor="title">Title</Label>
-                  <Input
-                    id="title"
-                    value={newEvent.title}
-                    onChange={(e) => setNewEvent({ ...newEvent, title: e.target.value })}
-                    placeholder="Math assignment"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="date">Date</Label>
-                  <Input
-                    id="date"
-                    type="date"
-                    value={newEvent.date}
-                    onChange={(e) => setNewEvent({ ...newEvent, date: e.target.value })}
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="startTime">Start Time</Label>
-                    <Input
-                      id="startTime"
-                      type="time"
-                      value={newEvent.startTime}
-                      onChange={(e) => setNewEvent({ ...newEvent, startTime: e.target.value })}
-                    />
+            <DialogContent className="sm:max-w-[600px] h-[800px] border-none rounded-[3rem] bg-card/98 backdrop-blur-3xl shadow-4xl flex flex-col p-0 overflow-hidden">
+              <div className="p-12 border-b border-white/5 bg-white/2">
+                <h2 className="text-4xl font-black tracking-tighter">Guide.</h2>
+                <p className="opacity-40 font-medium">Let&apos;s refine your flow.</p>
+              </div>
+              <ScrollArea className="flex-1 p-12 space-y-10">
+                {chatMessages.map((m) => (
+                  <div key={m.id} className={cn("flex", m.role === "user" ? "justify-end" : "justify-start")}>
+                    <div
+                      className={cn(
+                        "max-w-[85%] p-8 rounded-[2rem] text-lg font-medium leading-relaxed whitespace-pre-wrap break-words",
+                        m.role === "user"
+                          ? "bg-primary text-primary-foreground rounded-tr-none"
+                          : "bg-white/[0.03] border border-white/5 rounded-tl-none",
+                      )}
+                    >
+                      {m.content}
+                    </div>
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="endTime">End Time</Label>
-                    <Input
-                      id="endTime"
-                      type="time"
-                      value={newEvent.endTime}
-                      onChange={(e) => setNewEvent({ ...newEvent, endTime: e.target.value })}
-                    />
-                  </div>
+                ))}
+                <div ref={chatEndRef} />
+              </ScrollArea>
+              <div className="p-12 pt-0">
+                <div className="flex gap-4 p-3 rounded-[2rem] bg-white/[0.03] border border-white/5 focus-within:border-primary/20 transition-all">
+                  <Input
+                    value={inputMessage}
+                    onChange={(e) => setInputMessage(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
+                    placeholder="Type something..."
+                    className="flex-1 h-14 bg-transparent border-none text-lg px-6 focus:ring-0"
+                    disabled={isSending}
+                  />
+                  <Button
+                    type="button"
+                    onClick={handleSendMessage}
+                    className="h-14 w-14 rounded-2xl transition-all hover:scale-105"
+                    disabled={isSending}
+                  >
+                    <Send className="h-6 w-6" />
+                  </Button>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="type">Type</Label>
-                  <Select value={newEvent.type} onValueChange={(value: any) => setNewEvent({ ...newEvent, type: value })}>
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="class">Class</SelectItem>
-                      <SelectItem value="assignment">Assignment</SelectItem>
-                      <SelectItem value="working">Working Task</SelectItem>
-                      <SelectItem value="goal">Goal Task</SelectItem>
-                      <SelectItem value="freetime">Free Time Task</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <Button type="button" onClick={handleAddEvent} className="w-full">
-                  Add Event
-                </Button>
+                <p className="mt-3 text-xs text-muted-foreground flex items-center gap-2">
+                  <MessageSquare className="h-3 w-3 shrink-0" />
+                  {AGENT_API_BASE_URL}
+                </p>
               </div>
             </DialogContent>
           </Dialog>
-        </div>
-      </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 h-[800px]">
-        {/* Weekly Calendar - Major component */}
-        <div className="lg:col-span-3 h-full">
-          <WeeklyCalendar />
-        </div>
-
-        {/* Sidebar: AI Chat */}
-        <div className="space-y-4 overflow-y-auto pr-2 relative">
-          <div className="absolute bottom-4 right-4 w-full max-w-[360px]">
-            <Card className="h-[60vh] overflow-hidden flex flex-col">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium flex items-center gap-2">
-                  <MessageSquare className="h-4 w-4" />
-                  AI Assistant
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="flex-1 flex flex-col p-0">
-                <div className="flex-1 min-h-0">
-                  <ScrollArea className="h-full">
-                    <div className="p-4 space-y-4">
-                      {chatMessages.map((message) => (
-                        <div
-                          key={message.id}
-                          className={`flex ${
-                            message.role === "user" ? "justify-end" : "justify-start"
-                          }`}
-                        >
-                          <div
-                            className={`max-w-[85%] p-3 rounded-2xl shadow-sm ${
-                              message.role === "user"
-                                ? "bg-primary text-primary-foreground rounded-tr-none"
-                                : "bg-muted text-muted-foreground rounded-tl-none"
-                            }`}
-                          >
-                            <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">{message.content}</p>
-                            <p
-                              className={`text-[9px] mt-1.5 font-bold uppercase tracking-widest ${
-                                message.role === "user"
-                                  ? "opacity-60"
-                                  : "text-muted-foreground/50"
-                              }`}
-                            >
-                              {format(message.timestamp, "h:mm a")}
-                            </p>
-                          </div>
-                        </div>
-                      ))}
-                      <div ref={chatEndRef} />
-                    </div>
-                  </ScrollArea>
-                </div>
-                <div className="p-4 border-t">
-                  <div className="flex gap-2">
-                    <Input
-                      type="text"
-                      placeholder="Type a message..."
-                      value={inputMessage}
-                      onChange={(e) => setInputMessage(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-                      className="flex-1"
-                      disabled={isSending}
-                    />
-                    <Button onClick={handleSendMessage} size="icon" disabled={isSending}>
-                      <Send className="h-4 w-4" />
-                    </Button>
-                  </div>
-                  <p className="mt-2 text-xs text-muted-foreground">Connected to {AGENT_API_BASE_URL}</p>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
+          <div className="flex-1" />
         </div>
       </div>
     </div>
   );
 }
-

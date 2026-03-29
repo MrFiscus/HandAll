@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useState } from "react";
 import { supabase } from "../lib/supabase";
 import { toast } from "sonner";
 import { useNavigate } from "react-router";
@@ -13,6 +13,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { Checkbox } from "./ui/checkbox";
+import { Badge } from "./ui/badge";
 import {
   Card,
   CardContent,
@@ -20,7 +21,6 @@ import {
   CardHeader,
   CardTitle,
 } from "./ui/card";
-import { Badge } from "./ui/badge";
 
 function GoogleLogo() {
   return (
@@ -50,7 +50,7 @@ function GoogleLogo() {
   );
 }
 
-export default function Auth() {
+export default function SignInForm() {
   const navigate = useNavigate();
   const [isSignUp, setIsSignUp] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -59,24 +59,6 @@ export default function Auth() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [acceptedTerms, setAcceptedTerms] = useState(false);
-
-  useEffect(() => {
-    if (!supabase) return;
-
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) {
-        navigate("/");
-      }
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session) {
-        navigate("/");
-      }
-    });
-
-    return () => subscription.unsubscribe();
-  }, [navigate]);
 
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -123,9 +105,6 @@ export default function Auth() {
     try {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "google",
-        options: {
-          redirectTo: `${window.location.origin}/`,
-        },
       });
       if (error) throw error;
     } catch (error: any) {
@@ -173,7 +152,7 @@ export default function Auth() {
           <div className="grid lg:grid-cols-[1.05fr_0.95fr]">
             <div className="relative overflow-hidden bg-muted p-8 text-foreground sm:p-12 flex flex-col justify-between gap-10">
               <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,var(--color-primary),transparent_40%)] opacity-5" />
-              
+
               <div className="relative space-y-6">
                 <div className="inline-flex items-center gap-2 rounded-full border bg-background px-4 py-1.5 text-sm font-bold tracking-tight">
                   <Sparkles className="h-4 w-4 text-primary" />
@@ -181,18 +160,8 @@ export default function Auth() {
                 </div>
 
                 <div className="space-y-4">
-                  <h1 className="text-4xl font-bold leading-[1.02] sm:text-5xl lg:text-6xl tracking-tight">
-                    Your week,
-                    <br />
-                    <span
-                      className="text-primary text-[1.2em] tracking-normal"
-                      style={{
-                        fontFamily: '"Dancing Script", "Segoe Script", "Snell Roundhand", "Brush Script MT", cursive',
-                        fontWeight: 700,
-                      }}
-                    >
-                      Simplified.
-                    </span>
+                  <h1 className="text-4xl font-bold leading-tight sm:text-5xl lg:text-6xl tracking-tight">
+                    Your week, <span className="text-primary italic">simplified.</span>
                   </h1>
                   <p className="max-w-lg text-base leading-relaxed text-muted-foreground font-medium">
                     HandAll keeps your classes, tasks, and motivation in one flow so you can focus on doing, not planning.
@@ -221,61 +190,53 @@ export default function Auth() {
                   <CalendarDays className="h-6 w-6" />
                 </div>
                 <div>
-                  <p className="text-sm font-black uppercase tracking-widest text-slate-950">Built for routines</p>
-                  <p className="text-sm font-semibold text-slate-900/85">
+                  <p className="text-sm font-black uppercase tracking-widest">Built for routines</p>
+                  <p className="text-sm font-medium opacity-90">
                     Smart scheduling that respects your energy levels.
                   </p>
                 </div>
               </div>
             </div>
 
-            <div className="bg-card p-8 pt-12 sm:p-12 sm:pt-16 flex flex-col justify-center">
+            <div className="p-8 sm:p-12 flex flex-col justify-center bg-card">
               <div className="mx-auto w-full max-w-md space-y-8">
                 <div className="space-y-2">
-                  <h2 className="text-3xl font-black tracking-tight text-foreground sm:text-4xl padding-top-10">
+                  <Badge variant="outline" className="px-3 py-1 text-xs font-bold border-primary text-primary">
+                    {isSignUp ? "Step 1: Create Account" : "Welcome Back"}
+                  </Badge>
+                  <h2 className="text-3xl font-black tracking-tighter sm:text-4xl">
                     {isSignUp ? "Get Organized" : "Sign In"}
                   </h2>
-                  <p className="text-sm font-medium leading-6 text-foreground/72">
-                    {isSignUp
-                      ? "Create your account and start building a schedule that feels manageable."
-                      : "Sign in to get back to your planner, goals, and calendar sync."}
-                  </p>
                 </div>
 
-                <form onSubmit={handleAuth} className="space-y-4">
+                <form onSubmit={handleAuth} className="space-y-5">
                   {isSignUp && (
                     <div className="grid gap-4 sm:grid-cols-2">
                       <div className="space-y-2">
-                        <Label htmlFor="firstName" className="text-xs font-black uppercase tracking-[0.22em] text-foreground/80">
-                          First name
-                        </Label>
+                        <Label htmlFor="firstName" className="text-xs font-bold uppercase text-muted-foreground">First name</Label>
                         <Input
                           id="firstName"
                           value={firstName}
                           onChange={(e) => setFirstName(e.target.value)}
                           required
-                          className="h-12 border-2 border-foreground/10 bg-black/10 text-foreground placeholder:text-foreground/45 focus-visible:border-primary/60 focus-visible:ring-primary/20"
+                          className="h-12 bg-background border-2 focus:ring-primary"
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="lastName" className="text-xs font-black uppercase tracking-[0.22em] text-foreground/80">
-                          Last name
-                        </Label>
+                        <Label htmlFor="lastName" className="text-xs font-bold uppercase text-muted-foreground">Last name</Label>
                         <Input
                           id="lastName"
                           value={lastName}
                           onChange={(e) => setLastName(e.target.value)}
                           required
-                          className="h-12 border-2 border-foreground/10 bg-black/10 text-foreground placeholder:text-foreground/45 focus-visible:border-primary/60 focus-visible:ring-primary/20"
+                          className="h-12 bg-background border-2 focus:ring-primary"
                         />
                       </div>
                     </div>
                   )}
 
                   <div className="space-y-2">
-                    <Label htmlFor="email" className="text-xs font-black uppercase tracking-[0.22em] text-foreground/80">
-                      Email
-                    </Label>
+                    <Label htmlFor="email" className="text-xs font-bold uppercase text-muted-foreground">Email</Label>
                     <Input
                       id="email"
                       type="email"
@@ -283,37 +244,31 @@ export default function Auth() {
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       required
-                      className="h-12 border-2 border-foreground/10 bg-black/10 text-foreground placeholder:text-foreground/45 focus-visible:border-primary/60 focus-visible:ring-primary/20"
+                      className="h-12 bg-background border-2 focus:ring-primary"
                     />
                   </div>
 
                   <div className="space-y-2">
-                    <Label
-                      htmlFor="password"
-                      title="At least 6 characters"
-                      className="text-xs font-black uppercase tracking-[0.22em] text-foreground/80"
-                    >
-                      Password
-                    </Label>
+                    <Label htmlFor="password" title="At least 6 characters" className="text-xs font-bold uppercase text-muted-foreground">Password</Label>
                     <Input
                       id="password"
                       type="password"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       required
-                      className="h-12 border-2 border-foreground/10 bg-black/10 text-foreground placeholder:text-foreground/45 focus-visible:border-primary/60 focus-visible:ring-primary/20"
+                      className="h-12 bg-background border-2 focus:ring-primary"
                     />
                   </div>
 
                   {isSignUp && (
-                    <div className="flex items-center gap-3 rounded-2xl border border-foreground/10 bg-black/10 p-4">
+                    <div className="flex items-start gap-3 rounded-xl border bg-muted/20 p-4">
                       <Checkbox
                         id="terms"
                         checked={acceptedTerms}
                         onCheckedChange={(checked) => setAcceptedTerms(checked === true)}
-                        className="border-foreground/25 bg-black/20 data-[state=checked]:border-primary data-[state=checked]:bg-primary"
+                        className="mt-1"
                       />
-                      <Label htmlFor="terms" className="cursor-pointer text-xs font-semibold leading-relaxed tracking-[0.08em] text-foreground/72">
+                      <Label htmlFor="terms" className="cursor-pointer text-xs font-medium leading-relaxed text-muted-foreground">
                         I agree to the terms and let HandAll personalize my schedule suggestions.
                       </Label>
                     </div>
@@ -325,22 +280,31 @@ export default function Auth() {
                   </Button>
                 </form>
 
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <span className="w-full border-t-2" />
+                  </div>
+                  <div className="relative flex justify-center text-[10px] uppercase font-black tracking-[0.3em] text-muted-foreground/50">
+                    <span className="bg-card px-4">Social Login</span>
+                  </div>
+                </div>
+
                 <Button
                   type="button"
                   variant="outline"
                   size="lg"
-                  className="h-12 w-full border-2 border-foreground/10 bg-black/10 font-bold text-foreground hover:bg-black/15"
+                  className="h-12 w-full border-2 font-bold hover:bg-muted/50"
                   onClick={handleGoogleLogin}
                 >
                   <GoogleLogo />
                   <span className="ml-2">Continue with Google</span>
                 </Button>
 
-                <div className="text-center pt-1">
-                  <p className="text-sm font-semibold text-foreground/82">
+                <div className="text-center pt-2">
+                  <p className="text-xs font-medium text-muted-foreground">
                     {isSignUp ? "Already a member?" : "New to HandAll?"}{" "}
                     <button
-                      className="font-extrabold text-primary hover:underline underline-offset-4"
+                      className="font-bold text-primary hover:underline underline-offset-4"
                       onClick={() => setIsSignUp(!isSignUp)}
                       type="button"
                     >

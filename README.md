@@ -53,10 +53,6 @@ Before events are committed, HandAll shows an import preview with converted task
 
 ![Calendar import preview](images/calendar-import-preview.png)
 
-The advanced settings view also shows active sync sources so users can see what is currently connected.
-
-![Advanced settings and integrations](images/settings-advanced.png)
-
 ### Planner and Calendar Experience
 
 The main planner supports both day and week views, allowing users to zoom in on a single day or look at a fuller weekly plan.
@@ -77,6 +73,12 @@ Users can manually add new entries through a dedicated modal without leaving the
 
 ![Add event modal](images/calendar-add-event.png)
 
+The built-in assistant is available inside the planner so users can ask for help without leaving the scheduling context.
+
+It is intended for natural-language schedule support, task guidance, and general planning help based on the rest of the app state.
+
+![Assistant chat](images/assistant-chat.png)
+
 ### Goals and Event Discovery
 
 One of HandAll's distinctive features is the Goals area, which looks beyond school deadlines and helps users build momentum on side ambitions.
@@ -93,19 +95,15 @@ The settings page also lets users maintain side goals over time, which feeds bac
 
 ![Goals settings](images/settings-goals.png)
 
-### AI Assistant and Guided Planning
-
-The built-in assistant is available inside the planner so users can ask for help without leaving the scheduling context.
-
-It is intended for natural-language schedule support, task guidance, and general planning help based on the rest of the app state.
-
-![Assistant chat](images/assistant-chat.png)
-
 ### Settings and Personalization
 
 The general settings page gives users a place to manage profile presence, XP, current level, and routine preferences in one place.
 
 ![General settings](images/settings-general.png)
+
+The advanced settings view also shows active sync sources so users can see what is currently connected.
+
+![Advanced settings and integrations](images/settings-advanced.png)
 
 The app also includes a motivation or energy slider directly in the dashboard so users can quickly signal how intense or gentle their schedule should feel.
 
@@ -193,23 +191,58 @@ This starts:
 - the Vite frontend
 - the Python AI service
 
-### Key environment values
+### Environment setup
 
-Root or backend environment:
+HandAll uses variables across the root, backend, and frontend. A practical local setup looks like this.
+
+Root or backend `.env`:
 
 ```env
+# Supabase
 SUPABASE_URL=your_supabase_url
 SUPABASE_KEY=your_supabase_key
+
+# OpenAI
 OPENAI_API_KEY=your_openai_api_key
 OPENAI_MODEL=gpt-4o-mini
+
+# Planner / AI service
+HANDALL_PLANNER_URL=http://127.0.0.1:8011
+
+# Event discovery
+FIRECRAWL_API_KEY=your_firecrawl_api_key
+
+# Google Calendar / OAuth
+GOOGLE_API_KEY=your_google_api_key
+GOOGLE_CALENDAR_ID=primary
+GOOGLE_SERVICE_ACCOUNT_FILE=service_account.json
+# or use GOOGLE_SERVICE_ACCOUNT_JSON instead of a file
+GOOGLE_SERVICE_ACCOUNT_JSON=
+GOOGLE_OAUTH_CLIENT_ID=your_google_oauth_client_id
+GOOGLE_OAUTH_CLIENT_SECRET=your_google_oauth_client_secret
+
+# Optional debug flags
+HANDALL_EXPOSE_ERRORS=1
+HANDALL_CHAT_TEST_OPENAI=1
+LOG_LEVEL=INFO
+
+# Optional Postgres override
+DATABASE_URL=
 ```
 
-Frontend environment:
+Frontend `frontend/.env`:
 
 ```env
 VITE_SUPABASE_URL=your_supabase_url
 VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
+VITE_AGENT_API_URL=http://127.0.0.1:8011
 ```
+
+Notes:
+
+- If `DATABASE_URL` is not set, the app falls back to the local SQLite database.
+- `GOOGLE_SERVICE_ACCOUNT_FILE` is useful locally, while `GOOGLE_SERVICE_ACCOUNT_JSON` is better for hosted environments.
+- `SUPABASE_ANON_KEY` can still be used as a fallback in some Python paths, but `SUPABASE_KEY` is the cleaner primary name in this repo.
 
 ## Project Structure
 
@@ -226,6 +259,8 @@ VITE_SUPABASE_ANON_KEY=your_supabase_anon_key
 - Smaran Pokharel - Google Calendar connect flow and product integration
 - Tenzing Gurung - AI planner and motivation sync logic
 
-## License
+## Project Context
 
-This project was created for educational and portfolio use.
+HandAll was built for the Nepal-US Hackathon 2026.
+
+The full idea, product direction, implementation, and coding were completed within a 36-hour hackathon sprint.

@@ -6,7 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "./ui/dialog";
 import { Alert, AlertDescription } from "./ui/alert";
 import { useAppStore } from "../store/useAppStore";
-import { convertCalendarEventsToTaskPreview, fetchCalendarEvents, parseICalData, resolveCalendarImportUrl } from "../utils/calendarSync";
+import { convertCalendarEventsToTaskPreview, fetchCalendarEvents, formatCalendarDateTime, parseICalData, resolveCalendarImportUrl } from "../utils/calendarSync";
 import { RefreshCw, Calendar, AlertCircle, CheckCircle2, Info, Upload, Link } from "lucide-react";
 import { toast } from "sonner";
 import { format } from "date-fns";
@@ -67,8 +67,8 @@ export default function CalendarSync() {
           id: event.id,
           title: event.title,
           description: event.description,
-          start: event.start.toISOString(),
-          end: event.end.toISOString(),
+          start: formatCalendarDateTime(event.start),
+          end: formatCalendarDateTime(event.end),
           type: event.type,
           sourceUrl: event.sourceUrl ?? previewSource,
         })),

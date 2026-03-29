@@ -16,6 +16,31 @@ export interface ImportedTaskPreview {
 const RECURRING_IMPORT_WINDOW_DAYS = 120;
 const MAX_RECURRING_OCCURRENCES = 200;
 
+function pad(num: number): string {
+  return String(num).padStart(2, "0");
+}
+
+export function formatCalendarDateTime(value: Date): string {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return new Date().toISOString();
+  }
+
+  const year = date.getFullYear();
+  const month = pad(date.getMonth() + 1);
+  const day = pad(date.getDate());
+  const hours = pad(date.getHours());
+  const minutes = pad(date.getMinutes());
+  const seconds = pad(date.getSeconds());
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const absOffset = Math.abs(offsetMinutes);
+  const offsetHours = pad(Math.floor(absOffset / 60));
+  const offsetRemainder = pad(absOffset % 60);
+
+  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}${sign}${offsetHours}:${offsetRemainder}`;
+}
+
 function addDays(date: Date, days: number): Date {
   const next = new Date(date);
   next.setDate(next.getDate() + days);
@@ -200,8 +225,8 @@ export function convertCalendarEventsToTaskPreview(events: CalendarEvent[]): Imp
   return events.map((event) => ({
     task_name: event.title,
     details: event.description || "",
-    due_start: event.start.toISOString(),
-    due_end: event.end.toISOString(),
+    due_start: formatCalendarDateTime(event.start),
+    due_end: formatCalendarDateTime(event.end),
     category: inferTaskCategory(event),
     priority: inferTaskPriority(event),
     location: undefined,

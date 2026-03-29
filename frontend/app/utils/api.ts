@@ -187,6 +187,9 @@ export const api = {
     motivation?: number;
     horizonDays?: number;
     timezone?: string;
+    /** When set with dayEndIso, only replace AI-generated flexible blocks overlapping this local day. */
+    dayStartIso?: string;
+    dayEndIso?: string;
   }) {
     const headers = await getAuthHeaders();
     if (!headers.Authorization) {
@@ -200,6 +203,8 @@ export const api = {
         horizon_days: opts?.horizonDays,
         timezone:
           opts?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC",
+        day_start_iso: opts?.dayStartIso,
+        day_end_iso: opts?.dayEndIso,
       }),
     });
     const data = (await res.json().catch(() => null)) ?? {};

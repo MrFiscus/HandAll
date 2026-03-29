@@ -126,6 +126,48 @@ function parseAiMetaColumn(raw) {
   }
 }
 
+/** Serialize concurrent schedule rebalance runs per user (avoids duplicate planner inserts). */
+const scheduleRebalanceChains = new Map();
+function enqueueScheduleRebalance(uid, fn) {
+  const key = String(uid);
+  const prev = scheduleRebalanceChains.get(key) || Promise.resolve();
+  const result = prev.then(() => fn());
+  scheduleRebalanceChains.set(key, result.catch(() => {}));
+  return result;
+}
+
+function maxIso(a, b) {
+  return new Date(a).getTime() >= new Date(b).getTime() ? a : b;
+}
+function minIso(a, b) {
+  return new Date(a).getTime() <= new Date(b).getTime() ? a : b;
+}
+
+function intervalOverlapsIso(startIso, endIso, rangeStartIso, rangeEndIso) {
+  return startIso < rangeEndIso && endIso > rangeStartIso;
+}
+
+/**
+ * Planner-created flexible blocks that motivation rebalance may remove and recreate.
+ * Preserves: locked, non-pushable, manual/imported-tagged flex rows.
+ */
+function isReplaceablePlannerFlexibleRow(row, activeUrl) {
+  const rowType = (row.type || '').toLowerCase();
+  const rowStatus = (row.status || '').toLowerCase();
+  if (!['working', 'goal', 'freetime', 'free'].includes(rowType)) return false;
+  if (rowStatus === 'completed') return false;
+  const meta = parseAiMetaColumn(row.ai_meta) || {};
+  if (meta.locked === true) return false;
+  if (meta.pushable === false) return false;
+  if (meta.source === 'manual' || meta.source === 'imported') return false;
+  const su = String(row.source_url || '');
+  const pu = String(row.planner_source_url || '');
+  const urlMatch = su === activeUrl || pu === activeUrl;
+  if (meta.source === 'ai_generated') return true;
+  if (!meta.source) return urlMatch;
+  return false;
+}
+
 function taskRowToApiPayload(t) {
   const typ = t.type ? t.type.toLowerCase() : 'working';
   const xp =
@@ -603,6 +645,10 @@ async function runUnifiedCalendarPipeline(db, uid, bodyEvents, timezone, motivat
  * @returns {Promise<{ok:true, data:object}|{ok:false, status:number, error:string, user?:object}>}
  */
 async function runScheduleRebalanceCore(db, uid, options = {}) {
+  return enqueueScheduleRebalance(uid, () => runScheduleRebalanceCoreImpl(db, uid, options));
+}
+
+async function runScheduleRebalanceCoreImpl(db, uid, options = {}) {
   const user = await db.get('SELECT * FROM users WHERE id = ?', uid);
   if (!user) {
     return { ok: false, status: 404, error: 'User not found' };
@@ -646,6 +692,16 @@ async function runScheduleRebalanceCore(db, uid, options = {}) {
   const nowIso = now.toISOString();
   const horizonIso = horizon.toISOString();
 
+  const dayStartIn = typeof options.day_start_iso === 'string' ? options.day_start_iso.trim() : '';
+  const dayEndIn = typeof options.day_end_iso === 'string' ? options.day_end_iso.trim() : '';
+  const useDayScope = Boolean(dayStartIn && dayEndIn);
+  let deleteStartIso = nowIso;
+  let deleteEndIso = horizonIso;
+  if (useDayScope) {
+    deleteStartIso = maxIso(dayStartIn, nowIso);
+    deleteEndIso = minIso(dayEndIn, horizonIso);
+  }
+
   const allRowsRaw = await db.all(
     `SELECT * FROM tasks WHERE user_id = ? AND end_time >= ? AND start_time <= ? ORDER BY start_time ASC`,
     uid,
@@ -671,8 +727,11 @@ async function runScheduleRebalanceCore(db, uid, options = {}) {
   for (const row of allRows) {
     const rowType = (row.type || 'working').toLowerCase();
     const rowStatus = (row.status || '').toLowerCase();
-    if (['working', 'goal', 'freetime', 'free'].includes(rowType) && rowStatus !== 'completed') {
-      continue;
+    const isFlexType = ['working', 'goal', 'freetime', 'free'].includes(rowType);
+    if (isFlexType && rowStatus !== 'completed') {
+      if (isReplaceablePlannerFlexibleRow(row, activeUrl)) {
+        continue;
+      }
     }
     currentEvents.push({
       id: row.external_id || String(row.id),
@@ -745,22 +804,37 @@ async function runScheduleRebalanceCore(db, uid, options = {}) {
     };
   }
 
-  await db.run(
-    `DELETE FROM tasks
-     WHERE user_id = ?
-       AND start_time >= ?
-       AND start_time <= ?
-       AND lower(type) IN ('working', 'goal', 'freetime', 'free')
-       AND lower(COALESCE(status, '')) != 'completed'
-       AND (COALESCE(source_url, '') = ? OR COALESCE(planner_source_url, '') = ?)`,
-    uid,
-    nowIso,
-    horizonIso,
-    activeUrl,
-    activeUrl,
-  );
+  const idsToDelete = [];
+  for (const row of allRows) {
+    if (!isReplaceablePlannerFlexibleRow(row, activeUrl)) continue;
+    if (!intervalOverlapsIso(row.start_time, row.end_time, deleteStartIso, deleteEndIso)) continue;
+    idsToDelete.push(row.id);
+  }
+  if (idsToDelete.length > 0) {
+    const placeholders = idsToDelete.map(() => '?').join(', ');
+    await db.run(
+      `DELETE FROM tasks WHERE user_id = ? AND id IN (${placeholders})`,
+      uid,
+      ...idsToDelete,
+    );
+  }
 
-  const suggested = planData.suggested_tasks || [];
+  let suggested = planData.suggested_tasks || [];
+  if (useDayScope) {
+    suggested = suggested.filter((t) => {
+      const s = t && t.start;
+      const e = t && t.end;
+      if (typeof s !== 'string' || typeof e !== 'string') return false;
+      return intervalOverlapsIso(s, e, deleteStartIso, deleteEndIso);
+    });
+  }
+
+  const aiMetaJson = JSON.stringify({
+    source: 'ai_generated',
+    pushable: true,
+    locked: false,
+  });
+
   for (const task of suggested) {
     const ttype = normalizePlannerTaskType(task.type);
     let plannerSourceUrl = null;
@@ -775,8 +849,8 @@ async function runScheduleRebalanceCore(db, uid, options = {}) {
       plannerSourceUrl = activeUrl;
     }
     await db.run(
-      `INSERT INTO tasks (user_id, external_id, title, description, start_time, end_time, type, planner_source_url, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Accepted')`,
+      `INSERT INTO tasks (user_id, external_id, title, description, start_time, end_time, type, planner_source_url, status, ai_meta)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Accepted', ?)`,
       uid,
       task.id || null,
       task.title,
@@ -785,6 +859,7 @@ async function runScheduleRebalanceCore(db, uid, options = {}) {
       task.end,
       ttype,
       plannerSourceUrl,
+      aiMetaJson,
     );
   }
 
@@ -797,7 +872,11 @@ async function runScheduleRebalanceCore(db, uid, options = {}) {
       motivation,
       inserted: suggested.length,
       assignments: planData.assignments || [],
-      meta: planData.meta || {},
+      meta: {
+        ...(planData.meta || {}),
+        rebalance_deleted_ids: idsToDelete.length,
+        rebalance_scope: useDayScope ? 'day' : 'full',
+      },
       tasks: tasks.map(mapTaskRowToApi),
     },
   };
@@ -1871,6 +1950,8 @@ app.post('/api/schedule/rebalance', async (req, res) => {
       motivation: req.body?.motivation,
       horizon_days: req.body?.horizon_days,
       timezone: req.body?.timezone,
+      day_start_iso: req.body?.day_start_iso,
+      day_end_iso: req.body?.day_end_iso,
     });
     if (!result.ok) {
       if (result.status === 404) {

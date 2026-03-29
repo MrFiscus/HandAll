@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { toast } from "sonner";
+import { format, parse, startOfDay, endOfDay } from "date-fns";
 import { api } from "../utils/api";
 
 export interface CalendarAiMeta {
@@ -8,7 +9,10 @@ export interface CalendarAiMeta {
   confidence?: number;
   subtype?: string;
   reason?: string;
+  /** manual | imported | ai_generated | cache */
   source?: string;
+  locked?: boolean;
+  pushable?: boolean;
 }
 
 export interface CalendarEvent {
@@ -97,6 +101,10 @@ export interface AppState {
   pendingSuggestions: SuggestedTask[];
   isSetupComplete: boolean;
   lastMotivation: number;
+  /** YYYY-MM-DD — calendar day used for motivation rebalance (synced from WeeklyCalendar). */
+  calendarFocusDateIso: string;
+  setCalendarFocusDateIso: (iso: string) => void;
+  motivationRebalancePending: boolean;
   lastCalendarSync: Date | null;
   apiLoaded: boolean;
   isFullScreen: boolean;
@@ -191,6 +199,8 @@ export const useAppStore = create<AppState>()(
       pendingSuggestions: [],
       isSetupComplete: false,
       lastMotivation: 50,
+      calendarFocusDateIso: format(new Date(), "yyyy-MM-dd"),
+      motivationRebalancePending: false,
       lastCalendarSync: null,
       apiLoaded: false,
       isFullScreen: false,
@@ -216,6 +226,8 @@ export const useAppStore = create<AppState>()(
           pendingSuggestions: [],
           isSetupComplete: false,
           lastMotivation: 50,
+          calendarFocusDateIso: format(new Date(), "yyyy-MM-dd"),
+          motivationRebalancePending: false,
           lastCalendarSync: null,
           apiLoaded: false,
           isFullScreen: false,
@@ -224,6 +236,11 @@ export const useAppStore = create<AppState>()(
           burnoutPromptPending: false,
           burnoutSnoozedUntil: 0,
         }),
+
+      setCalendarFocusDateIso: (iso) => {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return;
+        set({ calendarFocusDateIso: iso });
+      },
 
       loadAppData: async () => {
         try {
@@ -415,14 +432,20 @@ export const useAppStore = create<AppState>()(
 
       setMotivation: async (level) => {
         const m = Math.max(0, Math.min(100, Math.round(level)));
-        set({ lastMotivation: m });
+        set({ lastMotivation: m, motivationRebalancePending: true });
         try {
           await api.patchMotivation(m);
           const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          const focus = get().calendarFocusDateIso || format(new Date(), "yyyy-MM-dd");
+          const localDay = parse(focus, "yyyy-MM-dd", new Date());
+          const dayStartIso = startOfDay(localDay).toISOString();
+          const dayEndIso = endOfDay(localDay).toISOString();
           const result = await api.rebalanceSchedule({
             motivation: m,
             horizonDays: 7,
             timezone: tz,
+            dayStartIso,
+            dayEndIso,
           });
           if (result.success) {
             set({
@@ -437,6 +460,8 @@ export const useAppStore = create<AppState>()(
           }
         } catch (e) {
           console.error("setMotivation / rebalance:", e);
+        } finally {
+          set({ motivationRebalancePending: false });
         }
         try {
           const p = get().userProfile;
@@ -595,6 +620,7 @@ export const useAppStore = create<AppState>()(
         state.events = (state.events || []).map(normalizeCalendarEvent);
         state.pendingSuggestions = (state.pendingSuggestions || []).map(normalizeSuggestedTask);
         state.planningItems = [];
+        state.motivationRebalancePending = false;
         state.lastCalendarSync = state.lastCalendarSync
           ? ensureDate(state.lastCalendarSync as unknown as string | Date)
           : null;

@@ -3,7 +3,8 @@
   "private": true,
   "scripts": {
     "setup": "npm install && npm --prefix frontend install && npm --prefix backend install && powershell -ExecutionPolicy Bypass -File scripts\\setup-ai.ps1",
-    "dev": "concurrently -n \"API,WEB,AI\" -c \"blue,green,magenta\" \"npm run dev:api\" \"npm run dev:web\" \"npm run dev:ai\"",
+    "dev": "concurrently -n \"API,WEB,AI\" -c \"blue,green,magenta\" \"npm run dev:api\" \"npm run dev:web:wait\" \"npm run dev:ai\"",
+    "dev:web:wait": "wait-on -t 120000 http://127.0.0.1:3001 && npm run dev:web",
     "build": "npm --prefix frontend run build",
     "serve": "npm --prefix backend start",
     "start": "npm run dev",
@@ -16,6 +17,7 @@
     "start:ai": "npm run dev:ai"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "wait-on": "^8.0.1"
   }
 }

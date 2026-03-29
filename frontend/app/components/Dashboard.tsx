@@ -38,7 +38,13 @@ export default function Dashboard() {
     lastMotivation,
     setMotivation,
     isFullScreen,
+    motivationRebalancePending,
   } = useAppStore();
+
+  const [draftMotivation, setDraftMotivation] = useState(lastMotivation);
+  useEffect(() => {
+    setDraftMotivation(lastMotivation);
+  }, [lastMotivation]);
 
   const [viewMode, setViewMode] = useState<"day" | "week">("day");
   const [showAddEvent, setShowAddEvent] = useState(false);
@@ -272,13 +278,13 @@ export default function Dashboard() {
             <div className="p-8 rounded-[2rem] bg-white/[0.01] border border-white/[0.03] flex flex-col items-center gap-6 backdrop-blur-sm">
               <div className="flex flex-col items-center">
                 <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center text-3xl">
-                  {lastMotivation <= 20
+                  {draftMotivation <= 20
                     ? "😴"
-                    : lastMotivation <= 40
+                    : draftMotivation <= 40
                       ? "☕"
-                      : lastMotivation <= 60
+                      : draftMotivation <= 60
                         ? "🧘"
-                        : lastMotivation <= 80
+                        : draftMotivation <= 80
                           ? "🚀"
                           : "⚡"}
                 </div>
@@ -287,23 +293,27 @@ export default function Dashboard() {
               <div className="h-32 flex items-center justify-center mt-4">
                 <Slider
                   orientation="vertical"
-                  value={[lastMotivation]}
-                  onValueChange={(v) => setMotivation(v[0])}
+                  value={[draftMotivation]}
+                  onValueChange={(v) => setDraftMotivation(v[0])}
+                  onValueCommit={(v) => {
+                    void setMotivation(v[0]);
+                  }}
                   max={100}
                   step={5}
-                  className="h-full"
+                  disabled={motivationRebalancePending}
+                  className={cn("h-full", motivationRebalancePending && "opacity-60 pointer-events-none")}
                 />
               </div>
 
               <div className="text-center font-black h-8 flex items-center mt-4">
                 <span className="text-lg text-primary uppercase tracking-tighter leading-tight">
-                  {lastMotivation <= 20
+                  {draftMotivation <= 20
                     ? "Deep Chill"
-                    : lastMotivation <= 40
+                    : draftMotivation <= 40
                       ? "Chill"
-                      : lastMotivation <= 60
+                      : draftMotivation <= 60
                         ? "Balanced"
-                        : lastMotivation <= 80
+                        : draftMotivation <= 80
                           ? "Lock-in"
                           : "Deep Lock-in"}
                 </span>

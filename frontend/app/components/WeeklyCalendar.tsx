@@ -73,7 +73,8 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
     refreshSuggestion,
     confirmAllSuggestions,
     isFullScreen,
-    setIsFullScreen
+    setIsFullScreen,
+    setCalendarFocusDateIso,
   } = useAppStore();
   
   const [internalViewMode, internalSetViewMode] = useState<"week" | "day">("week");
@@ -84,6 +85,10 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
   const [focusedDay, setFocusedDay] = useState(new Date());
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [winHeight, setWinHeight] = useState(typeof window !== "undefined" ? window.innerHeight : 800);
+
+  useEffect(() => {
+    setCalendarFocusDateIso(format(focusedDay, "yyyy-MM-dd"));
+  }, [focusedDay, setCalendarFocusDateIso]);
 
   useEffect(() => {
     const handleResize = () => setWinHeight(window.innerHeight);

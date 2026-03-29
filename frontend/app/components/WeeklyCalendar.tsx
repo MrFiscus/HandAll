@@ -9,17 +9,14 @@ import {
   setMinutes,
   differenceInMinutes,
   addMinutes,
+  isPast,
 } from "date-fns";
 import { 
   ChevronLeft, 
   ChevronRight, 
-  Clock, 
-  Plus, 
   Trash2, 
   CheckCircle2, 
-  Check, 
-  X, 
-  RefreshCw
+  Sparkles
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { useAppStore, CalendarEvent, SuggestedTask } from "../store/useAppStore";
@@ -44,7 +41,7 @@ import { toast } from "sonner";
 
 // --- Constants ---
 const DAYS_IN_WEEK = 7;
-const HOUR_HEIGHT = 50; // Balanced height: not too big, not too small
+const HOUR_HEIGHT = 100; 
 
 // --- Types ---
 interface PositionedItem extends CalendarEvent {
@@ -62,12 +59,7 @@ interface DragState {
   isSuggestion?: boolean;
 }
 
-interface WeeklyCalendarProps {
-  viewMode?: "week" | "day";
-  setViewMode?: (mode: "week" | "day") => void;
-}
-
-export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode: externalSetViewMode }: WeeklyCalendarProps) {
+export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode: externalSetViewMode }: { viewMode?: "week" | "day", setViewMode?: (mode: "week" | "day") => void }) {
   const { 
     events, 
     userProfile,
@@ -77,7 +69,6 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
     pendingSuggestions,
     updatePendingSuggestionStatus,
     updatePendingSuggestion,
-    removePendingSuggestion,
     refreshSuggestion,
     confirmAllSuggestions
   } = useAppStore();
@@ -86,35 +77,29 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
   const viewMode = externalViewMode ?? internalViewMode;
   const setViewMode = externalSetViewMode ?? internalSetViewMode;
 
-  const [currentWeekStart, setCurrentWeekStart] = useState(
-    startOfWeek(new Date(), { weekStartsOn: 0 })
-  );
+  const [currentWeekStart, setCurrentWeekStart] = useState(startOfWeek(new Date(), { weekStartsOn: 0 }));
   const [focusedDay, setFocusedDay] = useState(new Date());
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const { startHour, visibleHours } = useMemo(() => {
     const wakeH = parseInt(userProfile.wakeTime.split(":")[0]) || 7;
     const sleepH = parseInt(userProfile.sleepTime.split(":")[0]) || 23;
-    const start = Math.max(0, Math.min(6, wakeH - 1));
-    const end = Math.min(24, Math.max(24, sleepH + 1));
+    const start = Math.max(0, wakeH - 1);
+    const end = Math.min(24, sleepH + 1);
     const hours = [];
-    for (let i = start; i <= end; i++) hours.push(i % 24);
+    for (let i = start; i < end; i++) hours.push(i);
     return { startHour: start, visibleHours: hours };
   }, [userProfile.wakeTime, userProfile.sleepTime]);
 
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragPreview, setDragPreview] = useState<DragState | null>(null);
-
   const [showDialog, setShowDialog] = useState(false);
+  const [showSuggestionDialog, setShowSuggestionDialog] = useState(false);
   const [dialogMode, setDialogMode] = useState<"create" | "edit">("create");
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
-  const [form, setForm] = useState({
-    title: "",
-    date: format(new Date(), "yyyy-MM-dd"),
-    startTime: "09:00",
-    endTime: "10:00",
-    type: "assignment" as CalendarEvent["type"],
-  });
+  const [selectedSuggestion, setSelectedSuggestion] = useState<SuggestedTask | null>(null);
+  
+  const [form, setForm] = useState({ title: "", date: format(new Date(), "yyyy-MM-dd"), startTime: "09:00", endTime: "10:00", type: "assignment" as CalendarEvent["type"] });
 
   const visibleDays = useMemo(() => {
     if (viewMode === "day") return [focusedDay];
@@ -125,7 +110,7 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
     if (scrollContainerRef.current) {
       const now = new Date();
       const currentMinutes = now.getHours() * 60 + now.getMinutes();
-      const scrollPos = ((currentMinutes / 60) - startHour) * HOUR_HEIGHT - 100;
+      const scrollPos = ((currentMinutes / 60) - startHour) * HOUR_HEIGHT - 150;
       scrollContainerRef.current.scrollTop = Math.max(0, scrollPos);
     }
   }, [startHour]);
@@ -136,38 +121,26 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
       setCurrentWeekStart(startOfWeek(today, { weekStartsOn: 0 }));
       setFocusedDay(today);
     } else {
-      if (viewMode === "week") {
-        setCurrentWeekStart(prev => addDays(prev, dir === "next" ? 7 : -7));
-      } else {
-        setFocusedDay(prev => addDays(prev, dir === "next" ? 1 : -1));
-      }
+      if (viewMode === "week") setCurrentWeekStart(prev => addDays(prev, dir === "next" ? 7 : -7));
+      else setFocusedDay(prev => addDays(prev, dir === "next" ? 1 : -1));
     }
   };
 
   const getPositionedItems = (day: Date): PositionedItem[] => {
-    const dayStart = startOfDay(day);
-    const dayEnd = addDays(dayStart, 1);
+    const dayStart = startOfDay(day), dayEnd = addDays(dayStart, 1);
     const combinedItems: PositionedItem[] = [
       ...events.map(e => ({ ...e, isSuggestion: false })),
-      ...pendingSuggestions
-        .filter(s => s.status !== "rejected")
-        .map(s => ({ ...s, isSuggestion: true }))
+      ...pendingSuggestions.filter(s => s.status !== "rejected").map(s => ({ ...s, isSuggestion: true }))
     ];
 
     const dayItems = combinedItems
       .filter(item => {
-        const s = new Date(item.start);
-        const en = new Date(item.end);
+        const s = new Date(item.start), en = new Date(item.end);
         return s < dayEnd && en > dayStart;
       })
       .map(item => {
-        const s = new Date(item.start);
-        const en = new Date(item.end);
-        return {
-          ...item,
-          vStart: s < dayStart ? dayStart : s,
-          vEnd: en > dayEnd ? dayEnd : en
-        };
+        const s = new Date(item.start), en = new Date(item.end);
+        return { ...item, vStart: s < dayStart ? dayStart : s, vEnd: en > dayEnd ? dayEnd : en };
       })
       .sort((a, b) => a.vStart.getTime() - b.vStart.getTime());
 
@@ -201,190 +174,165 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
     const minutes = ((e.clientY - rect.top) / HOUR_HEIGHT) * 60;
     const snapped = Math.floor(minutes / 30) * 30 + (startHour * 60);
     setDialogMode("create");
-    setForm({
-      title: "",
-      date: format(day, "yyyy-MM-dd"),
-      startTime: format(setMinutes(setHours(new Date(), Math.floor(snapped/60)), snapped%60), "HH:mm"),
-      endTime: format(setMinutes(setHours(new Date(), Math.floor((snapped+60)/60)), (snapped+60)%60), "HH:mm"),
-      type: "assignment"
-    });
+    setForm({ title: "", date: format(day, "yyyy-MM-dd"), startTime: format(setMinutes(setHours(new Date(), Math.floor(snapped/60)), snapped%60), "HH:mm"), endTime: format(setMinutes(setHours(new Date(), Math.floor((snapped+60)/60)), (snapped+60)%60), "HH:mm"), type: "assignment" });
     setShowDialog(true);
   };
 
   const onEventClick = (e: React.MouseEvent, item: PositionedItem) => {
     e.stopPropagation();
-    if (item.isSuggestion) return;
-    if (e.shiftKey) {
-      updateEvent(item.id, { completed: !item.completed });
-      toast.success(item.completed ? "Task reactivated" : "Task completed!");
+    if (item.isSuggestion) {
+      const sug = pendingSuggestions.find(s => s.id === item.id);
+      if (sug) { setSelectedSuggestion(sug); setShowSuggestionDialog(true); }
       return;
     }
     setDialogMode("edit");
     setSelectedEventId(item.id);
-    setForm({
-      title: item.title,
-      date: format(new Date(item.start), "yyyy-MM-dd"),
-      startTime: format(new Date(item.start), "HH:mm"),
-      endTime: format(new Date(item.end), "HH:mm"),
-      type: item.type
-    });
+    setForm({ title: item.title, date: format(new Date(item.start), "yyyy-MM-dd"), startTime: format(new Date(item.start), "HH:mm"), endTime: format(new Date(item.end), "HH:mm"), type: item.type });
     setShowDialog(true);
   };
 
   const onDragStart = (e: React.DragEvent, id: string) => {
     setDraggingId(id);
     e.dataTransfer.effectAllowed = "move";
-    const img = new Image();
-    img.src = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+    const img = new Image(); img.src = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
     e.dataTransfer.setDragImage(img, 0, 0);
   };
 
   const onDragOver = (e: React.DragEvent, day: Date) => {
-    e.preventDefault();
-    if (!draggingId) return;
+    e.preventDefault(); if (!draggingId) return;
     const item = pendingSuggestions.find(s => s.id === draggingId) || events.find(ev => ev.id === draggingId);
     if (!item) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const minutes = ((e.clientY - rect.top) / HOUR_HEIGHT) * 60;
     const snapped = Math.round(minutes / 15) * 15 + (startHour * 60);
     const duration = differenceInMinutes(new Date(item.end), new Date(item.start));
-    const newStart = startOfDay(day);
-    newStart.setHours(Math.floor(snapped / 60));
-    newStart.setMinutes(snapped % 60);
+    const newStart = startOfDay(day); newStart.setHours(Math.floor(snapped / 60)); newStart.setMinutes(snapped % 60);
     setDragPreview({ id: draggingId, day, start: newStart, end: addMinutes(newStart, duration), isSuggestion: !!pendingSuggestions.find(s => s.id === draggingId) });
   };
 
   const onDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     if (draggingId && dragPreview) {
-      try {
-        if (dragPreview.isSuggestion) updatePendingSuggestion(draggingId, { start: dragPreview.start, end: dragPreview.end });
-        else await updateEvent(draggingId, { start: dragPreview.start, end: dragPreview.end });
-        toast.success("Item moved");
-      } catch { toast.error("Failed to move item"); }
+      if (dragPreview.isSuggestion) updatePendingSuggestion(draggingId, { start: dragPreview.start, end: dragPreview.end });
+      else await updateEvent(draggingId, { start: dragPreview.start, end: dragPreview.end });
+      toast.success("Flow adjusted.");
     }
     setDraggingId(null); setDragPreview(null);
   };
 
   const saveEvent = async () => {
-    const start = new Date(`${form.date}T${form.startTime}`);
-    const end = new Date(`${form.date}T${form.endTime}`);
-    if (end <= start) return toast.error("End time must be after start time");
-    try {
-      if (dialogMode === "create") await addEvent({ title: form.title, start, end, type: form.type, xpValue: form.type === "working" ? 50 : 10, completed: false });
-      else if (selectedEventId) await updateEvent(selectedEventId, { title: form.title, start, end, type: form.type });
-      setShowDialog(false);
-    } catch { toast.error("Error saving event"); }
+    const start = new Date(`${form.date}T${form.startTime}`), end = new Date(`${form.date}T${form.endTime}`);
+    if (end <= start) return toast.error("Time must flow forward.");
+    if (dialogMode === "create") await addEvent({ title: form.title, start, end, type: form.type, xpValue: 10, completed: false });
+    else if (selectedEventId) await updateEvent(selectedEventId, { title: form.title, start, end, type: form.type });
+    setShowDialog(false);
   };
 
   const getEventStyle = (e: CalendarEvent | DragState, day: Date, col: number = 0, total: number = 1) => {
     const start = new Date(e.start), end = new Date(e.end);
     const dayStart = startOfDay(day), dayEnd = addDays(dayStart, 1);
-    const effectiveStart = start < dayStart ? dayStart : start;
-    const effectiveEnd = end > dayEnd ? dayEnd : end;
+    const effectiveStart = start < dayStart ? dayStart : start, effectiveEnd = end > dayEnd ? dayEnd : end;
     const startMinutes = (effectiveStart.getHours() * 60 + effectiveStart.getMinutes());
     const top = ((startMinutes / 60) - startHour) * HOUR_HEIGHT;
-    const height = Math.max(differenceInMinutes(effectiveEnd, effectiveStart) / 60 * HOUR_HEIGHT, 28);
+    const height = Math.max(differenceInMinutes(effectiveEnd, effectiveStart) / 60 * HOUR_HEIGHT, 40);
+    
+    // Step 4: Natural Layering - Stacking Logic
+    // Overlapping events get 85% width and offset by column index
+    const width = total > 1 ? 85 : 94;
+    const offset = total > 1 ? (col * (15 / (total - 1))) : 3;
+
     return {
-      top: `${top}px`,
-      height: `${height}px`,
-      left: `${(col / total) * 100}%`,
-      width: `${(1 / total) * 100 - 3}%`, // More horizontal gap
-      marginLeft: '1.5%', // Center in column space
+      top: `${top}px`, height: `${height}px`,
+      left: `${offset}%`,
+      width: `${width}%`,
+      zIndex: 10 + col, // Higher column index = on top
     };
   };
 
-  const getColor = (type: string) => {
+  const getColor = (type: string, date: Date, completed?: boolean) => {
+    const now = new Date();
+    const isPastEvent = isPast(new Date(date)) && !isSameDay(new Date(date), now);
+    
     const map: Record<string, string> = {
-      class: "bg-blue-500/10 border-blue-500/50 text-blue-700",
-      assignment: "bg-red-500/10 border-red-500/50 text-red-700",
-      working: "bg-orange-500/10 border-orange-500/50 text-orange-700",
-      goal: "bg-green-500/10 border-green-500/50 text-green-700",
-      freetime: "bg-purple-500/10 border-purple-500/50 text-purple-700",
-      external: "bg-gray-500/10 border-gray-500/50 text-gray-700",
+      working: "bg-[#F5DD90] text-[#0F2027]",
+      class: "bg-[#F5DD90] text-[#0F2027]",
+      freetime: "bg-[#883677] text-[#DAF1DE]",
+      goal: "bg-[#F68E5F] text-[#0F2027]",
+      assignment: "bg-[#911818] text-[#DAF1DE]",
+      external: "bg-[#911818] text-[#DAF1DE]",
     };
-    return map[type] || "bg-gray-500/10 border-gray-500/50 text-gray-700";
+    
+    const base = map[type] || "bg-[#28623A]/40 text-[#DAF1DE]";
+    return cn(base, (isPastEvent || completed) && "opacity-20 grayscale");
   };
 
   const acceptedCount = pendingSuggestions.filter(s => s.status === "accepted").length;
 
   return (
-    <div className="flex flex-col h-full bg-card border rounded-xl overflow-hidden shadow-sm">
-      <div className="flex items-center justify-between p-3 border-b bg-muted/5">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center border rounded-lg overflow-hidden">
-            <Button variant="ghost" size="sm" className="h-8 rounded-none px-3 font-bold border-r" onClick={() => navigate("today")}>Today</Button>
-            <Button variant="ghost" size="icon" className="h-8 rounded-none border-r w-8" onClick={() => navigate("prev")}><ChevronLeft className="h-4 w-4"/></Button>
-            <Button variant="ghost" size="icon" className="h-8 rounded-none w-8" onClick={() => navigate("next")}><ChevronRight className="h-4 w-4"/></Button>
+    <div className="flex flex-col h-full bg-transparent font-sans">
+      <div className="flex items-center justify-between mb-16">
+        <div className="flex items-center gap-12">
+          <div className="flex items-center gap-2">
+            <button onClick={() => navigate("prev")} className="p-4 rounded-full hover:bg-white/5 transition-all"><ChevronLeft className="h-6 w-6 opacity-30" /></button>
+            <h2 className="text-5xl font-medium tracking-tighter">{viewMode === "week" ? format(currentWeekStart, "MMMM") : format(focusedDay, "MMMM d")}</h2>
+            <button onClick={() => navigate("next")} className="p-4 rounded-full hover:bg-white/5 transition-all"><ChevronRight className="h-6 w-6 opacity-30" /></button>
           </div>
-          <h2 className="text-lg font-bold">
-            {viewMode === "week" ? format(currentWeekStart, "MMMM yyyy") : format(focusedDay, "MMMM d, yyyy")}
-          </h2>
-        </div>
-        <div className="flex items-center gap-2">
-          {acceptedCount > 0 && (
-            <Button size="sm" onClick={confirmAllSuggestions} className="font-bold uppercase tracking-widest text-[9px] h-7 bg-green-600 hover:bg-green-700">
-              Confirm ({acceptedCount})
-            </Button>
-          )}
-          <div className="flex bg-muted p-0.5 rounded-lg">
-            <Button variant={viewMode === "day" ? "secondary" : "ghost"} size="sm" className="h-6 px-2 text-[10px] font-bold" onClick={() => setViewMode("day")}>Day</Button>
-            <Button variant={viewMode === "week" ? "secondary" : "ghost"} size="sm" className="h-6 px-2 text-[10px] font-bold" onClick={() => setViewMode("week")}>Week</Button>
+          
+          <div className="flex bg-white/[0.03] p-1.5 rounded-full backdrop-blur-xl border border-white/5">
+            <button onClick={() => setViewMode("day")} className={cn("h-11 px-10 text-[11px] font-black uppercase tracking-[0.2em] transition-all rounded-full", viewMode === "day" ? "bg-[#DAF1DE] text-[#0F2027] shadow-2xl" : "text-[#DAF1DE]/40 hover:text-[#DAF1DE]")}>Day</button>
+            <button onClick={() => setViewMode("week")} className={cn("h-11 px-10 text-[11px] font-black uppercase tracking-[0.2em] transition-all rounded-full", viewMode === "week" ? "bg-[#DAF1DE] text-[#0F2027] shadow-2xl" : "text-[#DAF1DE]/40 hover:text-[#DAF1DE]")}>Week</button>
           </div>
         </div>
+
+        {acceptedCount > 0 && (
+          <button onClick={confirmAllSuggestions} className="h-16 px-12 rounded-full bg-primary text-primary-foreground font-black uppercase tracking-widest text-[11px] shadow-4xl hover:scale-105 transition-all">
+            Confirm Flow ({acceptedCount})
+          </button>
+        )}
       </div>
 
-      <div className="grid grid-cols-[50px_1fr] border-b bg-muted/10">
-        <div className="border-r" />
-        <div className={cn("grid h-12", viewMode === "week" ? "grid-cols-7" : "grid-cols-1")}>
+      <div className="grid grid-cols-[120px_1fr] mb-12">
+        <div />
+        <div className={cn("grid", viewMode === "week" ? "grid-cols-7" : "grid-cols-1")}>
           {visibleDays.map(day => (
-            <div key={day.toISOString()} className={cn("flex flex-col items-center justify-center border-r last:border-r-0", isSameDay(day, new Date()) && "bg-primary/[0.03]")}>
-              <span className={cn("text-[9px] font-black uppercase tracking-tighter", isSameDay(day, new Date()) ? "text-primary" : "text-muted-foreground")}>{format(day, "EEE")}</span>
-              <span className={cn("text-sm font-black", isSameDay(day, new Date()) ? "text-primary" : "text-foreground")}>{format(day, "d")}</span>
+            <div key={day.toISOString()} className={cn("flex flex-col items-center justify-center transition-all", isSameDay(day, new Date()) ? "scale-110" : "opacity-30")}>
+              <span className="text-[11px] font-bold uppercase tracking-[0.4em] mb-3 opacity-40">{format(day, "EEE")}</span>
+              <span className="text-4xl font-light tracking-tighter">{format(day, "d")}</span>
+              {isSameDay(day, new Date()) && <div className="h-1.5 w-1.5 rounded-full bg-primary mt-4" />}
             </div>
           ))}
         </div>
       </div>
 
-      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto relative bg-background select-none">
-        <div className="grid grid-cols-[50px_1fr] min-h-0">
-          <div className="border-r bg-muted/5">
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto relative select-none pr-6 custom-scrollbar overflow-x-hidden">
+        <div className="grid grid-cols-[120px_1fr]">
+          <div className="pr-12">
             {visibleHours.map(h => (
-              <div key={h} className="h-[50px] text-[9px] font-medium text-muted-foreground text-right pr-2 pt-1 border-b border-transparent">
-                {h === 0 && startHour === 0 ? "" : format(setHours(new Date(), h), "ha")}
+              <div key={h} className="h-[100px] text-[11px] font-bold text-muted-foreground/40 text-right uppercase tracking-[0.3em] border-b border-white/[0.02]">
+                {format(setHours(new Date(), h), "ha")}
               </div>
             ))}
           </div>
-          <div className={cn("relative grid", viewMode === "week" ? "grid-cols-7" : "grid-cols-1")} style={{ height: `${visibleHours.length * HOUR_HEIGHT}px` }}>
+
+          <div className={cn("relative grid gap-8", viewMode === "week" ? "grid-cols-7" : "grid-cols-1")} style={{ height: `${visibleHours.length * HOUR_HEIGHT}px` }}>
             {visibleDays.map(day => {
               const items = getPositionedItems(day);
               return (
-                <div key={day.toISOString()} className={cn("relative border-r last:border-r-0 h-full", isSameDay(day, new Date()) && "bg-primary/[0.01]")}
-                     onClick={(e) => onGridClick(day, e)} onDragOver={(e) => onDragOver(e, day)} onDrop={onDrop}>
-                  {visibleHours.map(h => <div key={h} className="h-[50px] border-b border-border/30" />)}
+                <div key={day.toISOString()} className={cn("relative h-full transition-all", isSameDay(day, new Date()) ? "bg-primary/[0.03] rounded-[3rem]" : "")} onClick={(e) => onGridClick(day, e)} onDragOver={(e) => onDragOver(e, day)} onDrop={onDrop}>
+                  {visibleHours.map(h => <div key={h} className="h-[100px] border-b border-white/5" />)}
+
                   {items.map(item => {
-                    const isDragging = draggingId === item.id, style = getEventStyle(item, day, item.column, item.totalColumns);
+                    const style = getEventStyle(item, day, item.column, item.totalColumns);
                     if (parseFloat(style.top) < 0 || parseFloat(style.top) > visibleHours.length * HOUR_HEIGHT) return null;
                     return (
                       <div key={item.id} draggable onDragStart={(e) => onDragStart(e, item.id)} onDragEnd={() => {setDraggingId(null); setDragPreview(null);}}
-                           className={cn("event-block absolute rounded-md border-l-2 p-1 text-[10px] leading-tight shadow-sm z-10 transition-all cursor-pointer hover:z-20 group", getColor(item.type), isDragging && "opacity-20", item.completed && "opacity-40 grayscale-[0.5]", item.isSuggestion && "border-dashed border-2 opacity-70", item.status === "accepted" && "border-green-500 bg-green-500/10")}
+                           className={cn("event-block absolute rounded-[2rem] p-6 text-[11px] leading-snug transition-all duration-500 cursor-pointer group select-none shadow-2xl border-none", getColor(item.type, item.start, item.completed), item.isSuggestion && "bg-transparent border-2 border-dashed border-white/10 text-white/40 backdrop-blur-md")}
                            style={style} onClick={(e) => onEventClick(e, item)}>
-                        <div className={cn("font-bold truncate", item.completed && "line-through")}>{item.title}</div>
-                        <div className="opacity-70 text-[9px] mt-0.5">{format(new Date(item.start), "h:mm")}</div>
-                        {item.isSuggestion && item.status === "pending" && (
-                          <div className="absolute top-0.5 right-0.5 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity bg-background/90 rounded border shadow-sm p-0.5">
-                            <button onClick={(e) => { e.stopPropagation(); updatePendingSuggestionStatus(item.id, "accepted"); }} className="hover:text-green-600 p-0.5"><Check className="h-2.5 w-2.5" /></button>
-                            <button onClick={(e) => { e.stopPropagation(); updatePendingSuggestionStatus(item.id, "rejected"); }} className="hover:text-orange-600 p-0.5"><X className="h-2.5 w-2.5" /></button>
-                            <button onClick={(e) => { e.stopPropagation(); refreshSuggestion(item.id); }} className="hover:text-blue-600 p-0.5"><RefreshCw className="h-2.5 w-2.5" /></button>
-                          </div>
-                        )}
+                        <div className={cn("font-light text-[15px] tracking-tight mb-1 truncate", item.completed && "opacity-40")}>{item.title}</div>
+                        <div className="text-[10px] font-medium uppercase tracking-[0.1em] opacity-40">{format(new Date(item.start), "h:mm a")}</div>
                       </div>
                     );
                   })}
-                  {dragPreview && isSameDay(dragPreview.day, day) && (
-                    <div className={cn("absolute rounded-md border-l-2 border-dashed p-1 text-[10px] shadow-lg z-50 opacity-40 pointer-events-none", getColor(events.find(e => e.id === draggingId)?.type || pendingSuggestions.find(s => s.id === draggingId)?.type || ""))}
-                         style={getEventStyle(dragPreview, day)}><div className="font-bold">{(events.find(e => e.id === draggingId) || pendingSuggestions.find(s => s.id === draggingId))?.title}</div></div>
-                  )}
                 </div>
               );
             })}
@@ -393,23 +341,28 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
         </div>
       </div>
 
+      {/* Dialogs */}
       <Dialog open={showDialog} onOpenChange={setShowDialog}>
-        <DialogContent className="sm:max-w-[360px]">
-          <DialogHeader><DialogTitle className="text-base font-bold">{dialogMode === "create" ? "Add Event" : "Edit Event"}</DialogTitle></DialogHeader>
-          <div className="grid gap-3 py-2">
-            <div className="grid gap-1"><Label className="text-xs">Title</Label><Input className="h-9 text-sm" value={form.title} onChange={e => setForm({...form, title: e.target.value})} placeholder="Session name" /></div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1"><Label className="text-xs">Start</Label><Input className="h-9 text-sm" type="time" value={form.startTime} onChange={e => setForm({...form, startTime: e.target.value})} /></div>
-              <div className="grid gap-1"><Label className="text-xs">End</Label><Input className="h-9 text-sm" type="time" value={form.endTime} onChange={e => setForm({...form, endTime: e.target.value})} /></div>
+        <DialogContent className="sm:max-w-[500px] border-none rounded-[4rem] bg-card/95 backdrop-blur-3xl shadow-4xl p-16">
+          <DialogHeader><DialogTitle className="text-5xl font-black tracking-tighter mb-12">{dialogMode === "create" ? "Focus." : "Detail."}</DialogTitle></DialogHeader>
+          <div className="space-y-12">
+            <div className="space-y-4"><Label className="ml-4">Activity</Label><Input value={form.title} onChange={e => setForm({...form, title: e.target.value})} className="h-20 bg-white/[0.02] border-none rounded-[2rem] text-2xl px-10" /></div>
+            <div className="grid grid-cols-2 gap-10">
+              <div className="space-y-4"><Label className="ml-4">Start</Label><Input type="time" value={form.startTime} onChange={e => setForm({...form, startTime: e.target.value})} className="h-20 bg-white/[0.02] border-none rounded-[2rem] px-10 text-xl font-bold" /></div>
+              <div className="space-y-4"><Label className="ml-4">End</Label><Input type="time" value={form.endTime} onChange={e => setForm({...form, endTime: e.target.value})} className="h-20 bg-white/[0.02] border-none rounded-[2rem] px-10 text-xl font-bold" /></div>
             </div>
-            <div className="grid gap-1"><Label className="text-xs">Type</Label>
-              <Select value={form.type} onValueChange={(v:any) => setForm({...form, type: v})}><SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="class">Class</SelectItem><SelectItem value="assignment">Assignment</SelectItem><SelectItem value="working">Working Task</SelectItem><SelectItem value="goal">Goal Task</SelectItem><SelectItem value="freetime">Free Time</SelectItem></SelectContent></Select>
+            <div className="flex gap-6 pt-12">
+              {dialogMode === "edit" && <Button variant="ghost" className="h-20 rounded-[2rem] text-destructive hover:bg-destructive/10 px-10" onClick={() => { removeEvent(selectedEventId!); setShowDialog(false); }}><Trash2 className="h-8 w-8" /></Button>}
+              <Button onClick={saveEvent} className="h-20 rounded-[2rem] flex-1 font-black uppercase tracking-[0.2em] text-[12px]">Set Path</Button>
             </div>
           </div>
-          <DialogFooter className="flex justify-between w-full pt-2">
-            {dialogMode === "edit" ? <Button variant="destructive" size="sm" onClick={() => { removeEvent(selectedEventId!); setShowDialog(false); }}><Trash2 className="h-4 w-4"/></Button> : <div/>}
-            <div className="flex gap-2"><Button variant="ghost" size="sm" onClick={() => setShowDialog(false)}>Cancel</Button><Button size="sm" onClick={saveEvent}>{dialogMode === "create" ? "Add" : "Save"}</Button></div>
-          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showSuggestionDialog} onOpenChange={setShowSuggestionDialog}>
+        <DialogContent className="sm:max-w-[550px] border-none rounded-[4rem] bg-card shadow-4xl p-0 overflow-hidden">
+          <div className="bg-primary/5 p-16"><div className="flex items-center gap-4 mb-6"><Sparkles className="text-primary h-8 w-8" /><span className="text-[12px] font-black uppercase tracking-[0.4em] opacity-40 text-primary">Suggestion</span></div><h2 className="text-5xl font-black tracking-tighter leading-none">{selectedSuggestion?.title}</h2></div>
+          <div className="p-16 space-y-12"><p className="text-xl opacity-50 leading-relaxed font-medium">A space intelligently carved out for your focus and growth.</p><div className="grid gap-6"><Button onClick={() => { if (selectedSuggestion) { updatePendingSuggestionStatus(selectedSuggestion.id, "accepted"); setShowSuggestionDialog(false); } }} className="h-20 rounded-[2rem] font-black uppercase tracking-[0.2em] text-[12px]">Add to my day</Button><div className="grid grid-cols-2 gap-6"><Button variant="ghost" onClick={() => { if (selectedSuggestion) { refreshSuggestion(selectedSuggestion.id); setShowSuggestionDialog(false); } }} className="h-16 rounded-[1.5rem] font-bold bg-white/5">Refresh</Button><Button variant="ghost" onClick={() => { if (selectedSuggestion) { updatePendingSuggestionStatus(selectedSuggestion.id, "rejected"); setShowSuggestionDialog(false); } }} className="h-16 rounded-[1.5rem] font-bold bg-white/2 hover:bg-destructive/10 hover:text-destructive">Skip</Button></div></div></div>
         </DialogContent>
       </Dialog>
     </div>
@@ -417,17 +370,11 @@ export default function WeeklyCalendar({ viewMode: externalViewMode, setViewMode
 }
 
 function TimeIndicator({ currentWeekStart, focusedDay, viewMode, startHour }: { currentWeekStart: Date, focusedDay: Date, viewMode: "week" | "day", startHour: number }) {
-  const [now, setNow] = useState(new Date());
-  useEffect(() => { const i = setInterval(() => setNow(new Date()), 60000); return () => clearInterval(i); }, []);
+  const [now, setNow] = useState(new Date()); useEffect(() => { const i = setInterval(() => setNow(new Date()), 60000); return () => clearInterval(i); }, []);
   const top = ((now.getHours() * 60 + now.getMinutes()) / 60 - startHour) * HOUR_HEIGHT;
   if (top < 0 || top > 24 * HOUR_HEIGHT) return null;
   const left = viewMode === "week" ? (now.getDay() * (100/7)) : 0, width = viewMode === "week" ? (100/7) : 100;
   if (viewMode === "week" && (now < currentWeekStart || now >= addDays(currentWeekStart, 7))) return null;
   if (viewMode === "day" && !isSameDay(now, focusedDay)) return null;
-  return (
-    <div className="absolute right-0 pointer-events-none z-30 flex items-center" style={{ top: `${top}px`, left: `${left}%`, width: `${width}%` }}>
-      <div className="h-1.5 w-1.5 rounded-full bg-red-500 -ml-0.5" />
-      <div className="h-[1px] flex-1 bg-red-500" />
-    </div>
-  );
+  return (<div className="absolute right-0 pointer-events-none z-30 flex items-center" style={{ top: `${top}px`, left: `${left}%`, width: `${width}%` }}><div className="h-2.5 w-2.5 rounded-full bg-primary shadow-[0_0_20px_var(--color-primary)] -ml-1.5" /><div className="h-[1px] flex-1 bg-gradient-to-r from-primary/60 to-transparent" /></div>);
 }

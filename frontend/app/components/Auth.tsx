@@ -113,224 +113,201 @@ export default function Auth() {
 
   if (!supabase) {
     return (
-      <div className="min-h-screen bg-background px-4 py-10">
-        <div className="mx-auto flex min-h-[calc(100vh-5rem)] max-w-5xl items-center justify-center">
-          <Card className="w-full max-w-xl border-yellow-200 bg-card/95 shadow-2xl">
-            <CardHeader className="text-center">
-              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-yellow-100 text-yellow-600">
-                <AlertTriangle className="h-8 w-8" />
-              </div>
-              <CardTitle className="text-3xl font-semibold">Supabase Not Configured</CardTitle>
-              <CardDescription className="text-base leading-7">
-                Authentication needs your Supabase credentials. Add a{" "}
-                <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-sm">.env</code>{" "}
-                file inside{" "}
-                <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-sm">frontend/</code>{" "}
-                with:
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              <pre className="overflow-x-auto rounded-xl border bg-slate-950 p-4 text-left text-xs text-green-400">
-                VITE_SUPABASE_URL=your_url_here{"\n"}
-                VITE_SUPABASE_ANON_KEY=your_anon_key_here
-              </pre>
-              <Button onClick={() => window.location.reload()} className="w-full">
-                Retry Connection
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
+      <div className="min-h-screen bg-background px-4 py-10 flex items-center justify-center">
+        <Card className="w-full max-w-xl border-2 shadow-2xl">
+          <CardHeader className="text-center">
+            <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-destructive/10 text-destructive mb-4">
+              <AlertTriangle className="h-8 w-8" />
+            </div>
+            <CardTitle className="text-3xl font-bold">Supabase Missing</CardTitle>
+            <CardDescription className="text-base">
+              Please check your environment configuration.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-6">
+            <pre className="overflow-x-auto rounded-xl border bg-black p-4 text-left text-xs text-green-400 font-mono">
+              VITE_SUPABASE_URL=...{"\n"}
+              VITE_SUPABASE_ANON_KEY=...
+            </pre>
+            <Button onClick={() => window.location.reload()} className="w-full font-bold">
+              Retry Connection
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     );
   }
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 px-4 py-4 sm:py-6">
-      <div className="absolute inset-0 overflow-hidden">
-        <div className="absolute -left-20 top-10 h-72 w-72 rounded-full bg-blue-200/40 blur-3xl" />
-        <div className="absolute right-0 top-0 h-80 w-80 rounded-full bg-violet-200/50 blur-3xl" />
-        <div className="absolute bottom-0 left-1/3 h-64 w-64 rounded-full bg-cyan-100/60 blur-3xl" />
+    <div className="relative min-h-screen overflow-hidden bg-background px-4 py-4 sm:py-6 flex items-center justify-center font-plus">
+      <div className="absolute inset-0 overflow-hidden pointer-events-none opacity-20">
+        <div className="absolute -left-20 top-10 h-96 w-96 rounded-full bg-primary/20 blur-[120px]" />
+        <div className="absolute right-0 top-0 h-[500px] w-[500px] rounded-full bg-primary/10 blur-[150px]" />
+        <div className="absolute bottom-0 left-1/3 h-80 w-80 rounded-full bg-primary/15 blur-[100px]" />
       </div>
 
-      <div className="relative mx-auto flex min-h-[calc(100vh-2rem)] max-w-6xl items-center justify-center sm:min-h-[calc(100vh-3rem)]">
-        <Card className="w-full overflow-hidden border-white/70 bg-white/85 shadow-[0_24px_80px_rgba(15,23,42,0.14)] backdrop-blur lg:max-h-[calc(100vh-2rem)]">
+      <div className="relative w-full max-w-6xl">
+        <Card className="w-full overflow-hidden border-2 bg-card/50 backdrop-blur-xl shadow-2xl">
           <div className="grid lg:grid-cols-[1.05fr_0.95fr]">
-            <div className="relative overflow-hidden bg-gradient-to-br from-slate-950 via-blue-900 to-indigo-900 p-6 text-white sm:p-8">
-              <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.16),transparent_35%),radial-gradient(circle_at_bottom_right,rgba(96,165,250,0.3),transparent_40%)]" />
-              <div className="relative flex h-full flex-col justify-between gap-6">
+            <div className="relative overflow-hidden bg-muted p-8 text-foreground sm:p-12 flex flex-col justify-between gap-10">
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,var(--color-primary),transparent_40%)] opacity-5" />
+              
+              <div className="relative space-y-6">
+                <div className="inline-flex items-center gap-2 rounded-full border bg-background px-4 py-1.5 text-sm font-bold tracking-tight">
+                  <Sparkles className="h-4 w-4 text-primary" />
+                  HandAll AI
+                </div>
+
                 <div className="space-y-4">
-                  <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-sm text-blue-50 backdrop-blur">
-                    <Sparkles className="h-4 w-4" />
-                    HandAll
-                  </div>
-
-                  <div className="space-y-3">
-                    <h1 className="text-3xl font-semibold leading-tight sm:text-4xl">
-                      Plan your week with more clarity and less friction.
-                    </h1>
-                    <p className="max-w-lg text-sm leading-6 text-blue-100/85 sm:text-base">
-                      HandAll keeps your classes, tasks, calendar, and daily energy in one place
-                      so your schedule feels manageable again.
-                    </p>
-                  </div>
+                  <h1 className="text-4xl font-bold leading-tight sm:text-5xl lg:text-6xl tracking-tight">
+                    Your week, <span className="text-primary italic">simplified.</span>
+                  </h1>
+                  <p className="max-w-lg text-base leading-relaxed text-muted-foreground font-medium">
+                    HandAll keeps your classes, tasks, and motivation in one flow so you can focus on doing, not planning.
+                  </p>
                 </div>
+              </div>
 
-                <div className="grid gap-2.5">
-                  {[
-                    "Sync coursework and calendar events in one flow",
-                    "Track side goals alongside your daily schedule",
-                    "Use the AI assistant when your week gets messy",
-                  ].map((item) => (
-                    <div
-                      key={item}
-                      className="flex items-start gap-3 rounded-2xl border border-white/12 bg-white/8 px-4 py-2.5 backdrop-blur-sm"
-                    >
-                      <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-cyan-300" />
-                      <p className="text-sm leading-5 text-blue-50/90">{item}</p>
-                    </div>
-                  ))}
+              <div className="grid gap-4">
+                {[
+                  "Visual planning with AI guidance",
+                  "Side goals & community events",
+                  "Integrated productivity assistant",
+                ].map((item) => (
+                  <div
+                    key={item}
+                    className="flex items-center gap-4 rounded-2xl border bg-background/40 p-4 backdrop-blur-sm transition-all hover:bg-background/60"
+                  >
+                    <CheckCircle2 className="h-5 w-5 shrink-0 text-primary" />
+                    <p className="text-sm font-bold uppercase tracking-tight">{item}</p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-4 rounded-2xl border bg-primary p-5 text-primary-foreground shadow-lg">
+                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary-foreground/10">
+                  <CalendarDays className="h-6 w-6" />
                 </div>
-
-                <div className="flex items-center gap-3 rounded-2xl border border-white/12 bg-white/8 px-4 py-3 backdrop-blur-sm">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white/12">
-                    <CalendarDays className="h-5 w-5 text-cyan-200" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-white">Built for student routines</p>
-                    <p className="text-sm leading-5 text-blue-100/80">
-                      Keep assignments, motivation, and planning moving together.
-                    </p>
-                  </div>
+                <div>
+                  <p className="text-sm font-black uppercase tracking-widest">Built for routines</p>
+                  <p className="text-sm font-medium opacity-90">
+                    Smart scheduling that respects your energy levels.
+                  </p>
                 </div>
               </div>
             </div>
 
-            <div className="bg-white/90 p-6 sm:p-8">
-              <div className="mx-auto max-w-md space-y-6">
-                <div className="space-y-2.5">
-                  <div className="inline-flex rounded-full border bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700">
-                    {isSignUp ? "Create your account" : "Welcome back"}
-                  </div>
-                  <div className="space-y-1.5">
-                    <h2 className="text-2xl font-semibold tracking-tight text-slate-950 sm:text-3xl">
-                      {isSignUp ? "Start organizing with HandAll" : "Sign in to continue"}
-                    </h2>
-                    <p className="text-sm leading-5 text-slate-600">
-                      {isSignUp
-                        ? "Set up your schedule, connect your calendar, and let HandAll shape a plan around your real week."
-                        : "Pick up where you left off and get back to your dashboard, weekly sync, and AI assistant."}
-                    </p>
-                  </div>
+            <div className="p-8 sm:p-12 flex flex-col justify-center bg-card">
+              <div className="mx-auto w-full max-w-md space-y-8">
+                <div className="space-y-2">
+                  <Badge variant="outline" className="px-3 py-1 text-xs font-bold border-primary text-primary">
+                    {isSignUp ? "Step 1: Create Account" : "Welcome Back"}
+                  </Badge>
+                  <h2 className="text-3xl font-black tracking-tighter sm:text-4xl">
+                    {isSignUp ? "Get Organized" : "Sign In"}
+                  </h2>
                 </div>
 
-                <form onSubmit={handleAuth} className="space-y-4">
+                <form onSubmit={handleAuth} className="space-y-5">
                   {isSignUp && (
-                    <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="grid gap-4 sm:grid-cols-2">
                       <div className="space-y-2">
-                        <Label htmlFor="firstName">First name</Label>
+                        <Label htmlFor="firstName" className="text-xs font-bold uppercase text-muted-foreground">First name</Label>
                         <Input
                           id="firstName"
-                          type="text"
-                          placeholder="Jordan"
                           value={firstName}
                           onChange={(e) => setFirstName(e.target.value)}
                           required
-                          className="h-10"
+                          className="h-12 bg-background border-2 focus:ring-primary"
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="lastName">Last name</Label>
+                        <Label htmlFor="lastName" className="text-xs font-bold uppercase text-muted-foreground">Last name</Label>
                         <Input
                           id="lastName"
-                          type="text"
-                          placeholder="Lee"
                           value={lastName}
                           onChange={(e) => setLastName(e.target.value)}
                           required
-                          className="h-10"
+                          className="h-12 bg-background border-2 focus:ring-primary"
                         />
                       </div>
                     </div>
                   )}
 
                   <div className="space-y-2">
-                    <Label htmlFor="email">Email</Label>
+                    <Label htmlFor="email" className="text-xs font-bold uppercase text-muted-foreground">Email</Label>
                     <Input
                       id="email"
                       type="email"
-                      placeholder="you@school.edu"
+                      placeholder="name@university.edu"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       required
-                      className="h-10"
+                      className="h-12 bg-background border-2 focus:ring-primary"
                     />
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="password">Password</Label>
+                    <Label htmlFor="password" title="At least 6 characters" className="text-xs font-bold uppercase text-muted-foreground">Password</Label>
                     <Input
                       id="password"
                       type="password"
-                      placeholder={isSignUp ? "Create a password" : "Enter your password"}
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       required
-                      className="h-10"
+                      className="h-12 bg-background border-2 focus:ring-primary"
                     />
                   </div>
 
                   {isSignUp && (
-                    <div className="flex items-start gap-3 rounded-xl border bg-slate-50 px-4 py-2.5">
+                    <div className="flex items-start gap-3 rounded-xl border bg-muted/20 p-4">
                       <Checkbox
                         id="terms"
                         checked={acceptedTerms}
                         onCheckedChange={(checked) => setAcceptedTerms(checked === true)}
-                        className="mt-0.5"
+                        className="mt-1"
                       />
-                      <Label htmlFor="terms" className="cursor-pointer text-sm leading-5 text-slate-600">
-                        I agree to the terms and understand HandAll will use my schedule data to
-                        personalize planning suggestions.
+                      <Label htmlFor="terms" className="cursor-pointer text-xs font-medium leading-relaxed text-muted-foreground">
+                        I agree to the terms and let HandAll personalize my schedule suggestions.
                       </Label>
                     </div>
                   )}
 
-                  <Button type="submit" size="lg" className="h-10 w-full">
+                  <Button type="submit" size="lg" className="h-12 w-full font-black uppercase tracking-widest text-xs shadow-xl hover:scale-[1.01] active:scale-[0.99] transition-all">
                     {loading ? "Processing..." : isSignUp ? "Create Account" : "Sign In"}
-                    {!loading && <ArrowRight className="h-4 w-4" />}
+                    {!loading && <ArrowRight className="ml-2 h-4 w-4" />}
                   </Button>
                 </form>
 
                 <div className="relative">
                   <div className="absolute inset-0 flex items-center">
-                    <span className="w-full border-t" />
+                    <span className="w-full border-t-2" />
                   </div>
-                  <div className="relative flex justify-center text-xs uppercase tracking-[0.2em] text-slate-400">
-                    <span className="bg-white px-3">or continue with</span>
+                  <div className="relative flex justify-center text-[10px] uppercase font-black tracking-[0.3em] text-muted-foreground/50">
+                    <span className="bg-card px-4">Social Login</span>
                   </div>
                 </div>
 
-                <div className="grid gap-3">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="lg"
-                    className="h-10"
-                    onClick={handleGoogleLogin}
-                  >
-                    <GoogleLogo />
-                    Google
-                  </Button>
-                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="lg"
+                  className="h-12 w-full border-2 font-bold hover:bg-muted/50"
+                  onClick={handleGoogleLogin}
+                >
+                  <GoogleLogo />
+                  <span className="ml-2">Continue with Google</span>
+                </Button>
 
-                <div className="rounded-2xl bg-slate-50 px-4 py-3 text-center">
-                  <p className="text-sm text-slate-600">
-                    {isSignUp ? "Already have an account?" : "Need an account first?"}{" "}
+                <div className="text-center pt-2">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    {isSignUp ? "Already a member?" : "New to HandAll?"}{" "}
                     <button
-                      className="font-medium text-blue-700 transition-colors hover:text-blue-800"
+                      className="font-bold text-primary hover:underline underline-offset-4"
                       onClick={() => setIsSignUp(!isSignUp)}
                       type="button"
                     >
-                      {isSignUp ? "Sign in" : "Create one"}
+                      {isSignUp ? "Sign in instead" : "Create an account"}
                     </button>
                   </p>
                 </div>

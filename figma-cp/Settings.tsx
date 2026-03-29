@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./ui/
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
+import { Separator } from "./ui/separator";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -193,7 +194,7 @@ export default function Settings() {
           <CardDescription>Your level and progress</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex flex-col gap-4 rounded-xl border bg-muted/20 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-4 rounded-xl border bg-slate-50/70 p-4 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-4">
               {avatarUrl ? (
                 <img
@@ -203,7 +204,7 @@ export default function Settings() {
                   referrerPolicy="no-referrer"
                 />
               ) : (
-                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-primary to-primary/60 text-primary-foreground shadow-sm">
+                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-purple-500 text-white shadow-sm">
                   <Camera className="h-6 w-6" />
                 </div>
               )}
@@ -228,7 +229,7 @@ export default function Settings() {
                 onClick={() => fileInputRef.current?.click()}
                 disabled={isUploadingAvatar}
               >
-                {isUploadingAvatar ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+                {isUploadingAvatar ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
                 Change Photo
               </Button>
             </div>
@@ -252,23 +253,23 @@ export default function Settings() {
               </div>
               <div className="h-2 bg-secondary rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-primary"
+                  className="h-full bg-gradient-to-r from-blue-500 to-purple-500"
                   style={{ width: `${(userProfile.xp % 100)}%` }}
                 />
               </div>
             </div>
           </div>
           <div className="flex gap-4">
-            <div className="flex-1 p-3 rounded-lg bg-card border">
+            <div className="flex-1 p-3 rounded-lg bg-blue-50 border border-blue-200">
               <div className="text-sm text-muted-foreground">Total XP</div>
-              <div className="text-2xl font-bold text-foreground">{userProfile.xp}</div>
+              <div className="text-2xl font-bold text-blue-600">{userProfile.xp}</div>
             </div>
-            <div className="flex-1 p-3 rounded-lg bg-card border">
+            <div className="flex-1 p-3 rounded-lg bg-purple-50 border border-purple-200">
               <div className="text-sm text-muted-foreground">Level</div>
-              <div className="text-2xl font-bold text-foreground">{userProfile.level}</div>
+              <div className="text-2xl font-bold text-purple-600">{userProfile.level}</div>
             </div>
           </div>
-          <Button onClick={handleSaveProfile} className="font-bold">Save Profile</Button>
+          <Button onClick={handleSaveProfile}>Save Profile</Button>
         </CardContent>
       </Card>
 
@@ -302,7 +303,7 @@ export default function Settings() {
               />
             </div>
           </div>
-          <Button onClick={handleSaveProfile} className="font-bold">Save Schedule</Button>
+          <Button onClick={handleSaveProfile}>Save Schedule</Button>
         </CardContent>
       </Card>
 
@@ -323,7 +324,7 @@ export default function Settings() {
               onChange={(e) => setNewGoal(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleAddGoal()}
             />
-            <Button onClick={handleAddGoal} className="font-bold">Add</Button>
+            <Button onClick={handleAddGoal}>Add</Button>
           </div>
 
           {userProfile.sideGoals.length > 0 ? (
@@ -331,16 +332,15 @@ export default function Settings() {
               {userProfile.sideGoals.map((goal, index) => (
                 <div
                   key={index}
-                  className="flex items-center justify-between p-3 rounded-lg border hover:border-primary/50 transition-colors bg-muted/10"
+                  className="flex items-center justify-between p-3 rounded-lg border hover:border-gray-300 transition-colors"
                 >
-                  <span className="text-sm font-medium">{goal}</span>
+                  <span>{goal}</span>
                   <Button
                     variant="ghost"
                     size="sm"
                     onClick={() => handleRemoveGoal(index)}
-                    className="hover:bg-destructive/10 text-destructive"
                   >
-                    <Trash2 className="h-4 w-4" />
+                    <Trash2 className="h-4 w-4 text-red-500" />
                   </Button>
                 </div>
               ))}
@@ -364,10 +364,9 @@ export default function Settings() {
         </CardContent>
       </Card>
 
-      {/* Danger Zone */}
-      <Card className="border-destructive/50 bg-destructive/5">
+      <Card className="border-red-200">
         <CardHeader>
-          <CardTitle className="text-destructive">Danger Zone</CardTitle>
+          <CardTitle className="text-red-700">Danger Zone</CardTitle>
           <CardDescription>
             Remove every event currently stored in your calendar. This does not change your profile settings.
           </CardDescription>
@@ -375,8 +374,8 @@ export default function Settings() {
         <CardContent>
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="destructive" disabled={isClearingEvents} className="font-bold">
-                {isClearingEvents ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
+              <Button variant="destructive" disabled={isClearingEvents}>
+                {isClearingEvents ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
                 Remove All Events
               </Button>
             </AlertDialogTrigger>
@@ -392,7 +391,7 @@ export default function Settings() {
                 <AlertDialogCancel>Cancel</AlertDialogCancel>
                 <AlertDialogAction
                   onClick={handleRemoveAllEvents}
-                  className="bg-destructive hover:bg-destructive/90 text-destructive-foreground font-bold"
+                  className="bg-red-600 hover:bg-red-700"
                 >
                   Yes, remove everything
                 </AlertDialogAction>
